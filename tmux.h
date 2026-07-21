@@ -1790,6 +1790,12 @@ struct tty_ctx {
 	u_int			 orupper;
 	u_int			 orlower;
 
+	/*
+	 * scrollback-passthrough: total lines scrolled in this batch BEFORE
+	 * flush_scrolled clamps n to the screen height. Zero everywhere else.
+	 */
+	u_int			 scrolled_total;
+
 	/* Target region (usually pane) offset and size. */
 	int			 xoff;
 	int			 yoff;

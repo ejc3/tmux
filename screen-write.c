@@ -2149,6 +2149,7 @@ screen_write_collect_flush_scrolled(struct screen_write_ctx *ctx)
 
 	log_debug("%s: scrolled %u (region %u-%u)", __func__, ctx->scrolled,
 	    s->rupper, s->rlower);
+	ttyctx.scrolled_total = ctx->scrolled;	/* before the clamp below */
 	if (ctx->scrolled > s->rlower - s->rupper + 1)
 		ctx->scrolled = s->rlower - s->rupper + 1;
 

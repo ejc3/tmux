@@ -1940,9 +1940,12 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 		 * a runaway burst cannot wedge the tty.
 		 */
 		if (tty->replay_gd != gd) {
+			u_int total = ctx->scrolled_total;
+			if (total == 0)
+				total = ctx->n;
 			tty->replay_gd = gd;
 			tty->replay_hsize =
-			    gd->hsize > ctx->n ? gd->hsize - ctx->n : 0;
+			    gd->hsize > total ? gd->hsize - total : 0;
 		}
 		if (tty->replay_hsize > gd->hsize)	/* history trimmed */
 			tty->replay_hsize = gd->hsize;
