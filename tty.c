@@ -1881,12 +1881,22 @@ tty_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 static int
 tty_whole_screen(struct tty *tty, const struct tty_ctx *ctx)
 {
-	if (!tty_full_width(tty, ctx))
+	if (!tty_full_width(tty, ctx)) {
+		log_debug("%s: NOT whole: width (xoff=%d sx=%u tty->sx=%u)",
+		    __func__, ctx->xoff, ctx->sx, tty->sx);
 		return (0);
-	if (ctx->yoff + ctx->orupper - ctx->woy != 0)
+	}
+	if (ctx->yoff + ctx->orupper - ctx->woy != 0) {
+		log_debug("%s: NOT whole: top (yoff=%d orupper=%u woy=%u)",
+		    __func__, ctx->yoff, ctx->orupper, ctx->woy);
 		return (0);
-	if (ctx->yoff + ctx->orlower - ctx->woy != tty->sy - 1)
+	}
+	if (ctx->yoff + ctx->orlower - ctx->woy != tty->sy - 1) {
+		log_debug("%s: NOT whole: bottom (yoff=%d orlower=%u woy=%u "
+		    "tty->sy=%u)", __func__, ctx->yoff, ctx->orlower,
+		    ctx->woy, tty->sy);
 		return (0);
+	}
 	return (1);
 }
 
