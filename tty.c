@@ -222,6 +222,15 @@ tty_block_maybe(struct tty *tty)
 	else if (tty->flags & TTY_NOBLOCK)
 		return (0);
 
+	/*
+	 * scrollback-passthrough: blocking silently DISCARDS output
+	 * (tty_add drops while TTY_BLOCK is set), which punches gaps in the
+	 * host terminal's scrollback -- the one thing this mode exists to
+	 * prevent. Skip blocking; the replay cap already bounds the burst.
+	 */
+	if (options_get_number(global_options, "scrollback-passthrough"))
+		return (0);
+
 	if (size < TTY_BLOCK_START(tty))
 		return (0);
 
