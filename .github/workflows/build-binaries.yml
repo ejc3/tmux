@@ -41,7 +41,10 @@ jobs:
       - name: Build
         run: |
           sh autogen.sh
-          ./configure
+          # -g is required: tmux's configure defaults to -O2 with NO debug info, which
+          # made the first build's "debug" artifact 41KB of bare symbol table -- no DWARF,
+          # useless for the crash it exists for. -O2 keeps the runtime binary equivalent.
+          ./configure CFLAGS="-g -O2"
           make -j"$(nproc)"
 
       # Fail the build rather than ship a binary that cannot report its version,
@@ -59,6 +62,8 @@ jobs:
           # Split debug info: ship a small runtime binary plus separate symbols, and
           # leave a .gnu_debuglink so gdb resolves them automatically.
           objcopy --only-keep-debug tmux tmux.debug
+          # Guard against shipping a symbol-table-only file again.
+          readelf -S tmux.debug | grep -q debug_info || { echo "no DWARF in tmux.debug"; exit 1; }
           strip tmux
           objcopy --add-gnu-debuglink=tmux.debug tmux
           ./tmux -V   # re-verify AFTER stripping
