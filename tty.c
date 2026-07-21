@@ -1873,6 +1873,23 @@ tty_cmd_linefeed(struct tty *tty, const struct tty_ctx *ctx)
 	tty_putc(tty, '\n');
 }
 
+/*
+ * Does this pane cover the entire terminal: full width, starting at the top row
+ * and ending at the bottom row? Only then is it safe to scroll the screen itself
+ * instead of a region.
+ */
+static int
+tty_whole_screen(struct tty *tty, const struct tty_ctx *ctx)
+{
+	if (!tty_full_width(tty, ctx))
+		return (0);
+	if (ctx->yoff + ctx->orupper - ctx->woy != 0)
+		return (0);
+	if (ctx->yoff + ctx->orlower - ctx->woy != tty->sy - 1)
+		return (0);
+	return (1);
+}
+
 void
 tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 {
@@ -1892,6 +1909,61 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 
 	tty_default_attributes(tty, &ctx->defaults, ctx->palette, ctx->bg,
 	    ctx->s->hyperlinks);
+
+	/*
+	 * A terminal only copies lines into its own scrollback when the WHOLE
+	 * screen scrolls. Scrolling inside a DECSTBM region discards them, so
+	 * by default the host terminal's scrollbar can never show tmux pane
+	 * history -- only copy-mode can. When the pane covers the entire
+	 * terminal no region is needed: reset it and let a plain newline
+	 * scroll the screen, so the emulator keeps the line.
+	 *
+	 * Off by default. Scrolling the real screen means tmux can no longer
+	 * repaint what scrolled away, so a redraw shows the terminal's own
+	 * content rather than tmux's.
+	 */
+	if (options_get_number(global_options, "scrollback-passthrough") &&
+	    tty_whole_screen(tty, ctx)) {
+		struct grid	*gd = ctx->s->grid;
+		u_int		 n = ctx->n, start;
+		char		*line;
+
+		/*
+		 * REPLAY, do not skip. tmux batches fast output: by the time
+		 * this runs, the intermediate lines have already scrolled out
+		 * of the pane into its history, and the default path would
+		 * emit n blank scrolls and repaint only the final screen --
+		 * leaving a gap of n lines in the host terminal's scrollback.
+		 * Instead, print each scrolled line (with its attributes)
+		 * from the grid history at the bottom row and let a plain
+		 * linefeed push it up, so the host terminal saves the real
+		 * content. Capped so a runaway burst cannot block the tty.
+		 */
+		if (n > gd->hsize)
+			n = gd->hsize;
+		if (n > 1000)
+			n = 1000;
+		start = gd->hsize - n;
+
+		tty_region_off(tty);
+		tty_margin_off(tty);
+		tty_reset(tty);
+		for (i = 0; i < n; i++) {
+			tty_cursor(tty, 0, tty->sy - 1);
+			tty_putcode(tty, TTYC_EL);
+			line = grid_string_cells(gd, 0, start + i, gd->sx,
+			    NULL, GRID_STRING_WITH_SEQUENCES, ctx->s);
+			tty_puts(tty, line);
+			free(line);
+			tty_putc(tty, '\r');
+			tty_putc(tty, '\n');
+		}
+		tty_reset(tty);
+		tty->cx = tty->cy = UINT_MAX;
+		/* Repaint the visible screen; the replay clobbered it. */
+		tty_redraw_region(tty, ctx);
+		return;
+	}
 
 	tty_region_pane(tty, ctx, ctx->orupper, ctx->orlower);
 	tty_margin_pane(tty, ctx);

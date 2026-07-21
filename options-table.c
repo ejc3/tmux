@@ -1083,6 +1083,17 @@ const struct options_table_entry options_table[] = {
 		  "linked to ('off')."
 	},
 
+	{ .name = "scrollback-passthrough",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 0,
+	  .text = "Whether a pane covering the whole terminal scrolls the "
+		  "screen itself instead of a scrolling region, so that lines "
+		  "scrolled off enter the host terminal's own scrollback and "
+		  "can be reached with its scrollbar rather than copy-mode. "
+		  "Only applies when the pane covers the entire terminal."
+	},
+
 	{ .name = "allow-passthrough",
 	  .type = OPTIONS_TABLE_CHOICE,
 	  .scope = OPTIONS_TABLE_WINDOW|OPTIONS_TABLE_PANE,
