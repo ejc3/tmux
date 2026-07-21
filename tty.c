@@ -1950,6 +1950,9 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 		if (gd->hsize - start > 1000)
 			start = gd->hsize - 1000;
 		count = gd->hsize - start;
+		log_debug("%s: PASSTHROUGH replay start=%u count=%u "
+		    "(hsize=%u ctx->n=%u)", __func__, start, count,
+		    gd->hsize, ctx->n);
 
 		tty_region_off(tty);
 		tty_margin_off(tty);
