@@ -1677,6 +1677,15 @@ struct tty {
 	u_int		 rlower;
 	u_int		 rupper;
 
+	/*
+	 * scrollback-passthrough: how much of this pane grid's history has
+	 * already been replayed into the client terminal's own scrollback.
+	 * flush_scrolled clamps ctx->n to the screen height, so the true
+	 * number of scrolled lines must be derived from history growth.
+	 */
+	struct grid	*replay_gd;
+	u_int		 replay_hsize;
+
 	u_int		 rleft;
 	u_int		 rright;
 

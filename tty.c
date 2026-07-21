@@ -1925,30 +1925,36 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 	if (options_get_number(global_options, "scrollback-passthrough") &&
 	    tty_whole_screen(tty, ctx)) {
 		struct grid	*gd = ctx->s->grid;
-		u_int		 n = ctx->n, start;
+		u_int		 start, count;
 		char		*line;
 
 		/*
-		 * REPLAY, do not skip. tmux batches fast output: by the time
-		 * this runs, the intermediate lines have already scrolled out
-		 * of the pane into its history, and the default path would
-		 * emit n blank scrolls and repaint only the final screen --
-		 * leaving a gap of n lines in the host terminal's scrollback.
-		 * Instead, print each scrolled line (with its attributes)
-		 * from the grid history at the bottom row and let a plain
-		 * linefeed push it up, so the host terminal saves the real
-		 * content. Capped so a runaway burst cannot block the tty.
+		 * REPLAY, do not skip. tmux batches fast output and
+		 * flush_scrolled clamps ctx->n to the screen height, so by
+		 * now more lines may have scrolled into the pane's history
+		 * than ctx->n reports. Track a high-water mark of the grid's
+		 * history and print every line that entered it since the
+		 * last replay, each followed by a plain linefeed at the
+		 * bottom row, so the client terminal saves the real content
+		 * into its own scrollback with no gaps. Capped per batch so
+		 * a runaway burst cannot wedge the tty.
 		 */
-		if (n > gd->hsize)
-			n = gd->hsize;
-		if (n > 1000)
-			n = 1000;
-		start = gd->hsize - n;
+		if (tty->replay_gd != gd) {
+			tty->replay_gd = gd;
+			tty->replay_hsize =
+			    gd->hsize > ctx->n ? gd->hsize - ctx->n : 0;
+		}
+		if (tty->replay_hsize > gd->hsize)	/* history trimmed */
+			tty->replay_hsize = gd->hsize;
+		start = tty->replay_hsize;
+		if (gd->hsize - start > 1000)
+			start = gd->hsize - 1000;
+		count = gd->hsize - start;
 
 		tty_region_off(tty);
 		tty_margin_off(tty);
 		tty_reset(tty);
-		for (i = 0; i < n; i++) {
+		for (i = 0; i < count; i++) {
 			tty_cursor(tty, 0, tty->sy - 1);
 			tty_putcode(tty, TTYC_EL);
 			line = grid_string_cells(gd, 0, start + i, gd->sx,
@@ -1958,6 +1964,7 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 			tty_putc(tty, '\r');
 			tty_putc(tty, '\n');
 		}
+		tty->replay_hsize = gd->hsize;
 		tty_reset(tty);
 		tty->cx = tty->cy = UINT_MAX;
 		/* Repaint the visible screen; the replay clobbered it. */
