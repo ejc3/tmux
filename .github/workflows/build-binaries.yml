@@ -1,0 +1,99 @@
+# Builds tmux binaries for the ejc3 dev boxes.
+#
+# Why: Ubuntu 24.04 ships tmux 3.4, which predates pane-scrollbars (3.6) and the
+# alternate-screen/scrollbar flicker fixes. Rather than compile on each dev box during
+# bootstrap, build once here and let the boxes download a prebuilt binary.
+#
+# Runner images are pinned to ubuntu-24.04 to match the dev boxes (Ubuntu noble,
+# glibc 2.39) -- building on a newer image yields a binary they cannot load.
+name: build-binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vendor/3.x]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential autoconf automake pkg-config \
+            libevent-dev libncurses-dev bison byacc
+
+      - name: Build
+        run: |
+          sh autogen.sh
+          ./configure
+          make -j"$(nproc)"
+
+      # Fail the build rather than ship a binary that cannot report its version,
+      # and assert the feature we are upgrading FOR is actually present.
+      - name: Smoke test
+        run: |
+          ./tmux -V
+          ./tmux -V | grep -qE '3\.[6-9]' || { echo "unexpected version"; exit 1; }
+          # pane-scrollbars is the whole point of leaving 3.4 behind.
+          ./tmux -f /dev/null start-server \; show -g pane-scrollbars \
+            || { echo "pane-scrollbars option missing"; exit 1; }
+
+      - name: Package
+        run: |
+          # Split debug info: ship a small runtime binary plus separate symbols, and
+          # leave a .gnu_debuglink so gdb resolves them automatically.
+          objcopy --only-keep-debug tmux tmux.debug
+          strip tmux
+          objcopy --add-gnu-debuglink=tmux.debug tmux
+          ./tmux -V   # re-verify AFTER stripping
+
+          tar czf "tmux-${{ matrix.arch }}.tar.gz"       tmux
+          tar czf "tmux-${{ matrix.arch }}-debug.tar.gz" tmux.debug
+          for t in tmux-${{ matrix.arch }}.tar.gz tmux-${{ matrix.arch }}-debug.tar.gz; do
+            sha256sum "$t" > "$t.sha256"
+          done
+          ls -lh tmux-${{ matrix.arch }}*.tar.gz
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tmux-${{ matrix.arch }}
+          path: |
+            tmux-${{ matrix.arch }}.tar.gz*
+            tmux-${{ matrix.arch }}-debug.tar.gz*
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          merge-multiple: true
+          path: dist
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view binaries-3.x --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create binaries-3.x --repo "$GITHUB_REPOSITORY" \
+                 --title "tmux 3.x prebuilt binaries" \
+                 --notes "Prebuilt for Ubuntu 24.04 (glibc 2.39). Rebuilt weekly."
+          gh release upload binaries-3.x dist/* --repo "$GITHUB_REPOSITORY" --clobber
