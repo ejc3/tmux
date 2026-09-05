@@ -2495,7 +2495,7 @@ server_client_replay_scroll(struct client *c)
 	struct window_pane	*wp;
 	struct grid		*gd;
 	struct grid_cell	*gc = NULL;
-	u_int			 lines, n, i, start;
+	u_int			 lines, n, total, i, start;
 	char			*line, *buf;
 	size_t			 linelen, buflen;
 
@@ -2515,16 +2515,35 @@ server_client_replay_scroll(struct client *c)
 		return;
 
 	gd = wp->base.grid;
-	if ((n = gd->hsize) == 0)
-		return;
+	n = gd->hsize;
+	total = n + gd->sy;
 	start = (n > lines) ? n - lines : 0;
+
+	/*
+	 * Nothing below may be discarded: this is one deliberate write that can
+	 * run well past the backoff threshold (a 2000-line history is ~100kB on
+	 * a 51-column client, against a threshold of ~12kB), and losing its tail
+	 * would lose exactly the lines nearest the screen. Same exemption
+	 * tty_cmd_rawstring() and the clipboard write use.
+	 */
+	c->tty.flags |= TTY_NOBLOCK;
 
 	tty_putcode(&c->tty, TTYC_CLEAR);
 	tty_putcode(&c->tty, TTYC_E3);
 
+	/*
+	 * Replay the visible rows as well as the history, and do not end the
+	 * last one with a newline. Written this way the terminal is left
+	 * showing exactly the pane's screen, with every history line already
+	 * scrolled above it; the redraw that follows repaints the same rows in
+	 * place. Replaying history alone leaves its last screenful ON the
+	 * screen, where the redraw then paints over it and it never reaches the
+	 * scrollback at all - measured as a gap of one screen height at the
+	 * seam between replayed history and live output.
+	 */
 	buf = NULL;
 	buflen = 0;
-	for (i = start; i < n; i++) {
+	for (i = start; i < total; i++) {
 		line = grid_string_cells(gd, 0, i, gd->sx, &gc,
 		    GRID_STRING_WITH_SEQUENCES|GRID_STRING_TRIM_SPACES,
 		    &wp->base);
@@ -2532,8 +2551,10 @@ server_client_replay_scroll(struct client *c)
 		buf = xrealloc(buf, buflen + linelen + 3);
 		memcpy(buf + buflen, line, linelen);
 		buflen += linelen;
-		buf[buflen++] = '\r';
-		buf[buflen++] = '\n';
+		if (i + 1 < total) {
+			buf[buflen++] = '\r';
+			buf[buflen++] = '\n';
+		}
 		free(line);
 	}
 	if (buf != NULL) {
@@ -2541,10 +2562,11 @@ server_client_replay_scroll(struct client *c)
 		tty_puts(&c->tty, buf);
 		free(buf);
 	}
-	log_debug("%s: replayed %u history lines", c->name, n - start);
+	log_debug("%s: replayed %u history + %u visible lines", c->name,
+	    n - start, gd->sy);
 
+	/* The tty's idea of the screen is now wrong; the redraw repaints all. */
 	tty_invalidate(&c->tty);
-	c->flags |= CLIENT_REDRAWWINDOW;
 }
 
 static void
