@@ -34,6 +34,23 @@ static void	screen_write_collect_clear(struct screen_write_ctx *, u_int,
 static void	screen_write_collect_scroll(struct screen_write_ctx *, u_int);
 static void	screen_write_collect_flush(struct screen_write_ctx *, int,
 		    const char *);
+static u_int	screen_write_collect_flush_line(struct screen_write_ctx *,
+		    u_int);
+
+/*
+ * Is this pane the whole window? Only then do its scrolls become scrolls of the
+ * client's terminal, so only then is there any point replaying rows - in a
+ * split, tty_cmd_linefeed() redraws the region instead and nothing reaches the
+ * terminal's own scrollback either way.
+ */
+static int
+screen_write_full_window(struct window_pane *wp)
+{
+	if (wp == NULL || wp->window == NULL)
+		return (0);
+	return (wp->xoff == 0 && wp->yoff == 0 &&
+	    wp->sx == wp->window->sx && wp->sy == wp->window->sy);
+}
 static int	screen_write_overwrite(struct screen_write_ctx *,
 		    struct grid_cell *, u_int);
 static int	screen_write_combine(struct screen_write_ctx *,
@@ -1812,6 +1829,8 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 	int			 redraw = 0;
 #endif
 	u_int			 rupper = s->rupper, rlower = s->rlower;
+	u_int			 cx, cy;
+	int			 passthrough;
 
 	gl = grid_get_line(gd, gd->hsize + s->cy);
 	if (wrapped)
@@ -1840,9 +1859,35 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
+	/*
+	 * A client whose terminal keeps its own scrollback only ever keeps what
+	 * tmux actually sends it, so the row leaving the top of the region has
+	 * to be on the client before it goes. The collector normally emits the
+	 * scroll first and paints afterwards, and screen_write_collect_scroll()
+	 * below drops the pending write for that row, so on such a client the
+	 * row is never sent and the terminal files away whatever stale content
+	 * it still had instead.
+	 *
+	 * Replay just the outgoing row and emit its scroll rather than flushing
+	 * the whole screen; the visible rows are painted by the ordinary flush
+	 * at the end of the batch.
+	 */
+	passthrough = (screen_write_full_window(ctx->wp) &&
+	    options_get_number(ctx->wp->options, "scroll-passthrough"));
+	if (passthrough) {
+		cx = s->cx;
+		cy = s->cy;
+		screen_write_collect_flush_line(ctx, s->rupper);
+		s->cx = cx;
+		s->cy = cy;
+	}
+
 	grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
 	screen_write_collect_scroll(ctx, bg);
 	ctx->scrolled++;
+
+	if (passthrough)
+		screen_write_collect_flush(ctx, 1, __func__);
 }
 
 /* Scroll up. */
@@ -1857,6 +1902,11 @@ screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 		lines = 1;
 	else if (lines > s->rlower - s->rupper + 1)
 		lines = s->rlower - s->rupper + 1;
+
+	/* See the comment in screen_write_linefeed(); same ordering applies. */
+	if (screen_write_full_window(ctx->wp) &&
+	    options_get_number(ctx->wp->options, "scroll-passthrough"))
+		screen_write_collect_flush(ctx, 0, __func__);
 
 	if (bg != ctx->bg) {
 		screen_write_collect_flush(ctx, 1, __func__);
@@ -3122,6 +3172,13 @@ screen_write_sixelimage(struct screen_write_ctx *ctx, struct sixel_image *si,
 	sy = screen_size_y(s) - cy;
 	if (sy <= y) {
 		lines = y - sy + 1;
+		/*
+		 * Before image_scroll_up(), which may set PANE_REDRAW - once
+		 * that is set screen_write_collect_flush() discards.
+		 */
+		if (screen_write_full_window(ctx->wp) &&
+		    options_get_number(ctx->wp->options, "scroll-passthrough"))
+			screen_write_collect_flush(ctx, 0, __func__);
 		if (image_scroll_up(s, lines) && ctx->wp != NULL)
 			ctx->wp->flags |= PANE_REDRAW;
 		for (i = 0; i < lines; i++) {

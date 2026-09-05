@@ -2467,6 +2467,86 @@ server_client_any_pane_redraw(struct client *c)
 }
 
 /* Check for client redraws. */
+/*
+ * Replay the current window's history into a client whose terminal keeps its
+ * own scrollback.
+ *
+ * tmux keeps history per pane; the terminal keeps ONE flat buffer for the whole
+ * connection and knows nothing about windows. Switching windows therefore
+ * leaves the previous window's output in that buffer underneath this one, and
+ * scrolling back crosses from one window into another mid-stream.
+ *
+ * Clear the screen and the saved lines and write this window's history in their
+ * place. The screen must be cleared too, not just the saved lines: the previous
+ * window is still displayed, and the replayed lines would otherwise push those
+ * stale rows into the scrollback ahead of themselves. This is the same pair
+ * clear(1) sends. Only a pane filling the window can do this - in a split its
+ * rows are part of a screen row and never reach the terminal's scrollback.
+ *
+ * Called from screen_redraw_screen(), inside its synchronized update, so the
+ * replay and the repaint that follows land as one frame and the scroll is never
+ * painted. Afterwards the tty's idea of the screen is wrong, hence the
+ * invalidate.
+ */
+void
+server_client_replay_scroll(struct client *c)
+{
+	struct window		*w;
+	struct window_pane	*wp;
+	struct grid		*gd;
+	struct grid_cell	*gc = NULL;
+	u_int			 lines, n, i, start;
+	char			*line, *buf;
+	size_t			 linelen, buflen;
+
+	c->flags &= ~CLIENT_REPLAYSCROLL;
+
+	if (c->session == NULL || c->session->curw == NULL)
+		return;
+	w = c->session->curw->window;
+	if ((wp = w->active) == NULL)
+		return;
+	lines = options_get_number(w->options, "scroll-replay");
+	if (lines == 0)
+		return;
+	if (wp->xoff != 0 || wp->yoff != 0 || wp->sx != w->sx || wp->sy != w->sy)
+		return;
+	if (!tty_term_has(c->tty.term, TTYC_E3))
+		return;
+
+	gd = wp->base.grid;
+	if ((n = gd->hsize) == 0)
+		return;
+	start = (n > lines) ? n - lines : 0;
+
+	tty_putcode(&c->tty, TTYC_CLEAR);
+	tty_putcode(&c->tty, TTYC_E3);
+
+	buf = NULL;
+	buflen = 0;
+	for (i = start; i < n; i++) {
+		line = grid_string_cells(gd, 0, i, gd->sx, &gc,
+		    GRID_STRING_WITH_SEQUENCES|GRID_STRING_TRIM_SPACES,
+		    &wp->base);
+		linelen = strlen(line);
+		buf = xrealloc(buf, buflen + linelen + 3);
+		memcpy(buf + buflen, line, linelen);
+		buflen += linelen;
+		buf[buflen++] = '\r';
+		buf[buflen++] = '\n';
+		free(line);
+	}
+	if (buf != NULL) {
+		buf[buflen] = '\0';
+		tty_puts(&c->tty, buf);
+		free(buf);
+	}
+	log_debug("%s: replayed %u history lines", c->name, n - start);
+
+	tty_invalidate(&c->tty);
+	c->flags |= CLIENT_REDRAWWINDOW;
+}
+
 static void
 server_client_check_redraw(struct client *c)
 {

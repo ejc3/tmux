@@ -1769,7 +1769,16 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 			}
 		}
 	}
-	tty_sync_start(tty); /* end in server_client_reset_state */
+	tty_sync_start(tty);
+
+	/*
+	 * Replay this window's history here, inside the redraw's synchronized
+	 * update, so the replay and the repaint land as ONE frame. Done before
+	 * the redraw it ends up in its own sync block and the user sees a flash
+	 * of scrolled history before the real screen appears.
+	 */
+	if (c->flags & CLIENT_REPLAYSCROLL)
+		server_client_replay_scroll(c); /* end in server_client_reset_state */
 	tty_update_mode(tty, tty->mode & ~CURSOR_MODES, NULL);
 
 	if (wp != NULL)

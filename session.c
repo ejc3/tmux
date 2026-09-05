@@ -499,6 +499,7 @@ int
 session_set_current(struct session *s, struct winlink *wl)
 {
 	struct winlink	*old = s->curw;
+	struct client	*loop;
 
 	if (wl == NULL)
 		return (-1);
@@ -516,6 +517,20 @@ session_set_current(struct session *s, struct winlink *wl)
 	winlink_clear_flags(wl);
 	window_update_activity(wl->window);
 	tty_update_window_offset(wl->window);
+
+	/*
+	 * A client whose terminal keeps its own scrollback has ONE flat buffer
+	 * for the whole connection, while tmux keeps history per pane. Switching
+	 * windows therefore leaves the previous window's output in that buffer,
+	 * under this window's. Mark the clients showing this session so the next
+	 * redraw can replace it with this window's history; scroll-replay says
+	 * how much.
+	 */
+	TAILQ_FOREACH(loop, &clients, entry) {
+		if (loop->session == s)
+			loop->flags |= CLIENT_REPLAYSCROLL;
+	}
+
 	session_fire_window_changed(s, wl, old);
 	return (0);
 }
