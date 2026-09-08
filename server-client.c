@@ -2484,6 +2484,13 @@ server_client_replay_scroll(struct client *c)
 	char			*line, *buf;
 	size_t			 linelen, buflen;
 
+	/*
+	 * In the terminal's alternate screen there is no scrollback to replay
+	 * into and E3 could erase the primary screen's. Leave the flag set so
+	 * the replay happens when the terminal is back on the primary screen.
+	 */
+	if (c->tty.flags & TTY_ALTSCREEN)
+		return;
 	c->flags &= ~CLIENT_REPLAYSCROLL;
 
 	if (c->session == NULL || c->session->curw == NULL)
@@ -2494,7 +2501,7 @@ server_client_replay_scroll(struct client *c)
 	lines = options_get_number(w->options, "scroll-replay");
 	if (lines == 0)
 		return;
-	if (wp->xoff != 0 || wp->yoff != 0 || wp->sx != w->sx || wp->sy != w->sy)
+	if (!screen_write_full_window(wp))
 		return;
 	if (!tty_term_has(c->tty.term, TTYC_E3))
 		return;
@@ -2551,7 +2558,7 @@ server_client_check_redraw(struct client *c)
 	struct tty		*tty = &c->tty;
 	struct window		*w = s->curw->window;
 	struct window_pane	*wp;
-	int			 needed, tflags, mode = tty->mode;
+	int			 needed, tflags, mode = tty->mode, want;
 	struct timeval		 tv = { .tv_usec = 1000 };
 	static struct event	 ev;
 	size_t			 n;
@@ -2610,6 +2617,41 @@ server_client_check_redraw(struct client *c)
 	log_debug("%s: redraw needed", c->name);
 	tflags = tty->flags & (TTY_BLOCK|TTY_FREEZE|TTY_NOCURSOR);
 	tty->flags = (tty->flags & ~(TTY_BLOCK|TTY_FREEZE))|TTY_NOCURSOR;
+
+	/*
+	 * With clear-on-attach off the terminal keeps its own scrollback on the
+	 * primary screen. Mirror a full-window pane's alternate screen onto the
+	 * terminal's, so a full-screen application draws there instead of
+	 * scrolling the scrollback away, and the scrollback returns intact when
+	 * the application exits. Only when the pane fills the window and is not
+	 * in a mode such as copy mode. The switch shares a synchronized update
+	 * with the redraw, and everything is redrawn since the new screen has no
+	 * status line or overlay. The terminal saves the character set with the
+	 * cursor on smcup, so leave the ACS set before switching.
+	 */
+	if (!options_get_number(global_options, "clear-on-attach") &&
+	    tty_term_has(tty->term, TTYC_SMCUP) &&
+	    tty_term_has(tty->term, TTYC_RMCUP)) {
+		wp = w->active;
+		want = (wp != NULL && TAILQ_EMPTY(&wp->modes) &&
+		    screen_write_full_window(wp) &&
+		    SCREEN_IS_ALTERNATE(&wp->base));
+		if (want && (~tty->flags & TTY_ALTSCREEN)) {
+			tty_sync_start(tty);
+			if (tty_acs_needed(tty))
+				tty_putcode(tty, TTYC_RMACS);
+			tty_putcode(tty, TTYC_SMCUP);
+			tty->flags |= TTY_ALTSCREEN;
+			tty_invalidate(tty);
+			server_redraw_client(c);
+		} else if (!want && (tty->flags & TTY_ALTSCREEN)) {
+			tty_sync_start(tty);
+			tty_putcode(tty, TTYC_RMCUP);
+			tty->flags &= ~TTY_ALTSCREEN;
+			tty_invalidate(tty);
+			server_redraw_client(c);
+		}
+	}
 
 	/*
 	 * If not redrawing the entire window, check whether each pane needs to
