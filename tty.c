@@ -35,6 +35,7 @@
 
 static int	tty_log_fd = -1;
 
+static void	tty_pay_scroll(struct tty *);
 static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
 static void	tty_set_italics(struct tty *);
@@ -479,6 +480,10 @@ tty_stop_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tty->tio) == -1)
 		return;
 
+	if (tty->flags & TTY_OWESCROLL) {
+		tty->flags &= ~TTY_OWESCROLL;
+		tty_raw(tty, "\r\n");
+	}
 	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
 	if (tty_acs_needed(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
@@ -696,6 +701,7 @@ tty_putc(struct tty *tty, u_char ch)
 
 	if (ch >= 0x20 && ch != 0x7f) {
 		if (tty->cx >= tty->sx) {
+			tty->flags &= ~TTY_OWESCROLL;
 			tty->cx = 1;
 			if (tty->cy != tty->rlower)
 				tty->cy++;
@@ -722,11 +728,12 @@ tty_putn(struct tty *tty, const void *buf, size_t len, u_int width)
 
 	tty_add(tty, buf, len);
 	if (tty->cx + width > tty->sx) {
+		tty->flags &= ~TTY_OWESCROLL;
 		tty->cx = (tty->cx + width) - tty->sx;
-		if (tty->cx <= tty->sx)
-			tty->cy++;
-		else
+		if (tty->cx > tty->sx)
 			tty->cx = tty->cy = UINT_MAX;
+		else if (tty->cy != tty->rlower)
+			tty->cy++;
 	} else
 		tty->cx += width;
 }
@@ -1809,6 +1816,30 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 		return;
 	}
 
+	/*
+	 * A line wrapping from the bottom row, and the terminal is waiting to
+	 * wrap there: leave the scroll to it. The next character wraps and
+	 * scrolls, and the terminal knows the row continues the one above -
+	 * so selecting it or reflowing on resize keeps the line whole, as
+	 * without tmux. Anything else written first pays the scroll.
+	 */
+	if ((ctx->flags & TTY_CTX_WRAPPED) &&
+	    ctx->n == 1 &&
+	    ctx->bg == 8 &&
+	    tty_full_width(tty, ctx) &&
+	    (~tty->term->flags & TERM_NOAM) &&
+	    (!tty_use_margin(tty) ||
+	    (tty->rleft == 0 && tty->rright == tty->sx - 1)) &&
+	    tty->rupper == ctx->yoff + ctx->orupper - ctx->woy &&
+	    tty->rlower == ctx->yoff + ctx->orlower - ctx->woy &&
+	    tty->cy == tty->rlower &&
+	    tty->cx >= tty->sx) {
+		log_debug("%s: scroll left to the wrap at %u", __func__,
+		    tty->cy);
+		tty->flags |= TTY_OWESCROLL;
+		return;
+	}
+
 	tty_default_attributes(tty, ctx->bg, &ctx->style_ctx);
 
 	tty_region_pane(tty, ctx, ctx->orupper, ctx->orlower);
@@ -2148,6 +2179,9 @@ tty_reset(struct tty *tty)
 void
 tty_invalidate(struct tty *tty)
 {
+	if (tty->flags & TTY_STARTED)
+		tty_pay_scroll(tty);
+	tty->flags &= ~TTY_OWESCROLL;
 	memcpy(&tty->cell, &grid_default_cell, sizeof tty->cell);
 	memcpy(&tty->last_cell, &grid_default_cell, sizeof tty->last_cell);
 
@@ -2194,6 +2228,7 @@ tty_region(struct tty *tty, u_int rupper, u_int rlower)
 		return;
 	if (!tty_term_has(tty->term, TTYC_CSR))
 		return;
+	tty_pay_scroll(tty);
 
 	tty->rupper = rupper;
 	tty->rlower = rlower;
@@ -2251,6 +2286,7 @@ tty_margin(struct tty *tty, u_int rleft, u_int rright)
 		return;
 	if (tty->rleft == rleft && tty->rright == rright)
 		return;
+	tty_pay_scroll(tty);
 
 	tty_putcode_ii(tty, TTYC_CSR, tty->rupper, tty->rlower);
 
@@ -2272,13 +2308,21 @@ static void
 tty_cursor_pane_unless_wrap(struct tty *tty, const struct tty_ctx *ctx,
     u_int cx, u_int cy)
 {
+	int	next, owed;
+
+	/*
+	 * The row below, or - when tty_cmd_scrollup left the scroll to this
+	 * wrap - the bottom row itself, which the wrap scrolls up.
+	 */
+	next = (ctx->yoff + cy == tty->cy + 1 && tty->cy != tty->rlower);
+	owed = ((tty->flags & TTY_OWESCROLL) && ctx->yoff + cy == tty->cy &&
+	    tty->cy == tty->rlower);
 	if ((~ctx->flags & TTY_CTX_WRAPPED) ||
 	    !tty_full_width(tty, ctx) ||
 	    (tty->term->flags & TERM_NOAM) ||
 	    ctx->xoff + cx != 0 ||
-	    ctx->yoff + cy != tty->cy + 1 ||
-	    tty->cx < tty->sx ||
-	    tty->cy == tty->rlower)
+	    (!next && !owed) ||
+	    tty->cx < tty->sx)
 		tty_cursor_pane(tty, ctx, cx, cy);
 	else
 		log_debug("%s: will wrap at %u,%u", __func__, tty->cx, tty->cy);
@@ -2291,6 +2335,22 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
 	tty_cursor(tty, ctx->xoff + cx - ctx->wox, ctx->yoff + cy - ctx->woy);
 }
 
+/*
+ * Emit a scroll tty_cmd_scrollup left to a wrap that has not happened: the
+ * terminal is waiting to wrap at the end of the bottom row.
+ */
+static void
+tty_pay_scroll(struct tty *tty)
+{
+	if (~tty->flags & TTY_OWESCROLL)
+		return;
+	tty->flags &= ~TTY_OWESCROLL;
+	log_debug("%s: at %u", __func__, tty->cy);
+	tty_reset(tty);
+	tty_add(tty, "\r\n", 2);
+	tty->cx = 0;
+}
+
 /* Move cursor to absolute position. */
 void
 tty_cursor(struct tty *tty, u_int cx, u_int cy)
@@ -2301,6 +2361,7 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 
 	if (tty->flags & TTY_BLOCK)
 		return;
+	tty_pay_scroll(tty);
 
 	thisx = tty->cx;
 	thisy = tty->cy;

@@ -1129,6 +1129,7 @@ struct screen_write_ctx {
 
 	struct screen_write_citem	*item;
 	u_int				 scrolled;
+	int				 scroll_wrapped;
 	u_int				 bg;
 };
 
@@ -1827,6 +1828,7 @@ struct tty {
 #define TTY_BRACKETPASTE 0x8000
 #define TTY_HAVESYNC 0x10000
 #define TTY_ALTSCREEN 0x20000
+#define TTY_OWESCROLL 0x40000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
 	int		 flags;
