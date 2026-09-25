@@ -1673,6 +1673,7 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	u_int			 width, i, y, lines;
 	struct redraw_span	*first;
 	int			 redraw;
+	uint64_t		 replayed;
 
 	if (c->flags & CLIENT_SUSPENDED)
 		return;
@@ -1755,9 +1756,25 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	 * Replay the window's history inside the same synchronized update as
 	 * the redraw so the two are painted as one frame.
 	 */
-	if (c->flags & CLIENT_REPLAYSCROLL)
+	replayed = (c->flags & CLIENT_REPLAYSCROLL);
+	if (replayed)
 		server_client_replay_scroll(c); /* end in server_client_reset_state */
 	tty_update_mode(tty, tty->mode & ~CURSOR_MODES, NULL);
+
+	/*
+	 * Lines of the pane's history that never reached the terminal's
+	 * scrollback go there before the pane is drawn over the rows it
+	 * leaves; after a replay the terminal has all of it.
+	 */
+	loop = w->active;
+	if ((flags & REDRAW_PANE) && loop != NULL &&
+	    (wp == NULL || wp == loop)) {
+		if (replayed) {
+			tty->hist_pane = loop->id;
+			tty->hist_seen = loop->base.grid->scroll_view;
+		} else
+			tty_catch_up_history(tty, loop, 1);
+	}
 
 	if (wp != NULL)
 		redraw_draw_pane_lines(&dctx, wp, flags);

@@ -69,6 +69,12 @@ struct screen_write_citem {
 struct screen_write_cline {
 	char				*data;
 	TAILQ_HEAD(, screen_write_citem) items;
+
+	/*
+	 * The whole line was erased (bg + 1): see
+	 * screen_write_collect_flush_line.
+	 */
+	u_int				 cleared;
 };
 TAILQ_HEAD(, screen_write_citem)  screen_write_citem_freelist =
     TAILQ_HEAD_INITIALIZER(screen_write_citem_freelist);
@@ -1301,7 +1307,18 @@ screen_write_sync_flush_dirty(struct window_pane *wp)
 	screen_write_start_pane(&ctx, wp, s);
 	screen_write_initctx(&ctx, &ttyctx, 1, 1);
 
-	if (wp->sync_scrolled != 0)
+	/*
+	 * With the terminal keeping its own scrollback, a scroll during the
+	 * sync is not replayed as a scroll, which would push what the terminal
+	 * shows: the lines it pushed into history go to the terminal's
+	 * scrollback as they are (tty_cmd_history) and every row is redrawn.
+	 */
+	if (wp->sync_scrolled != 0 && screen_write_full_window(wp) &&
+	    !options_get_number(global_options, "clear-on-attach")) {
+		wp->sync_scrolled = 0;
+		bit_nset(wp->sync_dirty, 0, sy - 1);
+		tty_write(tty_cmd_history, &ttyctx);
+	} else if (wp->sync_scrolled != 0)
 		screen_write_sync_apply_scroll(&ctx, &ttyctx);
 
 	if (~wp->flags & PANE_REDRAW) {
@@ -1740,6 +1757,7 @@ screen_write_clearline(struct screen_write_ctx *ctx, u_int bg)
 	ci->type = CLEAR;
 	ci->bg = bg;
 	TAILQ_INSERT_TAIL(&ctx->s->write_list[s->cy].items, ci, entry);
+	ctx->s->write_list[s->cy].cleared = bg + 1;
 	ctx->item = screen_write_get_citem();
 }
 
@@ -1898,7 +1916,7 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 	int			 redraw = 0;
 #endif
 	u_int			 rupper = s->rupper, rlower = s->rlower;
-	u_int			 cx, cy;
+	u_int			 obg;
 	int			 passthrough;
 
 	gl = grid_get_line(gd, gd->hsize + s->cy);
@@ -1937,27 +1955,30 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 	passthrough = (screen_write_full_window(ctx->wp) &&
 	    !options_get_number(global_options, "clear-on-attach"));
 	if (passthrough) {
-		cx = s->cx;
-		cy = s->cy;
-		screen_write_collect_flush_line(ctx, s->rupper);
 		/*
-		 * The row scrolling up from the bottom too, in the order a
-		 * terminal without tmux receives it: the line, then the scroll.
-		 * A wrapping line then leaves the terminal waiting to wrap at
-		 * its end, so the next character can do the scroll (see
-		 * tty_cmd_scrollup) and a continuation written before the next
-		 * scroll consumes it.
+		 * Every row, top to bottom, in the order a terminal without
+		 * tmux receives it: the lines, then the scroll. A wrapping line
+		 * then leaves the terminal waiting to wrap at the end of the
+		 * bottom row, so the next character can do the scroll (see
+		 * tty_cmd_scrollup).
 		 */
-		if (cy != s->rupper)
-			screen_write_collect_flush_line(ctx, cy);
-		s->cx = cx;
-		s->cy = cy;
+		obg = ctx->bg;
+		screen_write_collect_flush(ctx, 0, __func__);
+		ctx->bg = obg;
 	}
 
 	grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
 	screen_write_collect_scroll(ctx, bg);
 	ctx->scrolled++;
 	ctx->scroll_wrapped = wrapped;
+	/*
+	 * The line continues on the bottom row: write that row first when
+	 * next flushing (screen_write_collect_flush), so the continuation
+	 * reaches a terminal waiting to wrap before anything moves its cursor
+	 * (see tty_cmd_scrollup).
+	 */
+	if (passthrough && wrapped)
+		s->write_wrap = s->rlower + 1;
 
 	if (passthrough)
 		screen_write_collect_flush(ctx, 1, __func__);
@@ -2216,6 +2237,16 @@ screen_write_clearscreen(struct screen_write_ctx *ctx, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
+	/*
+	 * A terminal keeping its own scrollback may move the screen into it
+	 * when cleared (tmux does, as here): give it what is on the screen
+	 * first, not just the clear.
+	 */
+	if (ctx->wp != NULL && s == &ctx->wp->base &&
+	    !SCREEN_IS_ALTERNATE(s) && screen_write_full_window(ctx->wp) &&
+	    !options_get_number(global_options, "clear-on-attach"))
+		screen_write_collect_flush(ctx, 0, __func__);
+
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
@@ -2400,8 +2431,10 @@ screen_write_collect_scroll(struct screen_write_ctx *ctx, u_int bg)
 		cl = &ctx->s->write_list[y + 1];
 		TAILQ_CONCAT(&ctx->s->write_list[y].items, &cl->items, entry);
 		ctx->s->write_list[y].data = cl->data;
+		ctx->s->write_list[y].cleared = cl->cleared;
 	}
 	ctx->s->write_list[s->rlower].data = saved;
+	ctx->s->write_list[s->rlower].cleared = 0;
 
 	ci = screen_write_get_citem();
 	ci->x = 0;
@@ -2438,8 +2471,11 @@ screen_write_collect_flush_scrolled(struct screen_write_ctx *ctx)
 		ttyctx.orlower -= (wp->yoff + wp->sy - wp->window->sy);
 	ttyctx.n = ctx->scrolled;
 	ttyctx.bg = ctx->bg;
-	if (ctx->scrolled == 1 && ctx->scroll_wrapped)
+	if (ctx->scrolled == 1 && ctx->scroll_wrapped) {
 		ttyctx.flags |= TTY_CTX_WRAPPED;
+		if (ctx->scroll_wrapped == 2)
+			ttyctx.flags |= TTY_CTX_WRAPWIDE;
+	}
 	tty_write(tty_cmd_scrollup, &ttyctx);
 
 	if (wp != NULL)
@@ -2476,6 +2512,26 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 	}
 	if (y + yoff >= wsy)
 		return (0);
+
+	/*
+	 * The line was erased and new text written from its start: the text
+	 * replaces the erase's first cells, but erasing the whole line is also
+	 * what tells a terminal that it no longer continues the line above.
+	 * With the terminal keeping its own scrollback, where that decides how
+	 * the lines are selected and reflowed, erase it first.
+	 */
+	ci = TAILQ_FIRST(&cl->items);
+	if (cl->cleared != 0 && ci != NULL && ci->x == 0 &&
+	    ci->type == TEXT && !ci->wrapped && wp != NULL &&
+	    screen_write_full_window(wp) &&
+	    !options_get_number(global_options, "clear-on-attach")) {
+		screen_write_set_cursor(ctx, 0, y);
+		screen_write_initctx(ctx, &ttyctx, 1, 0);
+		ttyctx.bg = cl->cleared - 1;
+		ttyctx.n = screen_size_x(s);
+		tty_write(tty_cmd_clearcharacter, &ttyctx);
+	}
+	cl->cleared = 0;
 
 	r = window_visible_ranges(wp, 0, y + yoff, wsx, NULL);
 	TAILQ_FOREACH_SAFE(ci, &cl->items, entry, tmp) {
@@ -2521,7 +2577,15 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 			} else {
 				screen_write_initctx(ctx, &ttyctx, 0, 0);
 				ttyctx.cell = &ci->gc;
-				if (ci->wrapped)
+				/*
+				 * The item may have taken the mark from one it
+				 * replaced (screen_write_collect_trim): only
+				 * while the line above still wraps into this.
+				 */
+				if (ci->wrapped && w_start == 0 &&
+				    s->grid->hsize + y != 0 &&
+				    (grid_get_line(s->grid, s->grid->hsize + y -
+				    1)->flags & GRID_LINE_WRAPPED))
 					ttyctx.flags |= TTY_CTX_WRAPPED;
 				ttyctx.data.data = cl->data + w_start;
 				ttyctx.data.size = w_length;
@@ -2575,6 +2639,15 @@ screen_write_collect_flush(struct screen_write_ctx *ctx, int scroll_only,
 		return;
 
 	cx = s->cx; cy = s->cy;
+	/*
+	 * Only while the row above has nothing new: then the line that wrapped
+	 * is what the terminal already has, and this continues it.
+	 */
+	y = s->write_wrap;
+	s->write_wrap = 0;
+	if (y != 0 && y <= screen_size_y(s) &&
+	    (y == 1 || TAILQ_EMPTY(&s->write_list[y - 2].items)))
+		items += screen_write_collect_flush_line(ctx, y - 1);
 	for (y = 0; y < screen_size_y(s); y++)
 		items += screen_write_collect_flush_line(ctx, y);
 	s->cx = cx; s->cy = cy;
@@ -2809,7 +2882,7 @@ screen_write_cell(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	struct tty_ctx		 ttyctx;
 	u_int			 sx = screen_size_x(s), sy = screen_size_y(s);
 	u_int			 width = ud->width, xx, not_wrap, i, n, vis;
-	int			 selected, skip = 1, redraw = 0;
+	int			 selected, skip = 1, redraw = 0, wrapped = 0;
 	int			 yoff = 0, xoff = 0;
 	struct visible_ranges	*r;
 	struct visible_range	*ri;
@@ -2840,15 +2913,20 @@ screen_write_cell(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	/* Check this will fit on the current line and wrap if not. */
 	if ((s->mode & MODE_WRAP) && s->cx > sx - width) {
 		log_debug("%s: wrapped at %u,%u", __func__, s->cx, s->cy);
-		screen_write_linefeed(ctx, 1, 8);
+		/* 2: a wide character that does not fit in the last column. */
+		screen_write_linefeed(ctx, s->cx < sx ? 2 : 1, 8);
 		screen_write_set_cursor(ctx, 0, -1);
 		screen_write_collect_flush(ctx, 0, __func__);
+		wrapped = 1;
 	}
 
 	/* Sanity check cursor position. */
 	if (s->cx > sx - width || s->cy > sy - 1)
 		return;
 	screen_write_initctx(ctx, &ttyctx, 0, 0);
+	/* Continues the line above: a terminal waiting to wrap can do it. */
+	if (wrapped)
+		ttyctx.flags |= TTY_CTX_WRAPPED;
 
 	/* Handle overwriting of UTF-8 characters. */
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
