@@ -378,6 +378,7 @@ screen_write_init(struct screen_write_ctx *ctx, struct screen *s)
 	ctx->item = screen_write_get_citem();
 
 	ctx->scrolled = 0;
+	ctx->scroll_wrapped = 0;
 	ctx->bg = 8;
 }
 
@@ -1939,6 +1940,16 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 		cx = s->cx;
 		cy = s->cy;
 		screen_write_collect_flush_line(ctx, s->rupper);
+		/*
+		 * The row scrolling up from the bottom too, in the order a
+		 * terminal without tmux receives it: the line, then the scroll.
+		 * A wrapping line then leaves the terminal waiting to wrap at
+		 * its end, so the next character can do the scroll (see
+		 * tty_cmd_scrollup) and a continuation written before the next
+		 * scroll consumes it.
+		 */
+		if (cy != s->rupper)
+			screen_write_collect_flush_line(ctx, cy);
 		s->cx = cx;
 		s->cy = cy;
 	}
@@ -1946,6 +1957,7 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 	grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
 	screen_write_collect_scroll(ctx, bg);
 	ctx->scrolled++;
+	ctx->scroll_wrapped = wrapped;
 
 	if (passthrough)
 		screen_write_collect_flush(ctx, 1, __func__);
@@ -1984,6 +1996,7 @@ screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 		screen_write_collect_scroll(ctx, bg);
 	}
 	ctx->scrolled += lines;
+	ctx->scroll_wrapped = 0;
 }
 
 /* Scroll down. */
@@ -2425,6 +2438,8 @@ screen_write_collect_flush_scrolled(struct screen_write_ctx *ctx)
 		ttyctx.orlower -= (wp->yoff + wp->sy - wp->window->sy);
 	ttyctx.n = ctx->scrolled;
 	ttyctx.bg = ctx->bg;
+	if (ctx->scrolled == 1 && ctx->scroll_wrapped)
+		ttyctx.flags |= TTY_CTX_WRAPPED;
 	tty_write(tty_cmd_scrollup, &ttyctx);
 
 	if (wp != NULL)
@@ -2552,6 +2567,7 @@ screen_write_collect_flush(struct screen_write_ctx *ctx, int scroll_only,
 		if (!screen_write_collect_flush_scrolled(ctx))
 			goto discard;
 		ctx->scrolled = 0;
+		ctx->scroll_wrapped = 0;
 	}
 	ctx->bg = 8;
 
@@ -2575,6 +2591,7 @@ discard:
 		}
 	}
 	ctx->scrolled = 0;
+	ctx->scroll_wrapped = 0;
 	ctx->bg = 8;
 }
 
@@ -3243,6 +3260,7 @@ screen_write_sixelimage(struct screen_write_ctx *ctx, struct sixel_image *si,
 			screen_write_collect_scroll(ctx, bg);
 		}
 		ctx->scrolled += lines;
+		ctx->scroll_wrapped = 0;
 		if (lines > cy)
 			screen_write_cursormove(ctx, -1, 0, 0);
 		else
