@@ -2691,7 +2691,13 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 		tty_repeat_requests(&c->tty, 0);
 		recalculate_sizes();
 		server_redraw_client(c);
-		if (c->session != NULL)
+		/*
+		 * The client also sends MSG_RESIZE when it becomes ready, in
+		 * case of a SIGWINCH while it was starting; that is not a
+		 * resize unless the size changed.
+		 */
+		if (c->session != NULL &&
+		    (c->tty.sx != old_sx || c->tty.sy != old_sy))
 			server_client_fire_resized(c, old_sx, old_sy);
 		break;
 	case MSG_EXITING:
