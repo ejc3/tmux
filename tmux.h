@@ -930,6 +930,7 @@ struct grid {
 	u_int			 hlimit;
 
 	u_int			 scroll_added;
+	u_int			 scroll_view;	/* full-screen scrolls into history */
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
 
@@ -1107,6 +1108,7 @@ struct screen {
 #endif
 
 	struct screen_write_cline	*write_list;
+	u_int				 write_wrap;	/* row + 1 */
 
 	struct hyperlinks		*hyperlinks;
 	struct progress_bar		 progress_bar;
@@ -1833,6 +1835,13 @@ struct tty {
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
 	int		 flags;
 
+	/*
+	 * The pane whose history this terminal's scrollback follows, and how
+	 * many of its full-screen scrolls (grid scroll_view) have reached it.
+	 */
+	u_int		 hist_pane;
+	u_int		 hist_seen;
+
 	struct tty_term	*term;
 
 	u_int		 mouse_last_x;
@@ -1871,6 +1880,7 @@ struct tty_ctx {
 #define TTY_CTX_SYNC 0x8
 #define TTY_CTX_CELL_INVALIDATE 0x20
 #define TTY_CTX_PANE_OBSCURED 0x40
+#define TTY_CTX_WRAPWIDE 0x80
 
 	union {
 		u_int			 n;
@@ -2982,6 +2992,8 @@ void	tty_cmd_insertcharacter(struct tty *, const struct tty_ctx *);
 void	tty_cmd_insertline(struct tty *, const struct tty_ctx *);
 void	tty_cmd_linefeed(struct tty *, const struct tty_ctx *);
 void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
+void	tty_cmd_history(struct tty *, const struct tty_ctx *);
+void	tty_catch_up_history(struct tty *, struct window_pane *, int);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);

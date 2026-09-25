@@ -99,6 +99,7 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 #endif
 
 	s->write_list = NULL;
+	s->write_wrap = 0;
 	s->hyperlinks = NULL;
 
 	screen_reinit(s, 1);
