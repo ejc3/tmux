@@ -1,0 +1,1 @@
+open: an alternate screen exit around scroll-region scrolling loses blank lines from the scrollback (depends on timing)
