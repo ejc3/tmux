@@ -2692,6 +2692,45 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp, int pay)
 }
 
 /*
+ * Before the whole of a pane that is the whole terminal is drawn again: which
+ * of the terminal's rows continue the row above is what earlier output left
+ * (perhaps output since thrown away), and drawing over the rows does not
+ * change it. Clear them first, so the terminal joins only the rows the drawing
+ * wraps - except the top row when it continues the last line of the history,
+ * which is in the terminal's scrollback and is not drawn again.
+ */
+void
+tty_forget_wraps(struct tty *tty, struct window_pane *wp)
+{
+	struct grid	*gd;
+
+	if (wp == NULL || SCREEN_IS_ALTERNATE(&wp->base))
+		return;
+	if (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK))
+		return;
+	if (!screen_write_full_window(wp) ||
+	    options_get_number(global_options, "clear-on-attach"))
+		return;
+	if (wp->xoff != 0 || wp->yoff != 0 || wp->sx != tty->sx ||
+	    wp->sy != tty->sy || !tty_term_has(tty->term, TTYC_ED))
+		return;
+	gd = wp->base.grid;
+
+	tty_region_off(tty);
+	tty_margin_off(tty);
+	tty_reset(tty);
+	if (gd->hsize == 0 ||
+	    (~grid_get_line(gd, gd->hsize - 1)->flags & GRID_LINE_WRAPPED)) {
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_EL);
+	}
+	if (tty->sy > 1) {
+		tty_cursor(tty, 0, 1);
+		tty_putcode(tty, TTYC_ED);
+	}
+}
+
+/*
  * Emit a scroll tty_cmd_scrollup left to a wrap that has not happened: the
  * terminal is waiting to wrap at the end of the bottom row.
  */
