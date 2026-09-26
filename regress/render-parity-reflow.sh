@@ -2,8 +2,8 @@
 
 # Lines tmux holds back (synchronized output) reach the terminal's scrollback
 # whole and in order even when the pane is resized, and its history rewrapped,
-# before they are written. An outer tmux pane stands in for the terminal, as in
-# render-parity.sh.
+# before they are written, narrower or wider. An outer tmux pane stands in for
+# the terminal, as in render-parity.sh.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -89,4 +89,10 @@ run() {
 
 failed=0
 run 80 40 0 30 0 || failed=1
+run 80 40 20 5 5 || failed=1
+# Widened, the terminal pulls rows back from its scrollback on to its screen:
+# they go back there, not painted over.
+run 40 80 30 2 15 || failed=1
+run 40 80 30 2 0 || failed=1
+run 40 80 5 30 5 || failed=1
 exit $failed
