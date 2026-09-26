@@ -1856,6 +1856,8 @@ struct tty {
 #define TTY_HAVESYNC 0x10000
 #define TTY_ALTSCREEN 0x20000
 #define TTY_OWESCROLL 0x40000
+#define TTY_WRAPNEXT 0x80000
+#define TTY_WRAPPED0 0x100000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
 	int		 flags;
@@ -1907,6 +1909,7 @@ struct tty_ctx {
 #define TTY_CTX_CELL_INVALIDATE 0x20
 #define TTY_CTX_PANE_OBSCURED 0x40
 #define TTY_CTX_WRAPWIDE 0x80
+#define TTY_CTX_SCROLLEDIN 0x100
 
 	union {
 		u_int			 n;
@@ -3019,8 +3022,10 @@ void	tty_cmd_insertline(struct tty *, const struct tty_ctx *);
 void	tty_cmd_linefeed(struct tty *, const struct tty_ctx *);
 void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
 void	tty_cmd_history(struct tty *, const struct tty_ctx *);
-void	tty_catch_up_history(struct tty *, struct window_pane *, int);
+void	tty_catch_up_history(struct tty *, struct window_pane *);
+int	tty_pane_is_terminal(struct tty *, struct window_pane *);
 void	tty_forget_wraps(struct tty *, struct window_pane *);
+void	tty_replay_history(struct tty *, struct window_pane *, u_int, u_int);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);
@@ -3599,6 +3604,7 @@ char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 void	 screen_write_make_list(struct screen *);
 void	 screen_write_free_list(struct screen *);
 int	 screen_write_full_window(struct window_pane *);
+int	 screen_write_passthrough(struct window_pane *);
 void	 screen_write_start_pane(struct screen_write_ctx *,
 	     struct window_pane *, struct screen *);
 void	 screen_write_start(struct screen_write_ctx *, struct screen *);

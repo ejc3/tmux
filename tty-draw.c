@@ -343,6 +343,28 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 			i += gcp->data.width;
 	}
 
+	/*
+	 * The line wraps on to the next row but its drawing ended before the
+	 * last column (the row was erased or is short): write its last cell
+	 * again so the terminal waits to wrap there and the next row, drawn
+	 * after it, joins it as when the program wrote it.
+	 */
+	if (atx == 0 && nx == tty->sx && py + 1 < gd->sy &&
+	    (~tty->term->flags & TERM_NOAM) &&
+	    (tty->cx < tty->sx || tty->cy != aty)) {
+		gl = grid_get_line(gd, gd->hsize + py);
+		if (gl->flags & GRID_LINE_WRAPPED) {
+			i = nx - 1;
+			grid_view_get_cell(gd, px + i, py, &gc);
+			if ((gc.flags & GRID_FLAG_PADDING) && i != 0)
+				grid_view_get_cell(gd, px + --i, py, &gc);
+			if (~gc.flags & GRID_FLAG_PADDING) {
+				tty_cursor(tty, atx + i, aty);
+				tty_cell(tty, &gc, style_ctx);
+			}
+		}
+	}
+
 out:
 	tty->flags = (tty->flags & ~TTY_NOCURSOR)|flags;
 	tty_update_mode(tty, tty->mode, s);
