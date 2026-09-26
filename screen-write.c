@@ -54,8 +54,7 @@ screen_write_full_window(struct window_pane *wp)
 int
 screen_write_passthrough(struct window_pane *wp)
 {
-	return (screen_write_full_window(wp) &&
-	    !options_get_number(global_options, "clear-on-attach"));
+	return (!clear_on_attach && screen_write_full_window(wp));
 }
 static int	screen_write_overwrite(struct screen_write_ctx *,
 		    struct grid_cell *, u_int);
@@ -333,6 +332,7 @@ screen_write_initctx(struct screen_write_ctx *ctx, struct tty_ctx *ttyctx,
 			ttyctx->style_ctx.palette = &ctx->wp->palette;
 			ttyctx->set_client_cb = screen_write_set_client_cb;
 			ttyctx->arg = ctx->wp;
+			ttyctx->wp = ctx->wp;
 		}
 	}
 
@@ -2637,7 +2637,7 @@ screen_write_collect_flush(struct screen_write_ctx *ctx, int scroll_only,
 {
 	struct screen			*s = ctx->s;
 	struct window_pane		*wp = ctx->wp;
-	u_int				 y, cx, cy, items = 0;
+	u_int				 y, wrap, cx, cy, items = 0;
 	struct screen_write_citem	*ci, *tmp;
 	struct screen_write_cline	*cl;
 
@@ -2670,13 +2670,17 @@ screen_write_collect_flush(struct screen_write_ctx *ctx, int scroll_only,
 	 * Only while the row above has nothing new: then the line that wrapped
 	 * is what the terminal already has, and this continues it.
 	 */
-	y = s->write_wrap;
+	wrap = s->write_wrap;
 	s->write_wrap = 0;
-	if (y != 0 && y <= screen_size_y(s) &&
-	    (y == 1 || TAILQ_EMPTY(&s->write_list[y - 2].items)))
-		items += screen_write_collect_flush_line(ctx, y - 1);
-	for (y = 0; y < screen_size_y(s); y++)
-		items += screen_write_collect_flush_line(ctx, y);
+	if (wrap != 0 && wrap <= screen_size_y(s) &&
+	    (wrap == 1 || TAILQ_EMPTY(&s->write_list[wrap - 2].items)))
+		items += screen_write_collect_flush_line(ctx, wrap - 1);
+	else
+		wrap = 0;
+	for (y = 0; y < screen_size_y(s); y++) {
+		if (y + 1 != wrap)
+			items += screen_write_collect_flush_line(ctx, y);
+	}
 	s->cx = cx; s->cy = cy;
 
 	log_debug("%s: flushed %u items (%s)", __func__, items, from);

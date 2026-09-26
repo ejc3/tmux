@@ -359,7 +359,7 @@ tty_start_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tio) == 0)
 		tcflush(c->fd, TCOFLUSH);
 
-	if (options_get_number(global_options, "clear-on-attach")) {
+	if (clear_on_attach) {
 		tty_putcode(tty, TTYC_SMCUP);
 		tty_putcode(tty, TTYC_CLEAR);
 	} else {
@@ -494,7 +494,7 @@ tty_stop_tty(struct tty *tty)
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_SGR0));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_RMKX));
-	if (options_get_number(global_options, "clear-on-attach"))
+	if (clear_on_attach)
 		tty_raw(tty, tty_term_string(tty->term, TTYC_CLEAR));
 	if (tty->cstyle != SCREEN_CURSOR_DEFAULT) {
 		if (tty_term_has(tty->term, TTYC_SE))
@@ -528,7 +528,7 @@ tty_stop_tty(struct tty *tty)
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMCUP));
 		tty->flags &= ~TTY_ALTSCREEN;
 	}
-	if (options_get_number(global_options, "clear-on-attach"))
+	if (clear_on_attach)
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMCUP));
 	else
 		tty_raw(tty, tty_term_string(tty->term, TTYC_CLEAR));
@@ -1364,8 +1364,7 @@ tty_clear_area(struct tty *tty, const struct tty_ctx *ctx, u_int py,
 	 * lines scrolled off the top of a region at the top of the screen
 	 * (xterm, iTerm2), putting what was erased into its scrollback.
 	 */
-	scroll = (py != 0 || (tty->flags & TTY_ALTSCREEN) ||
-	    options_get_number(global_options, "clear-on-attach"));
+	scroll = (py != 0 || (tty->flags & TTY_ALTSCREEN) || clear_on_attach);
 
 	/* Nothing to clear. */
 	if (nx == 0 || ny == 0)
@@ -1951,7 +1950,7 @@ tty_cmd_scrolldown(struct tty *tty, const struct tty_ctx *ctx)
 static int
 tty_clear_as_sent(struct tty *tty, const struct tty_ctx *ctx)
 {
-	struct window_pane	*wp = ctx->arg;
+	struct window_pane	*wp = ctx->wp;
 
 	if (!tty_pane_is_terminal(tty, wp) || ctx->s != &wp->base)
 		return (0);
@@ -2462,7 +2461,7 @@ tty_rewrap(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy,
 		return (0);
 	if (!tty_full_width(tty, ctx) || ctx->xoff != 0 ||
 	    (tty->term->flags & TERM_NOAM) || (tty->flags & TTY_ALTSCREEN) ||
-	    options_get_number(global_options, "clear-on-attach"))
+	    clear_on_attach)
 		return (0);
 	gd = s->grid;
 	if (~grid_get_line(gd, gd->hsize + cy - 1)->flags & GRID_LINE_WRAPPED)
@@ -2503,13 +2502,6 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
 	tty_cursor(tty, ctx->xoff + cx - ctx->wox, ctx->yoff + cy - ctx->woy);
 }
 
-/*
- * A pane's scroll or clear, which pushed ctx->n lines into its history, is
- * about to be written to this terminal: count them as reaching the terminal
- * (see tty_catch_up_history), which does with them what it does - keeps them
- * in its scrollback or not. Not when the output is being thrown away
- * (TTY_BLOCK) or the terminal is on its alternate screen.
- */
 /*
  * Start following a pane's history from where it is now, or bring the count
  * of the lines that reached this terminal up to date with the pane's grid.
@@ -2571,10 +2563,17 @@ tty_follow_history(struct tty *tty, struct window_pane *wp)
 	tty->hist_gen = gd->scroll_generation;
 }
 
+/*
+ * A pane's scroll or clear, which pushed ctx->n lines into its history, is
+ * about to be written to this terminal: count them as reaching the terminal
+ * (see tty_catch_up_history), which does with them what it does - keeps them
+ * in its scrollback or not. Not when the output is being thrown away
+ * (TTY_BLOCK) or the terminal is on its alternate screen.
+ */
 static void
 tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
 {
-	struct window_pane	*wp = ctx->arg;
+	struct window_pane	*wp = ctx->wp;
 	struct grid		*gd;
 
 	if (wp == NULL || ctx->s != &wp->base || SCREEN_IS_ALTERNATE(&wp->base))
@@ -2596,7 +2595,7 @@ tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
 void
 tty_cmd_history(struct tty *tty, const struct tty_ctx *ctx)
 {
-	struct window_pane	*wp = ctx->arg;
+	struct window_pane	*wp = ctx->wp;
 	int			 ours;
 
 	ours = (wp != NULL && tty->hist_pane == wp->id);
