@@ -510,6 +510,34 @@ grid_scroll_history(struct grid *gd, u_int bg)
 	gd->scroll_added++;
 }
 
+/*
+ * Note that n lines went into the history, and how (GRID_PUSH_*); a scroll
+ * continuing the last one extends it.
+ */
+void
+grid_add_push(struct grid *gd, u_int type, u_int upper, u_int lower, u_int n)
+{
+	struct grid_push	*gp;
+
+	if (n == 0)
+		return;
+	gd->scroll_view += n;
+	if (gd->npushes != 0) {
+		gp = &gd->pushes[(gd->npushes - 1) % GRID_PUSHES];
+		if (gp->type == type && gp->upper == upper &&
+		    gp->lower == lower &&
+		    (type == GRID_PUSH_SCROLL || type == GRID_PUSH_REGION)) {
+			gp->n += n;
+			return;
+		}
+	}
+	gp = &gd->pushes[gd->npushes++ % GRID_PUSHES];
+	gp->type = type;
+	gp->upper = upper;
+	gp->lower = lower;
+	gp->n = n;
+}
+
 /* Clear the history. */
 void
 grid_clear_history(struct grid *gd)

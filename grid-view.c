@@ -61,8 +61,8 @@ grid_view_set_cells(struct grid *gd, u_int px, u_int py,
 	    slen);
 }
 
-/* Clear into history. */
-void
+/* Clear into history, returning how many lines went there. */
+u_int
 grid_view_clear_history(struct grid *gd, u_int bg)
 {
 	struct grid_line	*gl;
@@ -77,7 +77,7 @@ grid_view_clear_history(struct grid *gd, u_int bg)
 	}
 	if (last == 0) {
 		grid_view_clear(gd, 0, 0, gd->sx, gd->sy, bg);
-		return;
+		return (0);
 	}
 
 	/* Scroll the lines into the history. */
@@ -88,6 +88,7 @@ grid_view_clear_history(struct grid *gd, u_int bg)
 	if (last < gd->sy)
 		grid_view_clear(gd, 0, 0, gd->sx, gd->sy - last, bg);
 	gd->hscrolled = 0;
+	return (last);
 }
 
 /* Clear area. */
@@ -110,9 +111,10 @@ grid_view_scroll_region_up(struct grid *gd, u_int rupper, u_int rlower,
 		grid_collect_history(gd, 0);
 		if (rupper == 0 && rlower == gd->sy - 1) {
 			grid_scroll_history(gd, bg);
-			gd->scroll_view++;
+			grid_add_push(gd, GRID_PUSH_SCROLL, 0, 0, 1);
 		}
 		else {
+			grid_add_push(gd, GRID_PUSH_REGION, rupper, rlower, 1);
 			rupper = grid_view_y(gd, rupper);
 			rlower = grid_view_y(gd, rlower);
 			grid_scroll_history_region(gd, rupper, rlower, bg);
