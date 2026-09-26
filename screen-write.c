@@ -61,6 +61,7 @@ struct screen_write_citem {
 	enum { TEXT, CLEAR }		type;
 	u_int				used;
 	u_int				bg;
+	int				scrolled_in;	/* blank from a scroll */
 
 	struct grid_cell		gc;
 
@@ -2434,6 +2435,7 @@ screen_write_collect_trim(struct screen_write_ctx *ctx, u_int y, u_int x,
 		    csx, cex, sx, ex);
 		ci2 = screen_write_get_citem();
 		ci2->type = ci->type;
+		ci2->scrolled_in = ci->scrolled_in;
 		ci2->bg = ci->bg;
 		memcpy(&ci2->gc, &ci->gc, sizeof ci2->gc);
 		TAILQ_INSERT_AFTER(&cl->items, ci, ci2, entry);
@@ -2493,6 +2495,7 @@ screen_write_collect_scroll(struct screen_write_ctx *ctx, u_int bg)
 	ci->used = screen_size_x(s);
 	ci->type = CLEAR;
 	ci->bg = bg;
+	ci->scrolled_in = 1;
 	TAILQ_INSERT_TAIL(&ctx->s->write_list[s->rlower].items, ci, entry);
 }
 
@@ -2546,7 +2549,7 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 	u_int				 last = UINT_MAX, items = 0, wsx, wsy;
 	u_int				 w_length, i;
 	int				 w_start, w_end, xoff, yoff, written;
-	int				 r_start, r_end, c_start, c_end;
+	int				 r_start, r_end, c_start, c_end, passthrough;
 	struct tty_ctx			 ttyctx;
 	struct visible_ranges		*r;
 	struct visible_range		*ri;
@@ -2585,6 +2588,8 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 	}
 	cl->cleared = 0;
 
+	passthrough = (wp != NULL && screen_write_full_window(wp) &&
+	    !options_get_number(global_options, "clear-on-attach"));
 	r = window_visible_ranges(wp, 0, y + yoff, wsx, NULL);
 	TAILQ_FOREACH_SAFE(ci, &cl->items, entry, tmp) {
 		log_debug("collect list: x=%u (last %u), y=%u, used=%u", ci->x,
@@ -2621,6 +2626,19 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 				continue;
 
 			screen_write_set_cursor(ctx, w_start, y);
+			/*
+			 * The terminal's scroll already brought the line in
+			 * blank with the default background; clearing it again
+			 * is not what the program sent, and clearing a whole
+			 * line tells some terminals (tmux) the line above no
+			 * longer wraps into it.
+			 */
+			if (ci->type == CLEAR && ci->scrolled_in && ci->bg == 8 &&
+			    passthrough) {
+				items++;
+				written = 1;
+				continue;
+			}
 			if (ci->type == CLEAR) {
 				screen_write_initctx(ctx, &ttyctx, 1, 0);
 				ttyctx.bg = ci->bg;
