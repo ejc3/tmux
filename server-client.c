@@ -2350,10 +2350,11 @@ server_client_any_pane_redraw(struct client *c)
 /*
  * Replay the current window's history to a client whose terminal keeps its
  * own scrollback. The terminal has one buffer for every window, so clear it
- * and write this window's history and screen in its place. Only a pane that
- * fills the window can reach the terminal's scrollback.
+ * and write this window's history in its place; the redraw that follows
+ * paints the screen. Only a pane that is the whole terminal reaches its
+ * scrollback. Returns whether the history was replayed.
  */
-void
+int
 server_client_replay_scroll(struct client *c)
 {
 	struct window		*w;
@@ -2367,26 +2368,26 @@ server_client_replay_scroll(struct client *c)
 	 * the replay happens when the terminal is back on the primary screen.
 	 */
 	if (c->tty.flags & TTY_ALTSCREEN)
-		return;
+		return (0);
 	c->flags &= ~CLIENT_REPLAYSCROLL;
 
 	if (c->session == NULL || c->session->curw == NULL)
-		return;
+		return (0);
 	w = c->session->curw->window;
 	if ((wp = w->active) == NULL)
-		return;
+		return (0);
 	lines = options_get_number(w->options, "scroll-replay");
 	if (lines == 0)
-		return;
+		return (0);
 
 	/*
 	 * Only when the terminal keeps its own scrollback and the pane is the
 	 * whole of it, so the history goes where the pane's rows scroll.
 	 */
 	if (!tty_pane_is_terminal(&c->tty, wp))
-		return;
+		return (0);
 	if (!tty_term_has(c->tty.term, TTYC_E3))
-		return;
+		return (0);
 
 	gd = wp->base.grid;
 	n = gd->hsize;
@@ -2408,6 +2409,7 @@ server_client_replay_scroll(struct client *c)
 
 	/* The tty contents are now unknown; force a full redraw. */
 	tty_invalidate(&c->tty);
+	return (1);
 }
 
 /* Check for client redraws. */
