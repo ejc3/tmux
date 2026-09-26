@@ -1936,8 +1936,17 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 	int			 passthrough;
 
 	gl = grid_get_line(gd, gd->hsize + s->cy);
-	if (wrapped)
+	if (wrapped) {
 		gl->flags |= GRID_LINE_WRAPPED;
+
+		/*
+		 * Wrapping on from this row changes it even when nothing is
+		 * written to it (a blank row the cursor waited at the end
+		 * of): in a sync, draw it again with the rest.
+		 */
+		if (s->mode & MODE_SYNC)
+			screen_write_should_draw_line(ctx, s->cy);
+	}
 
 	log_debug("%s: at %u,%u (region %u-%u)", __func__, s->cx, s->cy,
 	    rupper, rlower);
