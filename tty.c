@@ -36,6 +36,8 @@
 static int	tty_log_fd = -1;
 
 static void	tty_count_history(struct tty *, const struct tty_ctx *);
+static int	tty_rewrap(struct tty *, const struct tty_ctx *, u_int, u_int,
+		    u_int);
 static void	tty_pay_scroll(struct tty *);
 static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
@@ -2368,10 +2370,58 @@ tty_cursor_pane_unless_wrap(struct tty *tty, const struct tty_ctx *ctx,
 	    (tty->term->flags & TERM_NOAM) ||
 	    ctx->xoff + cx != 0 ||
 	    (!next && !owed) ||
-	    tty->cx + width <= tty->sx)
-		tty_cursor_pane(tty, ctx, cx, cy);
-	else
+	    tty->cx + width <= tty->sx) {
+		if (!tty_rewrap(tty, ctx, cx, cy, width))
+			tty_cursor_pane(tty, ctx, cx, cy);
+	} else
 		log_debug("%s: will wrap at %u,%u", __func__, tty->cx, tty->cy);
+}
+
+/*
+ * A line continues from the row above but the terminal is not waiting to
+ * wrap at the end of that row (something else was written since, or the
+ * rows are drawn out of order). With the terminal keeping its own
+ * scrollback, where it decides how lines are selected and reflowed, write
+ * the last cell of the row above again - the same cell - so it is, and the
+ * continuation wraps there.
+ */
+static int
+tty_rewrap(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy,
+    u_int width)
+{
+	struct screen		*s = ctx->s;
+	struct grid		*gd;
+	struct grid_cell	 gc;
+	u_int			 x;
+
+	if ((~ctx->flags & TTY_CTX_WRAPPED) || s == NULL || cx != 0 || cy == 0)
+		return (0);
+	if (!tty_full_width(tty, ctx) || ctx->xoff != 0 ||
+	    (tty->term->flags & TERM_NOAM) || (tty->flags & TTY_ALTSCREEN) ||
+	    options_get_number(global_options, "clear-on-attach"))
+		return (0);
+	gd = s->grid;
+	if (~grid_get_line(gd, gd->hsize + cy - 1)->flags & GRID_LINE_WRAPPED)
+		return (0);
+
+	x = screen_size_x(s) - 1;
+	grid_view_get_cell(gd, x, cy - 1, &gc);
+	if (gc.flags & GRID_FLAG_PADDING) {
+		if (x == 0)
+			return (0);
+		grid_view_get_cell(gd, --x, cy - 1, &gc);
+		if (gc.data.width != 2)
+			return (0);
+	}
+	tty_cursor_pane(tty, ctx, x, cy - 1);
+	tty_cell(tty, &gc, &ctx->style_ctx);
+	if (tty->cx + width <= tty->sx ||
+	    ctx->yoff + cy != tty->cy + 1 || tty->cy == tty->rlower) {
+		tty_cursor_pane(tty, ctx, cx, cy);	/* did not work */
+		return (1);
+	}
+	log_debug("%s: will wrap at %u,%u", __func__, tty->cx, tty->cy);
+	return (1);
 }
 
 /* Move cursor inside pane. */
