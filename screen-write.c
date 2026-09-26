@@ -46,6 +46,17 @@ screen_write_full_window(struct window_pane *wp)
 	return (wp->xoff == 0 && wp->yoff == 0 &&
 	    wp->sx == wp->window->sx && wp->sy == wp->window->sy);
 }
+
+/*
+ * Whether a pane's output goes through to a terminal keeping its own
+ * scrollback: the pane fills its window and clear-on-attach is off.
+ */
+int
+screen_write_passthrough(struct window_pane *wp)
+{
+	return (screen_write_full_window(wp) &&
+	    !options_get_number(global_options, "clear-on-attach"));
+}
 static int	screen_write_overwrite(struct screen_write_ctx *,
 		    struct grid_cell *, u_int);
 static int	screen_write_combine(struct screen_write_ctx *,
@@ -1957,8 +1968,7 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 	 * would otherwise emit the scroll first and drop this row's pending
 	 * write, and the terminal would file away whatever it last had there.
 	 */
-	passthrough = (screen_write_full_window(ctx->wp) &&
-	    !options_get_number(global_options, "clear-on-attach"));
+	passthrough = screen_write_passthrough(ctx->wp);
 	if (passthrough) {
 		/*
 		 * Every row, top to bottom, in the order a terminal without
@@ -2003,8 +2013,7 @@ screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 		lines = s->rlower - s->rupper + 1;
 
 	/* See screen_write_linefeed(). */
-	if (screen_write_full_window(ctx->wp) &&
-	    !options_get_number(global_options, "clear-on-attach"))
+	if (screen_write_passthrough(ctx->wp))
 		screen_write_collect_flush(ctx, 0, __func__);
 
 	if (bg != ctx->bg) {
@@ -2087,6 +2096,12 @@ screen_write_clearendofscreen(struct screen_write_ctx *ctx, u_int bg)
 	if (image_check_line(s, s->cy, sy - s->cy) && ctx->wp != NULL)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
+
+	/* From the top left, as screen_write_clearscreen. */
+	if (s->cx == 0 && s->cy == 0 &&
+	    ctx->wp != NULL && s == &ctx->wp->base &&
+	    !SCREEN_IS_ALTERNATE(s) && screen_write_passthrough(ctx->wp))
+		screen_write_collect_flush(ctx, 0, __func__);
 
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
@@ -2249,8 +2264,7 @@ screen_write_clearscreen(struct screen_write_ctx *ctx, u_int bg)
 	 * first, not just the clear.
 	 */
 	if (ctx->wp != NULL && s == &ctx->wp->base &&
-	    !SCREEN_IS_ALTERNATE(s) && screen_write_full_window(ctx->wp) &&
-	    !options_get_number(global_options, "clear-on-attach"))
+	    !SCREEN_IS_ALTERNATE(s) && screen_write_passthrough(ctx->wp))
 		screen_write_collect_flush(ctx, 0, __func__);
 
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
@@ -2417,6 +2431,7 @@ screen_write_collect_clear(struct screen_write_ctx *ctx, u_int y, u_int n)
 	for (i = y; i < y + n; i++) {
 		cl = &ctx->s->write_list[i];
 		TAILQ_CONCAT(&screen_write_citem_freelist, &cl->items, entry);
+		cl->cleared = 0;
 	}
 }
 
@@ -2532,8 +2547,7 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 	ci = TAILQ_FIRST(&cl->items);
 	if (cl->cleared != 0 && ci != NULL && ci->x == 0 &&
 	    ci->type == TEXT && !ci->wrapped && wp != NULL &&
-	    screen_write_full_window(wp) &&
-	    !options_get_number(global_options, "clear-on-attach")) {
+	    screen_write_passthrough(wp)) {
 		screen_write_set_cursor(ctx, 0, y);
 		screen_write_initctx(ctx, &ttyctx, 1, 0);
 		ttyctx.bg = cl->cleared - 1;
@@ -2542,8 +2556,7 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 	}
 	cl->cleared = 0;
 
-	passthrough = (wp != NULL && screen_write_full_window(wp) &&
-	    !options_get_number(global_options, "clear-on-attach"));
+	passthrough = (wp != NULL && screen_write_passthrough(wp));
 	r = window_visible_ranges(wp, 0, y + yoff, wsx, NULL);
 	TAILQ_FOREACH_SAFE(ci, &cl->items, entry, tmp) {
 		log_debug("collect list: x=%u (last %u), y=%u, used=%u", ci->x,
@@ -2580,23 +2593,13 @@ screen_write_collect_flush_line(struct screen_write_ctx *ctx, u_int y)
 				continue;
 
 			screen_write_set_cursor(ctx, w_start, y);
-			/*
-			 * The terminal's scroll already brought the line in
-			 * blank with the default background; clearing it again
-			 * is not what the program sent, and clearing a whole
-			 * line tells some terminals (tmux) the line above no
-			 * longer wraps into it.
-			 */
-			if (ci->type == CLEAR && ci->scrolled_in && ci->bg == 8 &&
-			    passthrough) {
-				items++;
-				written = 1;
-				continue;
-			}
 			if (ci->type == CLEAR) {
 				screen_write_initctx(ctx, &ttyctx, 1, 0);
 				ttyctx.bg = ci->bg;
 				ttyctx.n = w_length;
+				/* See tty_cmd_clearcharacter. */
+				if (ci->scrolled_in && passthrough)
+					ttyctx.flags |= TTY_CTX_SCROLLEDIN;
 				tty_write(tty_cmd_clearcharacter, &ttyctx);
 			} else {
 				screen_write_initctx(ctx, &ttyctx, 0, 0);
@@ -2686,6 +2689,7 @@ discard:
 			TAILQ_REMOVE(&cl->items, ci, entry);
 			screen_write_free_citem(ci);
 		}
+		cl->cleared = 0;
 	}
 	ctx->scrolled = 0;
 	ctx->scroll_wrapped = 0;
@@ -3351,8 +3355,7 @@ screen_write_sixelimage(struct screen_write_ctx *ctx, struct sixel_image *si,
 	if (sy <= y) {
 		lines = y - sy + 1;
 		/* Before image_scroll_up() sets PANE_REDRAW and flushes discard. */
-		if (screen_write_full_window(ctx->wp) &&
-		    !options_get_number(global_options, "clear-on-attach"))
+		if (screen_write_passthrough(ctx->wp))
 			screen_write_collect_flush(ctx, 0, __func__);
 		if (image_scroll_up(s, lines) && ctx->wp != NULL)
 			ctx->wp->flags |= PANE_REDRAW;

@@ -345,6 +345,10 @@ server_client_set_session(struct client *c, struct session *s)
 	if (old != NULL && old->curw != NULL)
 		window_update_focus(old->curw->window);
 	if (s != NULL) {
+		/* Another window: replay its history (see session_set_current). */
+		if (old != NULL && old->curw != NULL &&
+		    old->curw->window != s->curw->window)
+			c->flags |= CLIENT_REPLAYSCROLL;
 		s->curw->window->latest = c;
 		recalculate_sizes();
 		window_update_focus(s->curw->window);
@@ -2343,7 +2347,6 @@ server_client_any_pane_redraw(struct client *c)
 	return (0);
 }
 
-/* Check for client redraws. */
 /*
  * Replay the current window's history to a client whose terminal keeps its
  * own scrollback. The terminal has one buffer for every window, so clear it
@@ -2356,10 +2359,7 @@ server_client_replay_scroll(struct client *c)
 	struct window		*w;
 	struct window_pane	*wp;
 	struct grid		*gd;
-	struct grid_cell	*gc = NULL;
-	u_int			 lines, n, total, i, start;
-	char			*line, *buf;
-	size_t			 linelen, buflen;
+	u_int			 lines, n, start;
 
 	/*
 	 * In the terminal's alternate screen there is no scrollback to replay
@@ -2378,14 +2378,18 @@ server_client_replay_scroll(struct client *c)
 	lines = options_get_number(w->options, "scroll-replay");
 	if (lines == 0)
 		return;
-	if (!screen_write_full_window(wp))
+
+	/*
+	 * Only when the terminal keeps its own scrollback and the pane is the
+	 * whole of it, so the history goes where the pane's rows scroll.
+	 */
+	if (!tty_pane_is_terminal(&c->tty, wp))
 		return;
 	if (!tty_term_has(c->tty.term, TTYC_E3))
 		return;
 
 	gd = wp->base.grid;
 	n = gd->hsize;
-	total = n + gd->sy;
 	start = (n > lines) ? n - lines : 0;
 
 	/* A deliberate large write; do not let tty_block_maybe() drop it. */
@@ -2395,39 +2399,18 @@ server_client_replay_scroll(struct client *c)
 	tty_putcode(&c->tty, TTYC_E3);
 
 	/*
-	 * Write the history then the visible rows, with no newline after the
-	 * last, so the terminal shows the pane's screen with the history above
-	 * it and the redraw repaints the same rows in place. History alone
-	 * would leave its last screenful on screen for the redraw to overwrite.
+	 * The history goes to the scrollback as it went there when the pane
+	 * scrolled (wrapped lines kept whole); the redraw that follows paints
+	 * the visible rows.
 	 */
-	buf = NULL;
-	buflen = 0;
-	for (i = start; i < total; i++) {
-		line = grid_string_cells(gd, 0, i, gd->sx, &gc,
-		    GRID_STRING_WITH_SEQUENCES|GRID_STRING_TRIM_SPACES,
-		    &wp->base);
-		linelen = strlen(line);
-		buf = xrealloc(buf, buflen + linelen + 3);
-		memcpy(buf + buflen, line, linelen);
-		buflen += linelen;
-		if (i + 1 < total) {
-			buf[buflen++] = '\r';
-			buf[buflen++] = '\n';
-		}
-		free(line);
-	}
-	if (buf != NULL) {
-		buf[buflen] = '\0';
-		tty_puts(&c->tty, buf);
-		free(buf);
-	}
-	log_debug("%s: replayed %u history + %u visible lines", c->name,
-	    n - start, gd->sy);
+	tty_replay_history(&c->tty, wp, start, n - start);
+	log_debug("%s: replayed %u history lines", c->name, n - start);
 
 	/* The tty contents are now unknown; force a full redraw. */
 	tty_invalidate(&c->tty);
 }
 
+/* Check for client redraws. */
 static void
 server_client_check_redraw(struct client *c)
 {

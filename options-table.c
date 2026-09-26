@@ -313,7 +313,9 @@ const struct options_table_entry options_table[] = {
 	  .text = "Whether to use the alternate screen and clear it when "
 		  "a client is attached. When disabled, tmux does not "
 		  "enter the alternate screen on attach so terminal "
-		  "content before tmux remains in scrollback. A full-window pane in its own alternate screen switches the terminal to its alternate screen."
+		  "content before tmux remains in scrollback. A full-window "
+		  "pane in its own alternate screen switches the terminal to "
+		  "its alternate screen."
 	},
 
 	{ .name = "command-alias",
@@ -1706,7 +1708,8 @@ const struct options_table_entry options_table[] = {
 	  .default_num = 0,
 	  .text = "Number of lines of history to write to the client's terminal, "
 		  "after clearing its saved lines, when a window becomes current. "
-		  "For terminals that keep their own scrollback. Zero disables."
+		  "Only with clear-on-attach off and the pane filling the "
+		  "terminal. Zero disables."
 	},
 
 	{ .name = "switch-mode-match-style",
@@ -1717,8 +1720,6 @@ const struct options_table_entry options_table[] = {
 	  .separator = ",",
 	  .text = "Style of matched characters in switch mode."
 	},
-
-
 
 	{ .name = "synchronize-panes",
 	  .type = OPTIONS_TABLE_FLAG,
