@@ -335,6 +335,9 @@ BEGIN {
 	start("sync-after-wrap"); fuzz(16, "23 24")
 	start("region-left-set"); fuzz(17, "2 6 7")
 	start("held-clear-after-full-row"); fuzz(2, "25 27 28 30 33")
+	# A synchronized update wrapping on from a blank row the cursor waited
+	# at the end of (after deleting lines): that row is drawn again too.
+	start("sync-wrap-from-blank"); fuzz(11, "20 23 25 26")
 	# Output thrown away while the pane waits to be drawn again (here an
 	# erase over an image) leaves no mark: a later short write does not
 	# erase the rest of its row.
