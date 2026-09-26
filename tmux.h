@@ -954,6 +954,17 @@ struct grid {
 	int			 rpush_wrapped;	/* last push, from a region */
 	u_int			 rpush_upper;
 	u_int			 rpush_lower;
+
+	/*
+	 * The last reflow: where each old history row (from reflow_first)
+	 * went, the pushes and history rows then, and history rows after.
+	 */
+	u_int			*reflow_map;
+	u_int			 reflow_first;
+	u_int			 reflow_view;
+	u_int			 reflow_hsize;
+	u_int			 reflow_newh;
+	u_int			 reflow_gen;
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
 
