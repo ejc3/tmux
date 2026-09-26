@@ -1774,6 +1774,7 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 			tty->hist_seen = loop->base.grid->scroll_view;
 		} else
 			tty_catch_up_history(tty, loop, 1);
+		tty_forget_wraps(tty, loop);
 	}
 
 	if (wp != NULL)
