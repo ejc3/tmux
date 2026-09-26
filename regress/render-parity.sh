@@ -21,6 +21,7 @@ PATH=/bin:/usr/bin
 TERM=screen
 LC_ALL=C.UTF-8
 export PATH TERM LC_ALL
+E=$(printf '\033')
 
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
 OUTER="$TEST_TMUX -LtestA$$ -f/dev/null"
@@ -92,19 +93,42 @@ colours() {
 
 # From the last marker on, trailing blanks and blank lines dropped. Hyperlink
 # ids only group cells for hover and tmux numbers its own, so they are not
-# compared.
+# compared. A row ending in blank cells ends in the escapes that return to
+# the default for them (a cell cleared and one never written look the same),
+# which are dropped with the blanks.
 tidy() {
 	awk '/@@render-parity@@/ { n = 0; delete l } { l[n++] = $0 }
 	    END { for (i = 0; i < n; i++) print l[i] }' |
-	    sed -e 's/[[:space:]]*$//' -e 's/\]8;[^;]*;/]8;;/g' |
+	    sed -e 's/[[:space:]]*$//' -e 's/\]8;[^;]*;/]8;;/g' \
+	    -e :t -e "s/$E\\[0m\$//;tt" -e "s/$E\\[39m\$//;tt" \
+	    -e "s/$E\\[49m\$//;tt" -e "s/$E\\[59m\$//;tt" \
+	    -e "s/$E]8;;$E\\\\\$//;tt" -e 's/[[:space:]]*$//' |
 	    sed -f $DIR/colours.sed |
 	    sed -e :a -e '/^\n*$/{$d;N;ba' -e '}'
+}
+
+# Each row of history and screen with attributes and hyperlinks, captured on
+# its own (fifty to a command line): capture-pane -e writes only what changes
+# from one cell to the next, row after row, so a row's escapes would depend on
+# the row before.
+rows() {
+	set -- "$1" $($OUTER display -pt "$1" '#{history_size} #{pane_height}')
+	i=$((0 - $2))
+	while [ $i -lt $3 ]; do
+		cmd="capturep -peNt $1 -S $i -E $i"
+		n=1
+		while [ $((i += 1)) -lt $3 ] && [ $n -lt 50 ]; do
+			cmd="$cmd \\; capturep -peNt $1 -S $i -E $i"
+			n=$((n + 1))
+		done
+		eval "$OUTER $cmd"
+	done
 }
 
 # Everything the terminal holds: history and screen with attributes and
 # hyperlinks, the same with wrapped lines joined, and the cursor.
 snapshot() {
-	$OUTER capturep -peNt "$1" -S- -E- | tidy
+	rows "$1" | tidy
 	# Which rows continue the row above. Spaces are left out here: a cell
 	# tmux cleared by writing a space and one the terminal cleared look the
 	# same, and the rows above already compare them in place.

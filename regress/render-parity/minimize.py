@@ -8,6 +8,7 @@ the generator's operations; each candidate is split into chunks as the
 generator does).
 """
 import os, random, subprocess, sys, tempfile
+sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generate
 
