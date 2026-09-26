@@ -2511,7 +2511,7 @@ tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
     u_int last, u_int y)
 {
 	struct grid		*gd = wp->base.grid;
-	struct grid_cell	*gc = NULL;
+	struct grid_cell	*gc;
 	u_int			 k;
 	int			 flags;
 	char			*line;
@@ -2523,6 +2523,13 @@ tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
 	}
 	tty_cursor(tty, 0, y);
 	for (k = first; k <= last; k++) {
+		/*
+		 * Each line from the default: a line's string ends its
+		 * hyperlink, so the next must open it again.
+		 */
+		if (k != first)
+			tty_putcode(tty, TTYC_SGR0);
+		gc = NULL;
 		flags = GRID_STRING_WITH_SEQUENCES;
 		if (k == last || (~grid_get_line(gd, k)->flags & GRID_LINE_WRAPPED))
 			flags |= GRID_STRING_TRIM_SPACES;
