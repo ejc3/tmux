@@ -951,6 +951,9 @@ struct grid {
 	u_int			 scroll_view;	/* lines pushed into history */
 	struct grid_push	 pushes[GRID_PUSHES]; /* the latest, how */
 	u_int			 npushes;
+	int			 rpush_wrapped;	/* last push, from a region */
+	u_int			 rpush_upper;
+	u_int			 rpush_lower;
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
 
