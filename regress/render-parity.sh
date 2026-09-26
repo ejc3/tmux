@@ -335,6 +335,16 @@ BEGIN {
 	start("sync-after-wrap"); fuzz(16, "23 24")
 	start("region-left-set"); fuzz(17, "2 6 7")
 	start("held-clear-after-full-row"); fuzz(2, "25 27 28 30 33")
+	# Output thrown away while the pane waits to be drawn again (here an
+	# erase over an image) leaves no mark: a later short write does not
+	# erase the rest of its row.
+	start("held-erase-image")
+	k(lines(10, 60, 28) CSI "20;30H" E "Pq#0;2;100;0;0#0~~@@vv@@~~@@~~$-" E "\\")
+	k(CSI "20;1H" CSI "2KWXYZWXYZWXYZ"); k(CSI "20;1HOK" CSI "24;1H")
+	# The rows drawn again after a synchronized update do not keep a wrap
+	# into the next the program's erase ended.
+	start("sync-erase-continuation")
+	k(rep("s", 120) CSI "?2026h\r\n\r\n" CSI "2A" CSI "2Kshort" CSI "?2026l"); k("\r\n")
 	start("sync-link-wrap")
 	k(CSI "?2026h" link("https://example.com/w", rep("w", 100)) rep("\r\n", 30) CSI "?2026l"); k("\r\n")
 
