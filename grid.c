@@ -1620,15 +1620,14 @@ grid_reflow(struct grid *gd, u_int sx)
 	 */
 	ohsize = gd->hsize;
 	first = (ohsize > 10000) ? ohsize - 10000 : 0;
-	map = (ohsize > first) ? xreallocarray(NULL, ohsize - first,
-	    sizeof *map) : NULL;
+	map = xreallocarray(NULL, ohsize + gd->sy + 1 - first, sizeof *map);
 
 	/*
 	 * Loop over each source line.
 	 */
 	for (yy = 0; yy < gd->hsize + gd->sy; yy++) {
 		gl = &gd->linedata[yy];
-		if (yy >= first && yy < ohsize) {
+		if (yy >= first) {
 			if ((gl->flags & GRID_LINE_DEAD) && target->sy != 0)
 				map[yy - first] = target->sy - 1; /* joined */
 			else
@@ -1686,6 +1685,8 @@ grid_reflow(struct grid *gd, u_int sx)
 			grid_reflow_move(target, gl);
 	}
 
+	map[ohsize + gd->sy - first] = target->sy;	/* the end */
+
 	/*
 	 * Replace the old grid with the new.
 	 */
@@ -1708,6 +1709,7 @@ grid_reflow(struct grid *gd, u_int sx)
 	gd->reflow_first = first;
 	gd->reflow_view = gd->scroll_view;
 	gd->reflow_hsize = ohsize;
+	gd->reflow_osy = gd->sy;
 	gd->reflow_newh = gd->hsize;
 	gd->reflow_gen = gd->scroll_generation;
 }
