@@ -105,8 +105,9 @@ function text(	t, n, i, o) {
 	}
 	return o
 }
-# About 40 operations of every kind above, in five chunks.
-function fuzz(s,	ops, n, i, j, w, t, b, m, o, cut, ncut, c) {
+# About 40 operations of every kind above, in five chunks; with pick (a list
+# of operation numbers), only those, in the chunks they fall in.
+function fuzz(s, pick,	ops, n, i, j, w, t, b, m, o, cut, ncut, c, keep, np, pk) {
 	reseed(1000 + s)
 	for (n = 0; n < 40; n++) {
 		w = rnd(98)
@@ -153,10 +154,14 @@ function fuzz(s,	ops, n, i, j, w, t, b, m, o, cut, ncut, c) {
 		i = between(1, n - 1)
 		if (!cut[i]) { cut[i] = 1; ncut++ }
 	}
+	np = split(pick, pk, " ")
+	for (i = 1; i <= np; i++)
+		keep[pk[i]] = 1
 	c = ""
 	for (i = 0; i < n; i++) {
 		if (i > 0 && cut[i]) { k(c); c = "" }
-		c = c ops[i]
+		if (np == 0 || (i in keep))
+			c = c ops[i]
 	}
 	k(c)
 }
@@ -302,19 +307,39 @@ BEGIN {
 	start("sync-region-scroll")
 	k(lines(24, 30, 21) CSI "?2026h" CSI "5;12r" CSI "12;1H" rep("\n", 4) CSI "r" \
 	    CSI "24;1Hin sync" CSI "?2026l"); k("\r\n")
+	# A line wrapping from the bottom row, then something other than a
+	# character first on the new row: the terminal still joins them.
+	start("wrap-bottom-erase-start"); k(rep("w", 110) "\r" CSI "1K\r\n")
+	start("wrap-coloured-erase"); k(CSI "42m" rep("g", 110) CSI "1K" CSI "0m\r\n")
+	# Erasing the row the cursor is waiting to wrap at the end of.
+	start("erase-pending-twice"); k(rep("a", 80) rep("b", 80) CSI "2Kafter\r\n")
+	start("erase-pending-held")
+	k(rep("a", 80) CSI "2Kafter" CSI "?1049halternate" CSI "?1049l")
+	start("region-coloured-scroll")
+	k(rep("h", 250) CSI "42;1m\r\n" rep("i", 350) CSI "12;19r" CSI "19;1H" \
+	    CSI "T\n" E "D" CSI "r" CSI "0m" CSI "24;1H")
+	# Held output with wrapped lines going into the history.
+	start("held-burst-wrapped")
+	k(CSI "?1049halternate" CSI "?1049l" lines(40, 240, 24))
+	start("sync-delete-lines")
+	k(CSI "?2026h" rep("x", 100) "\r\n" rep("y", 80) CSI "?2026l" CSI "3M" \
+	    CSI "?2026h" rep("z", 120) "\r\n" rep("v", 200) CSI "?2026l"); k("\r\n")
+	start("clear-below-home-pending")
+	k(lines(20, 70, 27) CSI "3;1HNEWTEXT" CSI "H" CSI "J")
+	# Fuzz operations that differed, on their own (fuzz(seed, operations)):
+	# a region scroll pushing lines into the history after coloured wrapped
+	# lines; a synchronized update after a line wrapped over several rows;
+	# wrapped lines after a scroll region is reset; a full row, then a clear
+	# inside held output.
+	start("region-push-wrap"); fuzz(4, "27 28 35")
+	start("sync-after-wrap"); fuzz(16, "23 24")
+	start("region-left-set"); fuzz(17, "2 6 7")
+	start("held-clear-after-full-row"); fuzz(2, "25 27 28 30 33")
 	start("sync-link-wrap")
 	k(CSI "?2026h" link("https://example.com/w", rep("w", 100)) rep("\r\n", 30) CSI "?2026l"); k("\r\n")
 
-	# Fuzz cases that still differ, with what is known (open: not yet
-	# fixed; these differ without the fixes on this branch too).
-	w = "open: a wrapped line splits or joins differently in the terminal"
-	open[4] = open[5] = open[9] = open[12] = open[16] = open[23] = w
-	open[10] = "open: a blank cell loses its background colour"
-	open[11] = "open: a character is missing from a row"
-	open[17] = "open: a row holds different text"
 	for (i = 0; i < 24; i++) {
 		start(sprintf("fuzz-%02d", i)); fuzz(i)
-		if (i in open) differ(open[i])
 	}
 	close(dir "/list")
 }
