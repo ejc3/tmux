@@ -118,6 +118,7 @@ tty_init(struct tty *tty, struct client *c)
 	tty->fg = tty->bg = -1;
 	tty->mouse_last_pane = -1;
 	tty->hist_pane = UINT_MAX;
+	tty->hist_shown = UINT_MAX;
 
 	if (tcgetattr(c->fd, &tty->tio) != 0)
 		return (-1);
@@ -2511,43 +2512,57 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
  */
 /*
  * Start following a pane's history from where it is now, or bring the count
- * of the lines that reached this terminal up to date with the pane's grid:
- * after the grid reflowed its history once (grid_reflow), the lines the
- * terminal lacked then are where their first row went; after anything else
- * that rewrote it, follow from here.
+ * of the lines that reached this terminal up to date with the pane's grid.
+ *
+ * After the grid reflowed its lines once (grid_reflow) while this terminal
+ * was behind, the terminal has reflowed what it had too - the pane's lines up
+ * to the end of the screen it last drew, a prefix of the pane's - and, as
+ * tmux does, kept the end of that on its screen, perhaps pulling rows back
+ * from its scrollback: those rows of the pane's history (hist_shown, up to
+ * that end) are at the top of its screen already and are only scrolled into
+ * its scrollback, not painted over. After anything else that rewrote the
+ * history, follow from here.
  */
 static void
 tty_follow_history(struct tty *tty, struct window_pane *wp)
 {
 	struct grid	*gd = wp->base.grid;
-	u_int		 m, b;
+	u_int		 m, b, end, top;
 
 	if (tty->hist_pane != wp->id) {
 		tty->hist_pane = wp->id;
 		tty->hist_seen = gd->scroll_view;
 		tty->hist_gen = gd->scroll_generation;
+		tty->hist_shown = UINT_MAX;
 		return;
 	}
 	if (tty->hist_gen == gd->scroll_generation)
 		return;
+	tty->hist_shown = UINT_MAX;
 	if (tty->hist_gen + 1 == gd->scroll_generation &&
 	    gd->reflow_gen == gd->scroll_generation &&
 	    (int)(gd->reflow_view - tty->hist_seen) > 0) {
 		m = gd->reflow_view - tty->hist_seen;
-		if (m <= gd->reflow_hsize) {
-			b = gd->reflow_hsize - m;
-			if (b >= gd->reflow_first && gd->reflow_map != NULL) {
-				/*
-				 * A line joined into the screen by a wider
-				 * reflow is not in the history any more.
-				 */
-				b = gd->reflow_map[b - gd->reflow_first];
-				if (b > gd->reflow_newh)
-					b = gd->reflow_newh;
+		b = (m <= gd->reflow_hsize) ? gd->reflow_hsize - m : 0;
+		if (m <= gd->reflow_hsize && b >= gd->reflow_first &&
+		    gd->reflow_map != NULL) {
+			/*
+			 * Its last row was where the cursor was, which the
+			 * pane may have written since: one row of its own,
+			 * and not known to be the pane's (painted, not only
+			 * scrolled).
+			 */
+			end = gd->reflow_map[b + gd->reflow_osy - 1 -
+			    gd->reflow_first] + 1;
+			top = (end > tty->sy) ? end - tty->sy : 0;
+			log_debug("%s: %u lines behind, end %u top %u",
+			    __func__, m, end, top);
+			if (top < gd->reflow_newh) {
 				tty->hist_seen = gd->reflow_view -
-				    (gd->reflow_newh - b);
+				    (gd->reflow_newh - top);
+				tty->hist_shown = end - 1;
 			} else
-				tty->hist_seen = gd->scroll_view;
+				tty->hist_seen = gd->reflow_view;
 		} else
 			tty->hist_seen = gd->scroll_view;
 	} else if (tty->hist_gen + 1 != gd->scroll_generation ||
@@ -2792,7 +2807,7 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 {
 	struct grid		*gd;
 	struct grid_push	*gp;
-	u_int			 i, n, left, e, skip = 0, count;
+	u_int			 i, j, k, n, left, e, skip = 0, count;
 
 	if (wp == NULL || SCREEN_IS_ALTERNATE(&wp->base))
 		return;
@@ -2821,6 +2836,24 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 		n = gd->hsize;
 	log_debug("%s: %%%u %u lines", __func__, wp->id, n);
 
+	/*
+	 * History rows the terminal has at the top of its screen after it
+	 * reflowed (see tty_follow_history): scroll them into its scrollback.
+	 */
+	tty_margin_off(tty);
+	i = gd->hsize - n;
+	if (tty->hist_shown != UINT_MAX && i < tty->hist_shown) {
+		k = ((tty->hist_shown < gd->hsize) ? tty->hist_shown :
+		    gd->hsize) - i;
+		log_debug("%s: %u lines on the screen", __func__, k);
+		tty_region_off(tty);
+		tty_cursor(tty, 0, tty->sy - 1);
+		for (j = 0; j < k; j++)
+			tty_putc(tty, '\n');
+		n -= k;
+	}
+	tty->hist_shown = UINT_MAX;
+
 	/* The latest pushes, back to the first of the n lines. */
 	left = n;
 	e = gd->npushes;
@@ -2835,7 +2868,6 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 		left -= gp->n;
 	}
 
-	tty_margin_off(tty);
 	i = gd->hsize - n;
 	if (left != 0) {
 		tty_replay_push(tty, wp, GRID_PUSH_SCROLL, 0, 0, i, left);

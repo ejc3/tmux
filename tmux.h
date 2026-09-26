@@ -956,13 +956,15 @@ struct grid {
 	u_int			 rpush_lower;
 
 	/*
-	 * The last reflow: where each old history row (from reflow_first)
-	 * went, the pushes and history rows then, and history rows after.
+	 * The last reflow: where each old row (from reflow_first, to the end
+	 * of the screen and one past) went, the pushes, history rows and
+	 * screen rows then, and history rows after.
 	 */
 	u_int			*reflow_map;
 	u_int			 reflow_first;
 	u_int			 reflow_view;
 	u_int			 reflow_hsize;
+	u_int			 reflow_osy;
 	u_int			 reflow_newh;
 	u_int			 reflow_gen;
 	u_int			 scroll_collected;
@@ -1881,6 +1883,7 @@ struct tty {
 	u_int		 hist_pane;
 	u_int		 hist_seen;
 	u_int		 hist_gen;	/* grid scroll_generation of hist_seen */
+	u_int		 hist_shown;	/* history rows on the screen to end */
 
 	struct tty_term	*term;
 
