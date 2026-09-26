@@ -1954,8 +1954,7 @@ tty_clear_as_sent(struct tty *tty, const struct tty_ctx *ctx)
 
 	if (!tty_pane_is_terminal(tty, wp) || ctx->s != &wp->base)
 		return (0);
-	if ((ctx->flags & TTY_CTX_WINDOW_BIGGER) ||
-	    tty->client->overlay_check != NULL ||
+	if ((ctx->flags & TTY_CTX_WINDOW_BIGGER) || tty_pane_covered(wp) ||
 	    tty_fake_bce(tty, &ctx->defaults, ctx->bg))
 		return (0);
 	return (tty_term_has(tty->term, TTYC_ED));
@@ -2762,6 +2761,22 @@ tty_replay_push(struct tty *tty, struct window_pane *wp, u_int type,
 }
 
 /*
+ * Whether a floating pane is over a pane: drawn over rows that painting it
+ * whole, erasing or scrolling it, would take away.
+ */
+int
+tty_pane_covered(struct window_pane *wp)
+{
+	struct window_pane	*loop = wp;
+
+	while ((loop = TAILQ_PREV(loop, window_panes, zentry)) != NULL) {
+		if (window_pane_is_floating(loop))
+			return (1);
+	}
+	return (0);
+}
+
+/*
  * Whether a pane is the whole of this terminal, which keeps its own scrollback
  * (clear-on-attach off): where the pane's rows scroll is where the terminal's
  * scroll.
@@ -2814,11 +2829,11 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 		return;
 	gd = wp->base.grid;
 	/*
-	 * The painting would scroll an overlay away: wait for the redraw
-	 * after it has gone - and keep following the pane the terminal's
-	 * scrollback belongs to until then (tty_forget_wraps).
+	 * The painting would scroll a floating pane over this one away: wait
+	 * for the redraw after it has gone - and keep following the pane the
+	 * terminal's scrollback belongs to until then (tty_forget_wraps).
 	 */
-	if (tty->client->overlay_check != NULL)
+	if (tty_pane_covered(wp))
 		return;
 	if (tty->hist_pane != wp->id) {
 		tty_follow_history(tty, wp);
@@ -2891,7 +2906,7 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
  * change it. Clear them first, so the terminal joins only the rows the drawing
  * wraps - except the top row when it continues the last line of the history,
  * which is in the terminal's scrollback and is not drawn again, if that is
- * this pane's history (ours). Not under an overlay, which is not drawn again.
+ * this pane's history (ours). Not under a floating pane.
  */
 void
 tty_forget_wraps(struct tty *tty, struct window_pane *wp, int ours)
@@ -2906,7 +2921,7 @@ tty_forget_wraps(struct tty *tty, struct window_pane *wp, int ours)
 		return;
 	gd = wp->base.grid;
 
-	if (tty->client->overlay_check != NULL)
+	if (tty_pane_covered(wp))
 		return;
 
 	tty_region_off(tty);
