@@ -1914,6 +1914,7 @@ struct tty_ctx {
 	tty_ctx_redraw_cb	 redraw_cb;
 	tty_ctx_set_client_cb	 set_client_cb;
 	void			*arg;
+	struct window_pane	*wp;	/* the pane written, not an overlay's */
 
 	const struct grid_cell	*cell;
 	int                      flags;
@@ -2632,6 +2633,7 @@ extern struct timeval	 start_time;
 extern const char	*socket_path;
 extern const char	*shell_command;
 extern int		 ptm_fd;
+extern int		 clear_on_attach;
 extern const char	*shell_command;
 int		 checkshell(const char *);
 void		 setblocking(int, int);

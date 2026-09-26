@@ -525,11 +525,14 @@ session_set_current(struct session *s, struct winlink *wl)
 
 	/*
 	 * Mark clients on this session so the next redraw can replay the new
-	 * window's history to a terminal that keeps its own scrollback.
+	 * window's history to a terminal that keeps its own scrollback. Not
+	 * for another link to the same window: nothing on the screen changes.
 	 */
-	TAILQ_FOREACH(loop, &clients, entry) {
-		if (loop->session == s)
-			loop->flags |= CLIENT_REPLAYSCROLL;
+	if (old == NULL || old->window != wl->window) {
+		TAILQ_FOREACH(loop, &clients, entry) {
+			if (loop->session == s)
+				loop->flags |= CLIENT_REPLAYSCROLL;
+		}
 	}
 
 	session_fire_window_changed(s, wl, old);
