@@ -6350,16 +6350,7 @@ is enabled.
 When the entire screen is cleared and this option is on, scroll the contents of
 the screen into history before clearing it.
 .Pp
-.It Ic switch\-mode\-match\-style Ar style
-Set the style of characters matched by the filter in
-.Ic switch\-mode .
-For how to specify
-.Ar style ,
-see the
-.Sx STYLES
-section.
-.Pp
-\.It Ic scroll\-replay Ar lines
+.It Ic scroll\-replay Ar lines
 With
 .Ic clear\-on\-attach
 disabled, replay up to
@@ -6374,7 +6365,18 @@ before
 was attached; it needs the
 .Em E3
 capability, is deferred while the terminal is on its alternate screen, and
-does not happen when the window is split.
+happens only when the active pane fills the terminal (not when the window is
+split or a status line is shown).
+.Pp
+.It Ic switch\-mode\-match\-style Ar style
+Set the style of characters matched by the filter in
+.Ic switch\-mode .
+For how to specify
+.Ar style ,
+see the
+.Sx STYLES
+section.
+.Pp
 .It Xo Ic synchronize\-panes
 .Op Ic on | off
 .Xc
