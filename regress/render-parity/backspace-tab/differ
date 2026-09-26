@@ -1,1 +1,0 @@
-tmux draws the gap a tab leaves as spaces or cursor movement, so the terminal no longer knows it was a tab (copying it gives spaces)

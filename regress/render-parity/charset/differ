@@ -1,1 +1,0 @@
-tmux draws line-drawing characters as their UTF-8 equivalents; they look the same, but the terminal holds different characters
