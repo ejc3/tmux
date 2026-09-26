@@ -1880,6 +1880,7 @@ struct tty {
 	 */
 	u_int		 hist_pane;
 	u_int		 hist_seen;
+	u_int		 hist_gen;	/* grid scroll_generation of hist_seen */
 
 	struct tty_term	*term;
 
@@ -3035,7 +3036,7 @@ void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
 void	tty_cmd_history(struct tty *, const struct tty_ctx *);
 void	tty_catch_up_history(struct tty *, struct window_pane *);
 int	tty_pane_is_terminal(struct tty *, struct window_pane *);
-void	tty_forget_wraps(struct tty *, struct window_pane *);
+void	tty_forget_wraps(struct tty *, struct window_pane *, int);
 void	tty_replay_history(struct tty *, struct window_pane *, u_int, u_int);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
@@ -3362,7 +3363,7 @@ int	 server_create_socket(uint64_t, char **);
 
 /* server-client.c */
 u_int	 server_client_how_many(void);
-void	 server_client_replay_scroll(struct client *);
+int	 server_client_replay_scroll(struct client *);
 void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);

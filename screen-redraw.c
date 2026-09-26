@@ -1674,6 +1674,7 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	struct redraw_span	*first;
 	int			 redraw;
 	uint64_t		 replayed;
+	int			 ours;
 
 	if (c->flags & CLIENT_SUSPENDED)
 		return;
@@ -1756,9 +1757,9 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	 * Replay the window's history inside the same synchronized update as
 	 * the redraw so the two are painted as one frame.
 	 */
-	replayed = (c->flags & CLIENT_REPLAYSCROLL);
-	if (replayed)
-		server_client_replay_scroll(c); /* end in server_client_reset_state */
+	replayed = 0;
+	if (c->flags & CLIENT_REPLAYSCROLL)
+		replayed = server_client_replay_scroll(c);
 	tty_update_mode(tty, tty->mode & ~CURSOR_MODES, NULL);
 
 	/*
@@ -1769,12 +1770,14 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	loop = w->active;
 	if ((flags & REDRAW_PANE) && loop != NULL &&
 	    (wp == NULL || wp == loop)) {
+		ours = (replayed || tty->hist_pane == loop->id);
 		if (replayed) {
 			tty->hist_pane = loop->id;
 			tty->hist_seen = loop->base.grid->scroll_view;
+			tty->hist_gen = loop->base.grid->scroll_generation;
 		} else
 			tty_catch_up_history(tty, loop);
-		tty_forget_wraps(tty, loop);
+		tty_forget_wraps(tty, loop, ours);
 	}
 
 	if (wp != NULL)

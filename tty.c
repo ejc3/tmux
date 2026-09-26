@@ -2509,6 +2509,47 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
  * in its scrollback or not. Not when the output is being thrown away
  * (TTY_BLOCK) or the terminal is on its alternate screen.
  */
+/*
+ * Start following a pane's history from where it is now, or bring the count
+ * of the lines that reached this terminal up to date with the pane's grid:
+ * after the grid reflowed its history once (grid_reflow), the lines the
+ * terminal lacked then are where their first row went; after anything else
+ * that rewrote it, follow from here.
+ */
+static void
+tty_follow_history(struct tty *tty, struct window_pane *wp)
+{
+	struct grid	*gd = wp->base.grid;
+	u_int		 m, b;
+
+	if (tty->hist_pane != wp->id) {
+		tty->hist_pane = wp->id;
+		tty->hist_seen = gd->scroll_view;
+		tty->hist_gen = gd->scroll_generation;
+		return;
+	}
+	if (tty->hist_gen == gd->scroll_generation)
+		return;
+	if (tty->hist_gen + 1 == gd->scroll_generation &&
+	    gd->reflow_gen == gd->scroll_generation &&
+	    (int)(gd->reflow_view - tty->hist_seen) > 0) {
+		m = gd->reflow_view - tty->hist_seen;
+		if (m <= gd->reflow_hsize) {
+			b = gd->reflow_hsize - m;
+			if (b >= gd->reflow_first && gd->reflow_map != NULL) {
+				tty->hist_seen = gd->reflow_view -
+				    (gd->reflow_newh -
+				    gd->reflow_map[b - gd->reflow_first]);
+			} else
+				tty->hist_seen = gd->scroll_view;
+		} else
+			tty->hist_seen = gd->scroll_view;
+	} else if (tty->hist_gen + 1 != gd->scroll_generation ||
+	    gd->reflow_gen != gd->scroll_generation)
+		tty->hist_seen = gd->scroll_view;
+	tty->hist_gen = gd->scroll_generation;
+}
+
 static void
 tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
 {
@@ -2521,10 +2562,10 @@ tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
 	if (tty->flags & (TTY_BLOCK|TTY_ALTSCREEN))
 		return;
 	if (tty->hist_pane != wp->id) {
-		tty->hist_pane = wp->id;
-		tty->hist_seen = gd->scroll_view;
+		tty_follow_history(tty, wp);
 		return;
 	}
+	tty_follow_history(tty, wp);
 	tty->hist_seen += ctx->n;
 	if ((int)(gd->scroll_view - tty->hist_seen) < 0)
 		tty->hist_seen = gd->scroll_view;
@@ -2534,8 +2575,12 @@ tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
 void
 tty_cmd_history(struct tty *tty, const struct tty_ctx *ctx)
 {
-	tty_catch_up_history(tty, ctx->arg);
-	tty_forget_wraps(tty, ctx->arg);	/* every row is drawn next */
+	struct window_pane	*wp = ctx->arg;
+	int			 ours;
+
+	ours = (wp != NULL && tty->hist_pane == wp->id);
+	tty_catch_up_history(tty, wp);
+	tty_forget_wraps(tty, wp, ours);	/* every row is drawn next */
 }
 
 /*
@@ -2560,10 +2605,16 @@ tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
 {
 	struct grid		*gd = wp->base.grid;
 	struct grid_line	*gl;
-	struct grid_cell	*gc;
-	u_int			 k, row;
-	int			 flags, full, cont;
-	char			*line;
+	struct grid_cell	 gc, defaults;
+	struct tty_style_ctx	 style_ctx;
+	u_int			 k, row, x;
+	int			 full, cont;
+
+	/* The pane's own style, palette and links, as when it is drawn. */
+	tty_default_colours(&defaults, wp, &style_ctx.dim);
+	style_ctx.defaults = &defaults;
+	style_ctx.palette = &wp->palette;
+	style_ctx.hyperlinks = wp->base.hyperlinks;
 
 	tty_reset(tty);
 	for (k = first; k <= last; k++) {
@@ -2576,42 +2627,32 @@ tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
 			    (grid_get_line(gd, k - 1)->flags & GRID_LINE_WRAPPED));
 		}
 		if (!cont) {
-			tty->cx = tty->cy = UINT_MAX;
+			tty_default_attributes(tty, 8, &style_ctx);
 			tty_cursor(tty, 0, row);
-			tty_putcode(tty, TTYC_SGR0);
 			tty_putcode(tty, TTYC_EL);
 		} else if (k == first)
 			tty_cursor(tty, 0, row);
 
-		/*
-		 * Each line from the default: a line's string ends its
-		 * hyperlink, so the next must open it again.
-		 */
-		tty_putcode(tty, TTYC_SGR0);
 		full = ((gl->flags & GRID_LINE_WRAPPED) || gl->cellused >= gd->sx);
-		gc = NULL;
-		flags = GRID_STRING_WITH_SEQUENCES;
-		if (!full)
-			flags |= GRID_STRING_TRIM_SPACES;
-		line = grid_string_cells(gd, 0, k, gd->sx, &gc, flags,
-		    &wp->base);
-		tty_puts(tty, line);
-		free(line);
+		for (x = 0; x < gd->sx && (full || x < gl->cellused); x++) {
+			grid_get_cell(gd, x, k, &gc);
+			if (gc.flags & GRID_FLAG_PADDING)
+				continue;
+			tty_cell(tty, &gc, &style_ctx);
+		}
 		if (!full) {
-			tty_putcode(tty, TTYC_SGR0);
+			tty_default_attributes(tty, 8, &style_ctx);
 			tty_putcode(tty, TTYC_EL);
 		}
 	}
 	gl = grid_get_line(gd, last);
 	row = y + last - first + 1;
 	if ((~gl->flags & GRID_LINE_WRAPPED) && row < tty->sy) {
-		tty->cx = tty->cy = UINT_MAX;
+		tty_default_attributes(tty, 8, &style_ctx);
 		tty_cursor(tty, 0, row);
-		tty_putcode(tty, TTYC_SGR0);
 		tty_putcode(tty, TTYC_EL);
 	}
-	tty_putcode(tty, TTYC_SGR0);
-	memcpy(&tty->cell, &grid_default_cell, sizeof tty->cell);
+	tty_reset(tty);
 	tty->cx = tty->cy = UINT_MAX;
 }
 
@@ -2753,10 +2794,16 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 		return;
 	gd = wp->base.grid;
 	if (tty->hist_pane != wp->id) {
-		tty->hist_pane = wp->id;
-		tty->hist_seen = gd->scroll_view;
+		tty_follow_history(tty, wp);
 		return;
 	}
+	/*
+	 * The painting would scroll an overlay away: wait for the redraw
+	 * after it has gone.
+	 */
+	if (tty->client->overlay_check != NULL)
+		return;
+	tty_follow_history(tty, wp);
 	n = gd->scroll_view - tty->hist_seen;
 	if ((int)n <= 0)
 		return;
@@ -2766,10 +2813,6 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 	if (n > gd->hsize)
 		n = gd->hsize;
 	log_debug("%s: %%%u %u lines", __func__, wp->id, n);
-
-	/* An overlay is scrolled away with the rest: draw it again. */
-	if (tty->client->overlay_check != NULL)
-		tty->client->flags |= CLIENT_REDRAWOVERLAY;
 
 	/* The latest pushes, back to the first of the n lines. */
 	left = n;
@@ -2809,10 +2852,11 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
  * (perhaps output since thrown away), and drawing over the rows does not
  * change it. Clear them first, so the terminal joins only the rows the drawing
  * wraps - except the top row when it continues the last line of the history,
- * which is in the terminal's scrollback and is not drawn again.
+ * which is in the terminal's scrollback and is not drawn again, if that is
+ * this pane's history (ours). Not under an overlay, which is not drawn again.
  */
 void
-tty_forget_wraps(struct tty *tty, struct window_pane *wp)
+tty_forget_wraps(struct tty *tty, struct window_pane *wp, int ours)
 {
 	struct grid	*gd;
 
@@ -2824,14 +2868,13 @@ tty_forget_wraps(struct tty *tty, struct window_pane *wp)
 		return;
 	gd = wp->base.grid;
 
-	/* An overlay is drawn over what this erases: draw it again. */
 	if (tty->client->overlay_check != NULL)
-		tty->client->flags |= CLIENT_REDRAWOVERLAY;
+		return;
 
 	tty_region_off(tty);
 	tty_margin_off(tty);
 	tty_reset(tty);
-	if (gd->hsize == 0 ||
+	if (!ours || gd->hsize == 0 ||
 	    (~grid_get_line(gd, gd->hsize - 1)->flags & GRID_LINE_WRAPPED)) {
 		tty_cursor(tty, 0, 0);
 		tty_putcode(tty, TTYC_EL);
