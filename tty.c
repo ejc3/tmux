@@ -2537,9 +2537,15 @@ tty_follow_history(struct tty *tty, struct window_pane *wp)
 		if (m <= gd->reflow_hsize) {
 			b = gd->reflow_hsize - m;
 			if (b >= gd->reflow_first && gd->reflow_map != NULL) {
+				/*
+				 * A line joined into the screen by a wider
+				 * reflow is not in the history any more.
+				 */
+				b = gd->reflow_map[b - gd->reflow_first];
+				if (b > gd->reflow_newh)
+					b = gd->reflow_newh;
 				tty->hist_seen = gd->reflow_view -
-				    (gd->reflow_newh -
-				    gd->reflow_map[b - gd->reflow_first]);
+				    (gd->reflow_newh - b);
 			} else
 				tty->hist_seen = gd->scroll_view;
 		} else
@@ -2793,16 +2799,17 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 	if (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK))
 		return;
 	gd = wp->base.grid;
+	/*
+	 * The painting would scroll an overlay away: wait for the redraw
+	 * after it has gone - and keep following the pane the terminal's
+	 * scrollback belongs to until then (tty_forget_wraps).
+	 */
+	if (tty->client->overlay_check != NULL)
+		return;
 	if (tty->hist_pane != wp->id) {
 		tty_follow_history(tty, wp);
 		return;
 	}
-	/*
-	 * The painting would scroll an overlay away: wait for the redraw
-	 * after it has gone.
-	 */
-	if (tty->client->overlay_check != NULL)
-		return;
 	tty_follow_history(tty, wp);
 	n = gd->scroll_view - tty->hist_seen;
 	if ((int)n <= 0)

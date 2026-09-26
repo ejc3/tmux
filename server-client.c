@@ -2369,6 +2369,13 @@ server_client_replay_scroll(struct client *c)
 	 */
 	if (c->tty.flags & TTY_ALTSCREEN)
 		return (0);
+
+	/*
+	 * An overlay would clip the lines as they are written, and what goes
+	 * into the scrollback is not drawn again: wait for it to go.
+	 */
+	if (c->overlay_check != NULL)
+		return (0);
 	c->flags &= ~CLIENT_REPLAYSCROLL;
 
 	if (c->session == NULL || c->session->curw == NULL)
