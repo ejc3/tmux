@@ -508,6 +508,7 @@ grid_scroll_history(struct grid *gd, u_int bg)
 	grid_line_set_time(&gd->linedata[gd->hsize]);
 	gd->hsize++;
 	gd->scroll_added++;
+	gd->rpush_wrapped = -1;
 }
 
 /*
@@ -547,6 +548,7 @@ grid_clear_history(struct grid *gd)
 	gd->hscrolled = 0;
 	gd->hsize = 0;
 	gd->scroll_generation++;
+	gd->rpush_wrapped = -1;
 
 	gd->linedata = xreallocarray(gd->linedata, gd->sy,
 	    sizeof *gd->linedata);
@@ -557,12 +559,30 @@ void
 grid_scroll_history_region(struct grid *gd, u_int upper, u_int lower, u_int bg)
 {
 	struct grid_line	*gl_history, *gl_upper;
-	u_int			 yy;
+	u_int			 yy, top;
 
 	/* Create a space for a new line. */
 	yy = gd->hsize + gd->sy;
 	gd->linedata = xreallocarray(gd->linedata, yy + 1,
 	    sizeof *gd->linedata);
+
+	/*
+	 * Below the top row the line going in does not continue the last
+	 * history line (which may wrap on to the top row) - unless that line
+	 * came from this region last and wrapped on to what is now its top.
+	 */
+	top = upper - gd->hsize;
+	if (top != 0 && gd->hsize != 0) {
+		gl_history = &gd->linedata[gd->hsize - 1];
+		if (gd->rpush_wrapped == 1 && gd->rpush_upper == top &&
+		    gd->rpush_lower == lower - gd->hsize)
+			gl_history->flags |= GRID_LINE_WRAPPED;
+		else
+			gl_history->flags &= ~GRID_LINE_WRAPPED;
+	}
+	gd->rpush_wrapped = !!(gd->linedata[upper].flags & GRID_LINE_WRAPPED);
+	gd->rpush_upper = top;
+	gd->rpush_lower = lower - gd->hsize;
 
 	/* Move the entire screen down to free a space for this line. */
 	gl_history = &gd->linedata[gd->hsize];
@@ -576,6 +596,8 @@ grid_scroll_history_region(struct grid *gd, u_int upper, u_int lower, u_int bg)
 	/* Move the line into the history. */
 	memcpy(gl_history, gl_upper, sizeof *gl_history);
 	grid_line_set_time(gl_history);
+	if (top != 0)	/* its next row stays in the region */
+		gl_history->flags &= ~GRID_LINE_WRAPPED;
 
 	/* Then move the region up and clear the bottom line. */
 	memmove(gl_upper, gl_upper + 1, (lower - upper) * sizeof *gl_upper);
