@@ -1076,6 +1076,8 @@ screen_write_start_sync(struct window_pane *wp)
 	if (wp == NULL)
 		return;
 
+	if (~wp->base.mode & MODE_SYNC)
+		wp->sync_view = wp->base.grid->scroll_view;
 	wp->base.mode |= MODE_SYNC;
 	if (!event_initialized(&wp->sync_timer))
 		evtimer_set(&wp->sync_timer, screen_write_sync_callback, wp);
@@ -1317,12 +1319,14 @@ screen_write_sync_flush_dirty(struct window_pane *wp)
 	screen_write_initctx(&ctx, &ttyctx, 1, 1);
 
 	/*
-	 * With the terminal keeping its own scrollback, a scroll during the
-	 * sync is not replayed as a scroll, which would push what the terminal
-	 * shows: the lines it pushed into history go to the terminal's
-	 * scrollback as they are (tty_cmd_history) and every row is redrawn.
+	 * With the terminal keeping its own scrollback, lines pushed into
+	 * history during the sync go to its scrollback the way they went into
+	 * the history (tty_cmd_history), not as a replayed scroll, which would
+	 * push what the terminal shows; then every row is redrawn, since that
+	 * may leave any row changed.
 	 */
-	if (wp->sync_scrolled != 0 && screen_write_full_window(wp) &&
+	if (wp->base.grid->scroll_view != wp->sync_view &&
+	    wp->sync_dirty_size == sy && screen_write_full_window(wp) &&
 	    !options_get_number(global_options, "clear-on-attach")) {
 		wp->sync_scrolled = 0;
 		bit_nset(wp->sync_dirty, 0, sy - 1);
@@ -2144,9 +2148,10 @@ screen_write_clearendofscreen(struct screen_write_ctx *ctx, u_int bg)
 	    s->cy == 0 &&
 	    (gd->flags & GRID_HISTORY) &&
 	    ctx->wp != NULL &&
-	    options_get_number(ctx->wp->options, "scroll-on-clear"))
-		grid_view_clear_history(gd, bg);
-	else {
+	    options_get_number(ctx->wp->options, "scroll-on-clear")) {
+		ttyctx.n = grid_view_clear_history(gd, bg);
+		grid_add_push(gd, GRID_PUSH_CLEARBELOW, 0, 0, ttyctx.n);
+	} else {
 		if (s->cx <= sx - 1)
 			grid_view_clear(gd, s->cx, s->cy, sx - s->cx, 1, bg);
 		grid_view_clear(gd, 0, s->cy + 1, sx, sy - (s->cy + 1), bg);
@@ -2306,9 +2311,10 @@ screen_write_clearscreen(struct screen_write_ctx *ctx, u_int bg)
 	/* Scroll into history if it is enabled. */
 	if ((s->grid->flags & GRID_HISTORY) &&
 	    ctx->wp != NULL &&
-	    options_get_number(ctx->wp->options, "scroll-on-clear"))
-		grid_view_clear_history(s->grid, bg);
-	else
+	    options_get_number(ctx->wp->options, "scroll-on-clear")) {
+		ttyctx.n = grid_view_clear_history(s->grid, bg);
+		grid_add_push(s->grid, GRID_PUSH_CLEAR, 0, 0, ttyctx.n);
+	} else
 		grid_view_clear(s->grid, 0, 0, sx, sy, bg);
 
 	screen_write_collect_clear(ctx, 0, sy);

@@ -917,6 +917,24 @@ struct grid_line {
 	u_short			 flags;
 };
 
+/*
+ * How lines went into a grid's history, so a terminal that missed them can be
+ * given them the same way: a scroll of the whole screen or of a region (its
+ * top line), or a clear moving the screen there (ED 2, or ED 0 from the top
+ * left).
+ */
+#define GRID_PUSH_SCROLL 0
+#define GRID_PUSH_REGION 1
+#define GRID_PUSH_CLEAR 2
+#define GRID_PUSH_CLEARBELOW 3
+struct grid_push {
+	u_int			 type;
+	u_int			 upper;
+	u_int			 lower;
+	u_int			 n;
+};
+#define GRID_PUSHES 32
+
 /* Entire grid of cells. */
 struct grid {
 	int			 flags;
@@ -930,7 +948,9 @@ struct grid {
 	u_int			 hlimit;
 
 	u_int			 scroll_added;
-	u_int			 scroll_view;	/* full-screen scrolls into history */
+	u_int			 scroll_view;	/* lines pushed into history */
+	struct grid_push	 pushes[GRID_PUSHES]; /* the latest, how */
+	u_int			 npushes;
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
 
@@ -1390,6 +1410,7 @@ struct window_pane {
 	struct window_pane_resizes resize_queue;
 	struct event	 resize_timer;
 	struct event	 sync_timer;
+	u_int		 sync_view;	/* grid scroll_view at sync start */
 
 	struct input_ctx *ictx;
 
@@ -1838,7 +1859,8 @@ struct tty {
 
 	/*
 	 * The pane whose history this terminal's scrollback follows, and how
-	 * many of its full-screen scrolls (grid scroll_view) have reached it.
+	 * many of the lines pushed into its history (grid scroll_view) have
+	 * reached it.
 	 */
 	u_int		 hist_pane;
 	u_int		 hist_seen;
@@ -3501,6 +3523,7 @@ time_t	 grid_line_time(const struct grid_line *);
 void	 grid_collect_history(struct grid *, int);
 void	 grid_remove_history(struct grid *, u_int );
 void	 grid_scroll_history(struct grid *, u_int);
+void	 grid_add_push(struct grid *, u_int, u_int, u_int, u_int);
 void	 grid_scroll_history_region(struct grid *, u_int, u_int, u_int);
 void	 grid_clear_history(struct grid *);
 const struct grid_line *grid_peek_line(struct grid *, u_int);
@@ -3554,7 +3577,7 @@ void	 grid_view_set_cell(struct grid *, u_int, u_int,
 void	 grid_view_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_view_set_cells(struct grid *, u_int, u_int,
 	     const struct grid_cell *, const char *, size_t);
-void	 grid_view_clear_history(struct grid *, u_int);
+u_int	 grid_view_clear_history(struct grid *, u_int);
 void	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_view_scroll_region_up(struct grid *, u_int, u_int, u_int);
 void	 grid_view_scroll_region_down(struct grid *, u_int, u_int, u_int);
