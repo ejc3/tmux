@@ -2370,19 +2370,21 @@ server_client_replay_scroll(struct client *c)
 	if (c->tty.flags & TTY_ALTSCREEN)
 		return (0);
 
+	if (c->session == NULL || c->session->curw == NULL ||
+	    c->session->curw->window->active == NULL) {
+		c->flags &= ~CLIENT_REPLAYSCROLL;
+		return (0);
+	}
+	w = c->session->curw->window;
+	wp = w->active;
+
 	/*
-	 * An overlay would clip the lines as they are written, and what goes
-	 * into the scrollback is not drawn again: wait for it to go.
+	 * A floating pane over this one would be scrolled away with the lines
+	 * as they are written: wait for it to go.
 	 */
-	if (c->overlay_check != NULL)
+	if (tty_pane_covered(wp))
 		return (0);
 	c->flags &= ~CLIENT_REPLAYSCROLL;
-
-	if (c->session == NULL || c->session->curw == NULL)
-		return (0);
-	w = c->session->curw->window;
-	if ((wp = w->active) == NULL)
-		return (0);
 	lines = options_get_number(w->options, "scroll-replay");
 	if (lines == 0)
 		return (0);
