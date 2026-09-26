@@ -94,18 +94,26 @@ CASES = {
     # A progress display redrawn in place: up three rows, rewrite them.
     "inline-repaint": (["\r\n\r\n\r\n" + "".join(CSI + "3A" + CSI + "2K" + "frame %d a\r\n" % f + CSI + "2K" + "frame %d b\r\n" % f
         + CSI + "2K" + full("#", f * 7 % COLS) + "\r\n" for f in range(1, 12))], None),
+    # Output tmux held back (an alternate screen switched on and off within
+    # one read, a synchronized update) and drew again afterwards: what the
+    # terminal would have done with it - lines kept in its scrollback, rows no
+    # longer joined - still happens.
+    "held-clear": ([CSI + "?1049h" + "alternate" + CSI + "?1049l" + "on screen" + CSI + "2J"], None),
+    "held-erase-below": ([lines(5, seed=18) + CSI + "?1049h" + "alternate" + CSI + "?1049l" + CSI + "H" + CSI + "J"], None),
+    "held-region-scroll": ([lines(24, width=30, seed=19) + CSI + "?1049h" + "alternate" + CSI + "?1049l"
+        + CSI + "10;15r" + CSI + "15;1H" + "\n\n" + E + "D" + CSI + "r" + CSI + "24;1H"], None),
+    "held-repaint": ([full("L", COLS + 40) + CSI + "?1049h" + "alternate" + CSI + "?1049l" + "\r" + (CSI + "1A" + CSI + "2K") * 3
+        + CSI + "2K" + "one\r\n" + CSI + "2K" + "two\r\n" + CSI + "2K" + "three\r\n"], None),
+    "sync-clear": ([lines(10, seed=20) + CSI + "?2026h" + "in sync\r\n" + CSI + "2J" + "after clear" + CSI + "?2026l", "\r\n"], None),
+    "sync-region-scroll": ([lines(24, width=30, seed=21) + CSI + "?2026h" + CSI + "5;12r" + CSI + "12;1H" + "\n" * 4
+        + CSI + "r" + CSI + "24;1H" + "in sync" + CSI + "?2026l", "\r\n"], None),
+    "sync-link-wrap": ([CSI + "?2026h" + OSC8("https://example.com/w", full("w", COLS + 20)) + "\r\n" * 30 + CSI + "?2026l", "\r\n"], None),
+    "erase-below-home": ([lines(10, seed=22) + CSI + "H" + CSI + "J" + "after\r\n"], None),
     "title-bell": ([E + "]0;title" + "\x07" + "\x07" + "text\r\n" + E + "]2;other" + E + "\\" + "more\r\n"], None),
 }
 
 # Fuzz cases that still differ, with what is known (open: not yet fixed).
-FUZZ_DIFFER = {
-    2: "open: sometimes (timing) blank cells after underlined text reach the terminal underlined",
-    4: "open: synchronized output mixed with wide characters, hyperlinks and ECH",
-    13: "open: an alternate screen exit around scroll-region scrolling loses blank lines from the scrollback (depends on timing)",
-    14: "open: rows join in the terminal after scroll-region scrolling and an alternate screen exit (depends on timing)",
-    16: "open: erasing a line while the cursor waits to wrap, then a wide character",
-    22: "open: an extra blank line in the scrollback after wide characters",
-}
+FUZZ_DIFFER = {}
 
 def fuzz(seed, n=40):
     """Random mix of the above, generic terminal output only."""
