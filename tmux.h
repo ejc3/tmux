@@ -3017,6 +3017,7 @@ void	tty_cmd_linefeed(struct tty *, const struct tty_ctx *);
 void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
 void	tty_cmd_history(struct tty *, const struct tty_ctx *);
 void	tty_catch_up_history(struct tty *, struct window_pane *, int);
+void	tty_forget_wraps(struct tty *, struct window_pane *);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);
