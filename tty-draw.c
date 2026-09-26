@@ -347,9 +347,12 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 	 * The line wraps on to the next row but its drawing ended before the
 	 * last column (the row was erased or is short): write its last cell
 	 * again so the terminal waits to wrap there and the next row, drawn
-	 * after it, joins it as when the program wrote it.
+	 * after it, joins it as when the program wrote it. Only for the whole
+	 * of a row as wide as the terminal, with the next row on it too; part
+	 * of a wider row does not end where the line wraps.
 	 */
-	if (atx == 0 && nx == tty->sx && py + 1 < gd->sy &&
+	if (px == 0 && nx == gd->sx && atx == 0 && nx == tty->sx &&
+	    py + 1 < gd->sy && aty + 1 < tty->sy &&
 	    (~tty->term->flags & TERM_NOAM) &&
 	    (tty->cx < tty->sx || tty->cy != aty)) {
 		gl = grid_get_line(gd, gd->hsize + py);
