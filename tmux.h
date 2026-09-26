@@ -1098,6 +1098,7 @@ struct screen {
 	struct grid			*saved_grid;
 	struct grid_cell		 saved_cell;
 	int				 saved_flags;
+	int				 saved_hwrap;
 
 	bitstr_t			*tabs;
 	struct screen_sel		*sel;
