@@ -2996,9 +2996,19 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 	if (cx == thisx && cy == thisy)
 		return;
 
-	/* Currently at the very end of the line - use absolute movement. */
-	if (thisx > tty->sx - 1)
-		goto absolute;
+	/*
+	 * Currently at the very end of the line, so a wrap is pending. Some
+	 * terminals keep it across cursor moves and wrap on the next printed
+	 * character, so clear it with CR first and move on from column 0.
+	 */
+	if (thisx > tty->sx - 1) {
+		tty_putc(tty, '\r');
+		thisx = tty->cx = 0;
+		if (thisy == UINT_MAX)
+			goto absolute;
+		if (cx == 0 && cy == thisy)
+			goto out;
+	}
 
 	/* Move to home position (0, 0). */
 	if (cx == 0 && cy == 0 && tty_term_has(term, TTYC_HOME)) {
