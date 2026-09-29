@@ -97,13 +97,6 @@ def record(case_dir, tmux, tmp):
 
 def after_mark(res):
     rows, joined, cur = res
-    if DEFAULT_MODE:
-        # The visible screen only: the last ROWS rows, joined lines not compared.
-        r = list(rows or ())
-        r = ([''] * ROWS + r)[-ROWS:]
-        while r and not r[-1]:
-            r.pop()
-        return (tuple(r), None, cur)
 
     def cut(lines):
         if lines is None:
@@ -143,8 +136,13 @@ def main():
                 open(os.path.join(keep, 'tmux.raw'), 'wb').write(t)
             wrong = []
             for e in eng:
-                a = after_mark(e.render(d, tmp))
-                b = after_mark(e.render(t, tmp))
+                if DEFAULT_MODE:
+                    # The visible screen, row for row.
+                    a = (e.screen(d, tmp), None, None)
+                    b = (e.screen(t, tmp), None, None)
+                else:
+                    a = after_mark(e.render(d, tmp))
+                    b = after_mark(e.render(t, tmp))
                 if keep:
                     for side, r in (('direct', a), ('tmux', b)):
                         open(os.path.join(keep, f'{e.name}.{side}'), 'w').write(

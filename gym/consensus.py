@@ -55,15 +55,31 @@ def same(a, b):
     return all(x == y for x, y in zip(a, b) if x is not None and y is not None)
 
 
+def screen_rows(out, rows):
+    """The last ROWS rows exactly as the engine gave them, blank ones kept."""
+    if '@@rows\n' not in out:
+        return None
+    body = out.split('@@rows\n', 1)[1]
+    for nxt in ('\n@@joined\n', '\n@@cursor '):
+        body = body.split(nxt, 1)[0]
+    r = [l.expandtabs(8).rstrip() for l in body.split('\n')]
+    return tuple(([''] * rows + r)[-rows:])
+
+
 class Engine:
     def __init__(self, name, argv):
         self.name, self.argv = name, argv
 
-    def render(self, data, tmp):
+    def run(self, data, tmp):
         f = os.path.join(tmp, self.name + '.stream')
         open(f, 'wb').write(data)
-        out = subprocess.run(self.argv + [f], capture_output=True).stdout
-        return parse(out.decode('utf-8', 'replace'))
+        return subprocess.run(self.argv + [f], capture_output=True).stdout.decode('utf-8', 'replace')
+
+    def render(self, data, tmp):
+        return parse(self.run(data, tmp))
+
+    def screen(self, data, tmp, rows=ROWS):
+        return screen_rows(self.run(data, tmp), rows)
 
 
 class TmuxEngine:
