@@ -2517,10 +2517,20 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
 static void
 tty_follow_history(struct tty *tty, struct window_pane *wp)
 {
-	struct grid	*gd = wp->base.grid;
-	u_int		 m, b, end, top;
+	struct grid		*gd = wp->base.grid;
+	struct window_pane	*old;
+	u_int			 m, b, end, top;
 
 	if (tty->hist_pane != wp->id) {
+		/*
+		 * The terminal's scrollback ends with the last history line of
+		 * the pane it followed until now; remember whether that line
+		 * wraps on to the screen, for tty_forget_wraps.
+		 */
+		old = window_pane_find_by_id(tty->hist_pane);
+		tty->hist_wrapped = (old != NULL && old->base.grid->hsize != 0 &&
+		    (grid_get_line(old->base.grid, old->base.grid->hsize - 1)->flags &
+		    GRID_LINE_WRAPPED));
 		tty->hist_pane = wp->id;
 		tty->hist_seen = gd->scroll_view;
 		tty->hist_gen = gd->scroll_generation;
@@ -2835,6 +2845,12 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 	 */
 	if (tty_pane_covered(wp))
 		return;
+	/*
+	 * A floating pane sits over the pane the terminal's scrollback belongs
+	 * to; it does not take the scrollback over.
+	 */
+	if (window_pane_is_floating(wp))
+		return;
 	if (tty->hist_pane != wp->id) {
 		tty_follow_history(tty, wp);
 		return;
@@ -2927,6 +2943,20 @@ tty_forget_wraps(struct tty *tty, struct window_pane *wp, int ours)
 	tty_region_off(tty);
 	tty_margin_off(tty);
 	tty_reset(tty);
+	/*
+	 * Another pane's line ends the terminal's scrollback and wraps on to
+	 * the top row. Most terminals keep that wrap when the row is only
+	 * erased, which would join the line to what is drawn there next: erase
+	 * the row and scroll it in after the line instead, so the line ends on
+	 * a blank row.
+	 */
+	if (!ours && tty->hist_wrapped && tty->sy > 1) {
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_EL);
+		tty_cursor(tty, 0, tty->sy - 1);
+		tty_putc(tty, '\n');
+	}
+	tty->hist_wrapped = 0;
 	if (!ours || gd->hsize == 0 ||
 	    (~grid_get_line(gd, gd->hsize - 1)->flags & GRID_LINE_WRAPPED)) {
 		tty_cursor(tty, 0, 0);

@@ -1884,6 +1884,7 @@ struct tty {
 	u_int		 hist_seen;
 	u_int		 hist_gen;	/* grid scroll_generation of hist_seen */
 	u_int		 hist_shown;	/* history rows on the screen to end */
+	int		 hist_wrapped;	/* scrollback ends wrapping on to row 0 */
 
 	struct tty_term	*term;
 
