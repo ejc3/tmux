@@ -1,7 +1,7 @@
 gym: does a program leave a terminal the same whether it runs directly or
 inside tmux, on terminals that behave differently from each other?
 
-Two questions, two tools:
+Three questions:
 
 1. Where is tmux's own terminal emulation the odd one out?
 
@@ -15,7 +15,26 @@ Two questions, two tools:
    still shows it (shrink.py). Where the engines split among themselves it is
    a difference between terminals, not a tmux bug.
 
-2. Does going through tmux change what a given terminal shows?
+2. Does a program look the same run directly and through tmux?
+
+     python3 gym/parity_real.py [--tmux BIN] [--only NAME] [--keep DIR]
+
+   render-parity's cases run in a pty directly and through a tmux client,
+   and both byte streams are replayed in Ghostty, libvterm and Alacritty.
+   Every case runs three ways: scrollback (clear-on-attach off; a pane that
+   is the whole terminal is forwarded as written), translate (the same with
+   forward-output off, so tmux draws from its grid - the path used whenever
+   forwarding cannot be) and default (clear-on-attach on; the visible screen
+   is compared). regress/render-parity.sh judges with a tmux pane instead,
+   which shares tmux's quirks.
+
+     python3 gym/run.py [--tmux BIN]
+
+   Real programs (gym/apps) through the same steps and terminal events -
+   resizes, and a phone keyboard growing and shrinking the terminal without
+   reporting it - replayed on terminal profiles.
+
+3. Does going through tmux change what a given terminal shows?
 
    vt.py is a terminal model whose behaviours real terminals disagree on are
    switches (Quirks), each classed as unstandardised or a deviation from DEC
