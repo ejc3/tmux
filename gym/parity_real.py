@@ -8,7 +8,12 @@ render-parity.sh), and both byte streams are replayed in Ghostty, libvterm
 and Alacritty: the rows and joined lines after the case's marker must match.
 
     python3 gym/parity_real.py [--tmux BIN] [--only NAME] [--engines ghostty,libvterm,alacritty]
+                               [--keep DIR]
+
+--keep DIR saves, per case, the two streams (direct.raw, tmux.raw) and each
+engine's rows after the marker (ENGINE.direct, ENGINE.tmux) for gym/report.py.
 """
+import json
 
 import os
 import subprocess
@@ -107,10 +112,20 @@ def main():
         if only and name != only:
             continue
         d, t = record(os.path.join(casedir, name), tmux, tmp)
+        keep = None
+        if '--keep' in args:
+            keep = os.path.join(args[args.index('--keep') + 1], name)
+            os.makedirs(keep, exist_ok=True)
+            open(os.path.join(keep, 'direct.raw'), 'wb').write(d)
+            open(os.path.join(keep, 'tmux.raw'), 'wb').write(t)
         verdicts = []
         for e in eng:
             a = after_mark(e.render(d, tmp))
             b = after_mark(e.render(t, tmp))
+            if keep:
+                for side, r in (('direct', a), ('tmux', b)):
+                    open(os.path.join(keep, f'{e.name}.{side}'), 'w').write(
+                        '\n'.join(r[0] or ()) + '\n')
             parts = [k for k, x, y in zip(('rows', 'joined'), a[:2], b[:2])
                      if x is not None and y is not None and x != y]
             verdicts.append((e.name, parts))

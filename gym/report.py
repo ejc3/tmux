@@ -25,10 +25,31 @@ def rows(path):
     return open(path).read().split('\n--- joined')[0].split('\n')
 
 
-def parity(out, up, br):
+def plain(path):
+    return open(path).read().rstrip('\n').split('\n') if os.path.exists(path) else []
+
+
+def parity(out, up, br, engine='ghostty'):
+    """Directories from gym/parity_real.py --keep (ENGINE.direct/.tmux: what
+    a real terminal holds) or from render-parity.sh's RP_KEEP (bare/tmux: what
+    a tmux pane holds)."""
     made = []
     for case in sorted(os.listdir(up)):
         u, b = os.path.join(up, case), os.path.join(br, case)
+        if os.path.exists(os.path.join(u, f'{engine}.direct')):
+            direct = plain(os.path.join(u, f'{engine}.direct'))
+            via_up = plain(os.path.join(u, f'{engine}.tmux'))
+            via_br = plain(os.path.join(b, f'{engine}.tmux'))
+            if direct == via_up:
+                continue
+            img = evidence.compare([(f'program run directly ({engine})', direct),
+                                    (f'through upstream tmux ({engine})', via_up),
+                                    (f'through tmux with the fixes ({engine})', via_br)], 80)
+            name = f'parity-{case}.png'
+            img.save(os.path.join(out, name))
+            made.append({'image': name, 'case': case, 'engine': engine,
+                         'fixed': via_br == direct})
+            continue
         if not os.path.exists(os.path.join(u, 'bare')):
             continue
         direct, via_up = rows(os.path.join(u, 'bare')), rows(os.path.join(u, 'tmux'))

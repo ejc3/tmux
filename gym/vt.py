@@ -20,7 +20,7 @@ from dataclasses import dataclass, field, replace
 #     shift_unwraps (which rows are joined is private bookkeeping for copy and
 #     reflow); wide (emoji drawing width); nowrap_pending.
 #   DEC defines it and some terminals deviate: wrap='sticky' (DEC's last
-#     column flag is cleared by cursor movement; PuTTY and Prompt keep it),
+#     column flag is cleared by cursor movement; PuTTY keeps it),
 #     il_cr=False (DEC and xterm home the column on IL/DL; tmux does not),
 #     rep_clamp (REP repeats as if typed and so wraps; tmux stops at the edge),
 #     acs=False (not a terminal behaviour: how capture-pane reports the cells).
@@ -117,7 +117,10 @@ class Quirks:
 
 
 XTERM = Quirks()
-PROMPT = Quirks(wrap='sticky', grow='pull', shrink='blankfirst', reflow=True)
+# Prompt (iOS): a phone probe (2026-09-10) showed a cursor move clears its
+# pending wrap as in xterm; what it does differently is resize (pull rows
+# back, drop blank rows first, reflow).
+PROMPT = Quirks(grow='pull', shrink='blankfirst', reflow=True)
 ITERM = Quirks(grow='pull', shrink='blankfirst', reflow=True)
 # Ghostty (libghostty-vt), checked by validate.py --ghostty.
 GHOSTTY = Quirks(grow='pull', nowrap_pending=True, erase_clears_pending=True,
