@@ -11,7 +11,7 @@ state = {'text': '', 'drawn': 0}
 
 
 def box(cols):
-    return ['─' * cols, '❯ ' + state['text'], '─' * cols, '  ⏵⏵ bypass permissions on']
+    return ['─' * cols, '❯ ' + state['text'], '─' * cols, '  >> bypass permissions on']
 
 
 def draw():
@@ -27,7 +27,7 @@ def draw():
 
 
 signal.signal(signal.SIGWINCH, lambda *_: draw())
-for i in range(12):
+for i in range(40):
     a.w(f'● line {i} of the conversation\r\n')
 a.w('\r\n')
 draw()
