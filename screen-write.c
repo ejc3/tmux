@@ -1646,6 +1646,32 @@ screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 	screen_write_redraw_line(ctx, &ttyctx, s->cy);
 }
 
+/*
+ * Whether the row above y wraps on to it. Erasing a row or inserting or
+ * deleting rows at y ends that wrap in the grid (grid_clear_lines,
+ * grid_move_lines); terminals keep it, so the line stays joined through tmux
+ * as it would directly.
+ */
+static int
+screen_write_wrapped_above(struct screen *s, u_int y)
+{
+	struct grid	*gd = s->grid;
+
+	if (y == 0)
+		return (0);
+	return (!!(grid_get_line(gd, gd->hsize + y - 1)->flags &
+	    GRID_LINE_WRAPPED));
+}
+
+static void
+screen_write_keep_wrapped_above(struct screen *s, u_int y, int wrapped)
+{
+	struct grid	*gd = s->grid;
+
+	if (y != 0 && wrapped)
+		grid_get_line(gd, gd->hsize + y - 1)->flags |= GRID_LINE_WRAPPED;
+}
+
 /* Insert ny lines. */
 void
 screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
@@ -1653,6 +1679,7 @@ screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	struct screen	*s = ctx->s;
 	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
+	int		 wrapped;
 
 	if (ny == 0)
 		ny = 1;
@@ -1677,7 +1704,9 @@ screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
+	wrapped = screen_write_wrapped_above(s, s->cy);
 	grid_view_insert_lines_region(gd, s->rlower, s->cy, ny, bg);
+	screen_write_keep_wrapped_above(s, s->cy, wrapped);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = ny;
@@ -1700,6 +1729,7 @@ screen_write_deleteline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
 	u_int		 ry;
+	int		 wrapped;
 
 	if (ny == 0)
 		ny = 1;
@@ -1725,7 +1755,9 @@ screen_write_deleteline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
+	wrapped = screen_write_wrapped_above(s, s->cy);
 	grid_view_delete_lines_region(gd, s->rlower, s->cy, ny, bg);
+	screen_write_keep_wrapped_above(s, s->cy, wrapped);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = ny;
@@ -1750,6 +1782,7 @@ screen_write_clearline(struct screen_write_ctx *ctx, u_int bg)
 	struct screen_write_citem	*ci = ctx->item;
 	struct osc133_data		 od;
 	u_int				 flags;
+	int			 wrapped;
 
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
 	if (gl->cellsize == 0 && COLOUR_DEFAULT(bg))
@@ -1762,7 +1795,9 @@ screen_write_clearline(struct screen_write_ctx *ctx, u_int bg)
 
 	flags = gl->flags & GRID_LINE_OSC133_FLAGS;
 	memcpy(&od, &gl->osc133_data, sizeof od);
+	wrapped = screen_write_wrapped_above(s, s->cy);
 	grid_view_clear(s->grid, 0, s->cy, sx, 1, bg);
+	screen_write_keep_wrapped_above(s, s->cy, wrapped);
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
 	gl->flags |= flags;
 	memcpy(&gl->osc133_data, &od, sizeof gl->osc133_data);
