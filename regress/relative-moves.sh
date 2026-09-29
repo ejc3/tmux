@@ -50,6 +50,10 @@ $OUTER new -d -s keep \; set -g default-terminal xterm-256color \; \
     set -g status off || exit 1
 $INNER new -d -s inner -x 80 -y 24 "exec sleep 100000" \; \
     set -g status off \; set -s clear-on-attach off || exit 1
+# tmux's own drawing: with forwarding the program's moves would be written
+# as they are.
+$INNER show -s forward-output >/dev/null 2>&1 &&
+    { $INNER set -s forward-output off || exit 1; }
 $OUTER new -d -s tmux -x 80 -y 24 "unset TMUX; exec $INNER attach -t inner" ||
     exit 1
 wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1

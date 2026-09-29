@@ -1430,6 +1430,12 @@ struct window_pane {
 
 	struct input_ctx *ictx;
 
+	/* Output written to the terminal as it came (forward.c). */
+	enum { FWD_GROUND, FWD_ESC, FWD_CSI, FWD_STRING, FWD_STRING_ESC }
+			 fwd_state;
+	u_char		 fwd_buf[512];
+	size_t		 fwd_len;
+
 	struct grid_cell cached_gc;
 	struct grid_cell cached_active_gc;
 	u_int		 cached_dim;
@@ -2296,6 +2302,7 @@ struct client {
 
 	char			*ttyname;
 	struct tty		 tty;
+	u_int			 forward_pane;	/* pane forwarded, forward.c */
 
 	size_t			 written;
 	size_t			 discarded;
@@ -3001,6 +3008,7 @@ int	tty_init(struct tty *, struct client *);
 void	tty_resize(struct tty *);
 void	tty_set_size(struct tty *, u_int, u_int, u_int, u_int);
 void	tty_invalidate(struct tty *);
+void	tty_forward(struct tty *, const u_char *, size_t);
 void	tty_start_tty(struct tty *);
 void	tty_send_requests(struct tty *);
 void	tty_repeat_requests(struct tty *, int);
@@ -3055,6 +3063,13 @@ void	tty_draw_images(struct client *, struct window_pane *);
 #endif
 void	tty_cmd_syncstart(struct tty *, const struct tty_ctx *);
 void	tty_default_colours(struct grid_cell *, struct window_pane *, u_int *);
+
+/* forward.c */
+int	 forward_eligible(struct client *, struct window_pane *);
+void	 forward_pane_output(struct window_pane *, const u_char *, size_t);
+void	 forward_pane_parsed(struct window_pane *);
+void	 forward_stop(struct client *);
+void	 forward_check(void);
 
 /* tty-term.c */
 extern struct tty_terms tty_terms;
@@ -3487,6 +3502,8 @@ void	 input_reset(struct input_ctx *, int);
 struct evbuffer *input_pending(struct input_ctx *);
 void	 input_parse_pane(struct window_pane *);
 void	 input_parse_buffer(struct window_pane *, const u_char *, size_t);
+int	 input_is_ground(struct input_ctx *);
+int	 input_cell_is_default(struct input_ctx *);
 void	 input_parse_screen(struct input_ctx *, struct screen *,
 	     screen_write_init_ctx_cb, void *, const u_char *, size_t);
 void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,

@@ -1037,6 +1037,22 @@ input_parse_pane(struct window_pane *wp)
 	window_pane_update_used_data(wp, &wp->offset, new_size);
 }
 
+/* Is the parser between sequences? */
+int
+input_is_ground(struct input_ctx *ictx)
+{
+	return (ictx->state == &input_state_ground);
+}
+
+/* Are the attributes and character sets the defaults? */
+int
+input_cell_is_default(struct input_ctx *ictx)
+{
+	return (grid_cells_equal(&ictx->cell.cell, &grid_default_cell) &&
+	    ictx->cell.set == 0 && ictx->cell.g0set == 0 &&
+	    ictx->cell.g1set == 0);
+}
+
 /* Parse given input. */
 void
 input_parse_buffer(struct window_pane *wp, const u_char *buf, size_t len)
@@ -1046,6 +1062,7 @@ input_parse_buffer(struct window_pane *wp, const u_char *buf, size_t len)
 
 	if (len == 0)
 		return;
+	forward_pane_output(wp, buf, len);
 
 	wp->output_generation++;
 	window_update_activity(wp->window);
@@ -1070,6 +1087,7 @@ input_parse_buffer(struct window_pane *wp, const u_char *buf, size_t len)
 
 	input_parse(ictx, buf, len);
 	screen_write_stop(sctx);
+	forward_pane_parsed(wp);
 }
 
 /* Parse given input for screen. */

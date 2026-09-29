@@ -17,6 +17,8 @@
 #
 # RENDER_PARITY_CASES selects cases by name; RENDER_PARITY_DIR reads cases
 # from a directory instead (NAME/1, NAME/2, ... and NAME/differ).
+# RENDER_PARITY_FORWARD=off turns forward-output off, so the pane is drawn
+# from the grid rather than forwarded as written.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -464,6 +466,9 @@ run_case() {
 	    set -g status off \; set -s clear-on-attach off \; \
 	    set -as terminal-features \
 	    ',xterm*:hyperlinks:usstyle:RGB:strikethrough:overline' || exit 1
+	if [ -n "$RENDER_PARITY_FORWARD" ]; then
+		$INNER set -s forward-output $RENDER_PARITY_FORWARD || exit 1
+	fi
 	$OUTER new -d -s bare -x 80 -y 24 \
 	    "sh $DIR/write.sh $case $DIR/go $DIR/done.bare" || exit 1
 	$OUTER new -d -s tmux -x 80 -y 24 \
