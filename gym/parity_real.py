@@ -10,11 +10,13 @@ and Alacritty: the rows and joined lines after the case's marker must match.
     python3 gym/parity_real.py [--tmux BIN] [--only NAME] [--engines ghostty,libvterm,alacritty]
                                [--keep DIR]
 
-Every case runs in both of tmux's modes: scrollback (clear-on-attach off, the
-terminal keeps its own scrollback; everything is compared) and default
-(clear-on-attach on: tmux keeps to the terminal's alternate screen and never
-writes into its scrollback; the visible screen is compared). --mode scrollback
-or --mode default runs one.
+Every case runs in three ways: scrollback (clear-on-attach off, the terminal
+keeps its own scrollback; a whole-terminal pane is forwarded as written;
+everything is compared), translate (the same with forward-output off, so tmux
+draws from its grid; everything is compared) and default (clear-on-attach on:
+tmux keeps to the terminal's alternate screen and never writes into its
+scrollback; the visible screen is compared). --mode picks one; a tmux without
+forward-output runs scrollback and default.
 
 --keep DIR saves, per case, the two streams (direct.raw, tmux.raw) and each
 engine's rows after the marker (ENGINE.direct, ENGINE.tmux) for gym/report.py.
@@ -53,6 +55,7 @@ time.sleep(100000)
 
 
 DEFAULT_MODE = False
+FORWARD = None      # None: leave forward-output alone; 'off': turn it off
 
 
 def record(case_dir, tmux, tmp):
@@ -70,6 +73,7 @@ def record(case_dir, tmux, tmp):
     subprocess.run(base + ['new', '-d', '-x', str(COLS), '-y', str(ROWS),
                            f'python3 {w} {case_dir} {ct}', ';', 'set', '-g', 'status', 'off', ';',
                            'set', '-s', 'clear-on-attach', 'on' if DEFAULT_MODE else 'off', ';',
+                           ] + (['set', '-s', 'forward-output', FORWARD, ';'] if FORWARD else []) + [
                            'set', '-as', 'terminal-features',
                            ',xterm*:hyperlinks:usstyle:RGB:strikethrough:overline'],
                    env=env, check=True)
@@ -106,11 +110,19 @@ def after_mark(res):
     return (cut(rows), cut(joined), cur)
 
 
+def tmux_bin(args):
+    return args[args.index('--tmux') + 1] if '--tmux' in args else 'tmux'
+
+
 def main():
     args = sys.argv[1:]
-    global DEFAULT_MODE
+    global DEFAULT_MODE, FORWARD
+    has_forward = subprocess.run([tmux_bin(args), '-f/dev/null', '-L', 'gym-probe$$',
+                                  'start', ';', 'show', '-s', 'forward-output'],
+                                 capture_output=True).returncode == 0
+    subprocess.run([tmux_bin(args), '-L', 'gym-probe$$', 'kill-server'], capture_output=True)
     modes = [args[args.index('--mode') + 1]] if '--mode' in args else \
-        (['default'] if '--default' in args else ['scrollback', 'default'])
+        (['scrollback', 'translate', 'default'] if has_forward else ['scrollback', 'default'])
     tmux = args[args.index('--tmux') + 1] if '--tmux' in args else 'tmux'
     only = args[args.index('--only') + 1] if '--only' in args else None
     names = (args[args.index('--engines') + 1] if '--engines' in args
@@ -127,6 +139,7 @@ def main():
         cols = []
         for mode in modes:
             DEFAULT_MODE = mode == 'default'
+            FORWARD = 'off' if mode == 'translate' else None
             d, t = record(os.path.join(casedir, name), tmux, tmp)
             keep = None
             if '--keep' in args:
