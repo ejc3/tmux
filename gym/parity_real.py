@@ -10,6 +10,12 @@ and Alacritty: the rows and joined lines after the case's marker must match.
     python3 gym/parity_real.py [--tmux BIN] [--only NAME] [--engines ghostty,libvterm,alacritty]
                                [--keep DIR]
 
+Every case runs in both of tmux's modes: scrollback (clear-on-attach off, the
+terminal keeps its own scrollback; everything is compared) and default
+(clear-on-attach on: tmux keeps to the terminal's alternate screen and never
+writes into its scrollback; the visible screen is compared). --mode scrollback
+or --mode default runs one.
+
 --keep DIR saves, per case, the two streams (direct.raw, tmux.raw) and each
 engine's rows after the marker (ENGINE.direct, ENGINE.tmux) for gym/report.py.
 """
@@ -46,6 +52,9 @@ time.sleep(100000)
 '''
 
 
+DEFAULT_MODE = False
+
+
 def record(case_dir, tmux, tmp):
     """(direct bytes, through-tmux bytes) for one case."""
     w = os.path.join(tmp, 'writer.py')
@@ -60,7 +69,7 @@ def record(case_dir, tmux, tmp):
             os.unlink(os.path.join(d, f))
     subprocess.run(base + ['new', '-d', '-x', str(COLS), '-y', str(ROWS),
                            f'python3 {w} {case_dir} {ct}', ';', 'set', '-g', 'status', 'off', ';',
-                           'set', '-s', 'clear-on-attach', 'off', ';',
+                           'set', '-s', 'clear-on-attach', 'on' if DEFAULT_MODE else 'off', ';',
                            'set', '-as', 'terminal-features',
                            ',xterm*:hyperlinks:usstyle:RGB:strikethrough:overline'],
                    env=env, check=True)
@@ -88,6 +97,13 @@ def record(case_dir, tmux, tmp):
 
 def after_mark(res):
     rows, joined, cur = res
+    if DEFAULT_MODE:
+        # The visible screen only: the last ROWS rows, joined lines not compared.
+        r = list(rows or ())
+        r = ([''] * ROWS + r)[-ROWS:]
+        while r and not r[-1]:
+            r.pop()
+        return (tuple(r), None, cur)
 
     def cut(lines):
         if lines is None:
@@ -99,6 +115,9 @@ def after_mark(res):
 
 def main():
     args = sys.argv[1:]
+    global DEFAULT_MODE
+    modes = [args[args.index('--mode') + 1]] if '--mode' in args else \
+        (['default'] if '--default' in args else ['scrollback', 'default'])
     tmux = args[args.index('--tmux') + 1] if '--tmux' in args else 'tmux'
     only = args[args.index('--only') + 1] if '--only' in args else None
     names = (args[args.index('--engines') + 1] if '--engines' in args
@@ -107,36 +126,40 @@ def main():
     eng = [e for e in consensus.engines(tmp) if e.name in names]
     cases = validate.parity_cases(tmp)
     casedir = os.path.join(tmp, 'cases')
-    bad = 0
+    bad = {m: 0 for m in modes}
     for name, _ in cases:
         if only and name != only:
             continue
-        d, t = record(os.path.join(casedir, name), tmux, tmp)
-        keep = None
-        if '--keep' in args:
-            keep = os.path.join(args[args.index('--keep') + 1], name)
-            os.makedirs(keep, exist_ok=True)
-            open(os.path.join(keep, 'direct.raw'), 'wb').write(d)
-            open(os.path.join(keep, 'tmux.raw'), 'wb').write(t)
-        verdicts = []
-        for e in eng:
-            a = after_mark(e.render(d, tmp))
-            b = after_mark(e.render(t, tmp))
-            if keep:
-                for side, r in (('direct', a), ('tmux', b)):
-                    open(os.path.join(keep, f'{e.name}.{side}'), 'w').write(
-                        '\n'.join(r[0] or ()) + '\n')
-            parts = [k for k, x, y in zip(('rows', 'joined'), a[:2], b[:2])
-                     if x is not None and y is not None and x != y]
-            verdicts.append((e.name, parts))
-        wrong = [f'{n}:{"+".join(p)}' for n, p in verdicts if p]
         expected = os.path.exists(os.path.join(casedir, name, 'differ'))
-        if wrong and not expected:
-            bad += 1
-        print(f'{name:28s} {"same" if not wrong else "DIFFERS " + " ".join(wrong)}'
-              f'{" (expected)" if wrong and expected else ""}')
-    print(f'{bad} cases differ on a real terminal')
-    sys.exit(1 if bad else 0)
+        cols = []
+        for mode in modes:
+            DEFAULT_MODE = mode == 'default'
+            d, t = record(os.path.join(casedir, name), tmux, tmp)
+            keep = None
+            if '--keep' in args:
+                keep = os.path.join(args[args.index('--keep') + 1], mode, name)
+                os.makedirs(keep, exist_ok=True)
+                open(os.path.join(keep, 'direct.raw'), 'wb').write(d)
+                open(os.path.join(keep, 'tmux.raw'), 'wb').write(t)
+            wrong = []
+            for e in eng:
+                a = after_mark(e.render(d, tmp))
+                b = after_mark(e.render(t, tmp))
+                if keep:
+                    for side, r in (('direct', a), ('tmux', b)):
+                        open(os.path.join(keep, f'{e.name}.{side}'), 'w').write(
+                            '\n'.join(r[0] or ()) + '\n')
+                parts = [k for k, x, y in zip(('rows', 'joined'), a[:2], b[:2])
+                         if x is not None and y is not None and x != y]
+                if parts:
+                    wrong.append(f'{e.name}:{"+".join(parts)}')
+            if wrong and not expected:
+                bad[mode] += 1
+            cols.append(f'{mode}: ' + ('same' if not wrong else 'DIFFERS ' + ' '.join(wrong)))
+        print(f'{name:28s} ' + ' | '.join(cols) + (' (expected)' if expected else ''))
+    for m in modes:
+        print(f'{m}: {bad[m]} cases differ on a real terminal')
+    sys.exit(1 if any(bad.values()) else 0)
 
 
 if __name__ == '__main__':
