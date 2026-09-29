@@ -1,0 +1,42 @@
+gym: does a program leave a terminal the same whether it runs directly or
+inside tmux, on terminals that behave differently from each other?
+
+Two questions, two tools:
+
+1. Where is tmux's own terminal emulation the odd one out?
+
+     python3 gym/consensus.py [--fuzz N] [--only NAME] [--no-shrink]
+
+   A program inside tmux is interpreted by tmux's emulator; the terminal only
+   shows tmux's redraw. consensus.py runs each stream through a tmux pane and
+   three independent engines - Ghostty (libghostty-vt), libvterm (Neovim,
+   Vim) and Alacritty (alacritty_terminal) - and reports streams where the
+   three agree and tmux alone differs, shrunk to the smallest stream that
+   still shows it (shrink.py). Where the engines split among themselves it is
+   a difference between terminals, not a tmux bug.
+
+2. Does going through tmux change what a given terminal shows?
+
+   vt.py is a terminal model whose behaviours real terminals disagree on are
+   switches (Quirks), each classed as unstandardised or a deviation from DEC
+   in the comment above the class. Profiles: XTERM, ITERM, PROMPT (iOS),
+   GHOSTTY, TMUXPANE. It exists for what a real engine cannot give: terminals
+   that cannot run here (Prompt on iOS) and events at an exact byte - a phone
+   keyboard growing and shrinking the terminal without reporting it
+   (Term.hidden_shift). validate.py checks the model against a tmux pane and
+   (--ghostty) against Ghostty, stream by stream; --bisect and shrink.py find
+   where they part.
+
+Files
+  vt.py          terminal model
+  validate.py    model against a tmux pane or Ghostty
+  consensus.py   tmux against Ghostty, libvterm and Alacritty
+  shrink.py      delta debugging over escape sequences and characters
+  probe.py       one small stream on the model and on Ghostty
+  fuzz.py        seeded random streams
+  ghostty/gvt.c, refs/lvt.c, refs/avt/   engine drivers; refs/build.sh builds
+                 them (libghostty-vt needs Zig 0.16, libvterm-dev, cargo)
+
+Streams are regress/render-parity.sh's cases (from its own cases.awk) plus
+fuzz.py's. Every driver takes events at byte offsets: "OFFSET resize COLS
+ROWS" and "OFFSET hidden K".
