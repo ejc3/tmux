@@ -921,6 +921,7 @@ input_key_get_mouse(struct screen *s, struct mouse_event *m, u_int x, u_int y,
 {
 	static char	 buf[40];
 	size_t		 len;
+	u_int		 px, py;
 
 	*rbuf = NULL;
 	*rlen = 0;
@@ -959,7 +960,25 @@ input_key_get_mouse(struct screen *s, struct mouse_event *m, u_int x, u_int y,
 	 * UTF-8 (1005) extension if the application requested, or to the
 	 * legacy format.
 	 */
-	if (m->sgr_type != ' ' && (s->mode & MODE_MOUSE_SGR)) {
+	if (m->sgr_type != ' ' && (s->mode & MODE_MOUSE_PIXELS)) {
+		/*
+		 * In pixels from the pane's top left, from 0 (as kitty): the
+		 * terminal's less the pane's offset if it gave them (m->x - x
+		 * is the offset in cells), or the top left of the cell.
+		 */
+		if (m->pixels) {
+			px = m->px - (m->x - x) * m->xpixel;
+			py = m->py - (m->y - y) * m->ypixel;
+		} else if (m->xpixel != 0 && m->ypixel != 0) {
+			px = x * m->xpixel;
+			py = y * m->ypixel;
+		} else {
+			px = x;
+			py = y;
+		}
+		len = xsnprintf(buf, sizeof buf, "\033[<%u;%u;%u%c",
+		    m->sgr_b, px, py, m->sgr_type);
+	} else if (m->sgr_type != ' ' && (s->mode & MODE_MOUSE_SGR)) {
 		len = xsnprintf(buf, sizeof buf, "\033[<%u;%u;%u%c",
 		    m->sgr_b, x + 1, y + 1, m->sgr_type);
 	} else if (s->mode & MODE_MOUSE_UTF8) {

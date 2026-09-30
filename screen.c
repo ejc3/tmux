@@ -915,6 +915,8 @@ screen_mode_to_string(int mode)
 		strlcat(tmp, "MOUSE_UTF8,", sizeof tmp);
 	if (mode & MODE_MOUSE_SGR)
 		strlcat(tmp, "MOUSE_SGR,", sizeof tmp);
+	if (mode & MODE_MOUSE_PIXELS)
+		strlcat(tmp, "MOUSE_PIXELS,", sizeof tmp);
 	if (mode & MODE_BRACKETPASTE)
 		strlcat(tmp, "BRACKETPASTE,", sizeof tmp);
 	if (mode & MODE_FOCUSON)

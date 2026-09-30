@@ -283,6 +283,16 @@ static const struct tty_feature tty_feature_kittykeys = {
 	TERM_KKEYS
 };
 
+/*
+ * Terminal reports the mouse in pixels (SGR-Pixels, mode 1016), found by
+ * asking it with DECRQM.
+ */
+static const struct tty_feature tty_feature_mousepixels = {
+	"mousepixels",
+	NULL,
+	TERM_MOUSEPIXELS
+};
+
 /* Terminal supports DECSLRM margins. */
 static const char *const tty_feature_margins_capabilities[] = {
 	"Enmg=\\E[?69h",
@@ -426,6 +436,7 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_ignorefkeys,
 	&tty_feature_margins,
 	&tty_feature_mouse,
+	&tty_feature_mousepixels,
 	&tty_feature_notify,
 	&tty_feature_osc7,
 	&tty_feature_overline,

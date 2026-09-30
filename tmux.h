@@ -698,6 +698,7 @@ enum tty_code_code {
 #define MODE_THEME_UPDATES 0x80000
 #define MODE_SYNC 0x100000
 #define MODE_INBAND_RESIZE 0x200000
+#define MODE_MOUSE_PIXELS 0x400000
 
 #define ALL_MODES 0xffffff
 #define ALL_MOUSE_MODES (MODE_MOUSE_STANDARD|MODE_MOUSE_BUTTON|MODE_MOUSE_ALL)
@@ -1785,6 +1786,12 @@ struct mouse_event {
 
 	u_int		sgr_type;
 	u_int		sgr_b;
+
+	int		pixels;	/* px and py are from the terminal */
+	u_int		px;
+	u_int		py;
+	u_int		xpixel;	/* the terminal's cell size */
+	u_int		ypixel;
 };
 
 /* Key event. */
@@ -1820,6 +1827,7 @@ struct tty_term {
 #define TERM_NOTIFY 0x200
 #define TERM_POINTER 0x400
 #define TERM_KKEYS 0x800
+#define TERM_MOUSEPIXELS 0x1000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1905,8 +1913,11 @@ struct tty {
 #define TTY_WRAPPED0 0x100000
 #define TTY_HAVEKKEYS 0x200000
 #define TTY_KKEYS 0x400000
+#define TTY_HAVEPIXELS 0x800000
+#define TTY_MOUSEPIXELS 0x1000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
+	 TTY_HAVEPIXELS)
 	int		 flags;
 
 	/*

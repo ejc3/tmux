@@ -431,6 +431,8 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[?2026$p");
 		if (~tty->flags & TTY_HAVEKKEYS)
 			tty_puts(tty, "\033[?u");
+		if (~tty->flags & TTY_HAVEPIXELS)
+			tty_puts(tty, "\033[?1016$p");
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
@@ -529,6 +531,10 @@ tty_stop_tty(struct tty *tty)
 	if (tty->flags & TTY_KKEYS) {
 		tty_raw(tty, "\033[<u");
 		tty->flags &= ~TTY_KKEYS;
+	}
+	if (tty->flags & TTY_MOUSEPIXELS) {
+		tty_raw(tty, "\033[?1016l");
+		tty->flags &= ~TTY_MOUSEPIXELS;
 	}
 
 	if (tty_use_margin(tty))
@@ -996,15 +1002,29 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 		    screen_mode_to_string(mode));
 	}
 
-	if ((changed & ALL_MOUSE_MODES) && tty_term_has(term, TTYC_KMOUS)) {
+	if ((changed & (ALL_MOUSE_MODES|MODE_MOUSE_PIXELS)) &&
+	    tty_term_has(term, TTYC_KMOUS)) {
 		/*
 		 * If the mouse modes have changed, clear then all and apply
 		 * again. There are differences in how terminals track the
-		 * various bits.
+		 * various bits. Ask for pixels if a pane wants them and the
+		 * terminal has them, and the cell size is known to find the
+		 * cell.
 		 */
 		tty_puts(tty, "\033[?1006l\033[?1000l\033[?1002l\033[?1003l");
-		if (mode & ALL_MOUSE_MODES)
+		if (tty->flags & TTY_MOUSEPIXELS) {
+			tty_puts(tty, "\033[?1016l");
+			tty->flags &= ~TTY_MOUSEPIXELS;
+		}
+		if (mode & ALL_MOUSE_MODES) {
 			tty_puts(tty, "\033[?1006h");
+			if ((mode & MODE_MOUSE_PIXELS) &&
+			    (term->flags & TERM_MOUSEPIXELS) &&
+			    tty->xpixel != 0 && tty->ypixel != 0) {
+				tty_puts(tty, "\033[?1016h");
+				tty->flags |= TTY_MOUSEPIXELS;
+			}
+		}
 		if (mode & MODE_MOUSE_ALL)
 			tty_puts(tty, "\033[?1000h\033[?1002h\033[?1003h");
 		else if (mode & MODE_MOUSE_BUTTON)
@@ -2391,7 +2411,7 @@ tty_invalidate(struct tty *tty)
 	 * redraw: a mouse event in between would reach tmux with the mouse
 	 * off and go to the pane as keys.
 	 */
-	int	mouse = tty->mode & ALL_MOUSE_MODES;
+	int	mouse = tty->mode & (ALL_MOUSE_MODES|MODE_MOUSE_PIXELS);
 
 	if (tty->flags & TTY_STARTED)
 		tty_pay_scroll(tty);
