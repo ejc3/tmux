@@ -55,38 +55,38 @@ capture()
 # wait_clients $n: wait until the test server has exactly $n clients.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "expected $1 clients, have $c"
+	fail "expected $1 clients, have $_c"
 }
 
 # wait_mode $target $state: wait until a pane enters (1) or leaves (0) mode.
 wait_mode()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t "$1" '#{pane_in_mode}' \
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t "$1" '#{pane_in_mode}' \
 		    2>/dev/null)
-		[ "$got" = "$2" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		[ "$_got" = "$2" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane $1 mode state is '$got', expected '$2'"
+	fail "pane $1 mode state is '$_got', expected '$2'"
 }
 
 # wait_for $marker: wait until the rendered screen contains $marker.
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		capture | grep -F -q "$1" && return 0
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1' to render"
 }
@@ -114,11 +114,11 @@ open_window()
 # other pane, then drop the window.
 check_killed()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		pane_gone "$active" && break
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	pane_gone "$active" || fail "$1: pane not killed on exit"
 	panes=$($TMUX list-panes -t m:w -F '#{pane_id}' | tr '\n' ' ')

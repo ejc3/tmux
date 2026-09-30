@@ -29,35 +29,49 @@ trap cleanup EXIT
 
 wait_for()
 {
-	option=$1
-	expected=$2
-	i=0
+	_option=$1
+	_expected=$2
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+	while [ $_i -lt 120 ]; do
+		_value=$($TMUX show -gqv "$_option" 2>/dev/null || true)
+		[ "$_value" = "$_expected" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $option to be '$expected' but got '$value'"
+	fail "expected $_option to be '$_expected' but got '$_value'"
+}
+
+# Each monitor hook is checked once a second on its own timer. @tick watches a
+# clock, so it fires on every check and counts them in @ticks. Its second
+# check after a change is more than a second after it, so by then every other
+# monitor hook has been checked since the change and its commands have run.
+wait_checked()
+{
+	_start=$($TMUX show -gqv @ticks)
+	_i=0
+
+	while [ "$($TMUX show -gqv @ticks)" -lt $((_start + 2)) ]; do
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && fail "monitor hooks are not being checked"
+		sleep 0.05
+	done
 }
 
 assert_unchanged()
 {
-	option=$1
-	expected=$2
-	i=0
-
-	while [ $i -lt 15 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] || \
-			fail "expected $option to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.2
-	done
+	wait_checked
+	_value=$($TMUX show -gqv "$1" 2>/dev/null || true)
+	[ "$_value" = "$2" ] || \
+		fail "expected $1 to remain '$2' but got '$_value'"
 }
 
 $TMUX new -d -s one || fail "new-session failed"
+$TMUX set -g @clock '%s' || fail "set @clock failed"
+$TMUX set -g @ticks 0 || fail "set @ticks failed"
+$TMUX set-hook -g -B '@tick::#{T:@clock}' \
+	'set -gF @ticks "#{e|+:#{@ticks},1}"' ||
+	fail "set-hook -B @tick failed"
 
 $TMUX set -g @seen 0 || fail "set @seen failed"
 $TMUX set-hook -g -B '@session-name::#{session_name}' \

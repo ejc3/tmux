@@ -11,13 +11,17 @@ TERM=screen
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
 TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 $TMUX kill-server 2>/dev/null
-sleep 1
+i=0
+while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "old server did not exit"; exit 1; }
+	sleep 0.05
+done
 
 TMP=$(mktemp)
 trap "rm -f $TMP; $TMUX kill-server 2>/dev/null" 0 1 15
 
 $TMUX -f/dev/null new -d -x80 -y24 || exit 1
-sleep 1
 
 # Keep the session alive regardless of pane exits.
 $TMUX set -g remain-on-exit on
@@ -26,7 +30,9 @@ exit_status=0
 
 # query_decrpm <outfile> <mode> [setup_seq]
 #   Spawn a pane that optionally sends setup_seq, then sends DECRQM for
-#   mode 2026 and captures the response into outfile in cat -v form.
+#   mode 2026 and captures the response into outfile in cat -v form. tmux
+#   reads the pane in order, so the setup is seen before the query; the pane
+#   is dead (remain-on-exit) once the response has been written.
 query_decrpm() {
 	_outfile=$1
 	_mode=$2
@@ -36,12 +42,16 @@ query_decrpm() {
 	$TMUX respawnw -k -t:0 -- sh -c "
 		exec 2>/dev/null
 		stty raw -echo
-		${_setup:+printf '$_setup'; sleep 0.2}
+		${_setup:+printf '$_setup'}
 		printf '\033[%s\$p' "$_mode"
 		dd bs=1 count=$_n 2>/dev/null | cat -v > $_outfile
-		sleep 0.2
 	" || exit 1
-	sleep 2
+	_i=0
+	until [ "$($TMUX display -p -t:0 '#{pane_dead}')" = 1 ]; do
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && { echo "no DECRPM for $_mode"; exit 1; }
+		sleep 0.05
+	done
 }
 
 # ------------------------------------------------------------------

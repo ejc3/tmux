@@ -33,17 +33,39 @@ fail()
 	exit 1
 }
 
+# wait_until DESCRIPTION COMMAND...
+#
+# Poll until COMMAND succeeds.
+wait_until()
+{
+	_what="$1"
+	shift
+	_i=0
+	until eval "$@"; do
+		_i=$((_i + 1))
+		[ "$_i" -gt 400 ] && fail "Timed out waiting for $_what."
+		sleep 0.05
+	done
+}
+
 # click COL ROW
 #
 # Write an SGR mouse press then release (button 0) at 1-based COL/ROW to the
-# outer pane holding the inner client.
+# outer pane holding the inner client, and wait for a binding to record @m or
+# @cm. A press within 300 ms of the last one in the same pane is a second
+# click, not MouseDown1Pane, so let that timer run out first.
 click()
 {
 	col="$1"
 	row="$2"
+	[ -n "$_clicked" ] && sleep 0.5
+	_clicked=1
+	$TMUX set -gqu @m
+	$TMUX set -gqu @cm
 	seq=$(printf '\033[<0;%s;%sM\033[<0;%s;%sm' "$col" "$row" "$col" "$row")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
+	wait_until "the click at $col,$row" \
+	    '[ -n "$($TMUX show -gv @m 2>/dev/null)$($TMUX show -gv @cm 2>/dev/null)" ]'
 }
 
 cleanup
@@ -52,9 +74,10 @@ cleanup
 # we send it.
 $TMUX new-session -d -s cov -x 80 -y 24 'cat' || exit 1
 $TMUX set -g mouse on
-sleep 1
 $TMUX send-keys -t cov:0.0 'alpha beta gamma' Enter
-sleep 1
+# The line is echoed and then written back by cat.
+wait_until "the pane text" \
+    '[ "$($TMUX capture-pane -p -t cov:0.0 | grep -c "^alpha beta gamma$")" -eq 2 ]'
 
 # Record every pane mouse variable when the pane is clicked.
 $TMUX bind -n MouseDown1Pane run-shell \
@@ -63,7 +86,8 @@ $TMUX bind -n MouseDown1Pane run-shell \
 # Attach a real client inside an outer tmux pane.  Clicks all target the first
 # row, which lines up with the inner client regardless of the outer status line.
 $TMUX2 new-session -d -x 80 -y 24 "$TMUX attach -t cov" || exit 1
-sleep 1
+wait_until "the inner client to attach" \
+    '[ -n "$($TMUX list-clients -F "#{client_termtype}" 2>/dev/null)" ]'
 OUTER=$($TMUX2 list-panes -F '#{pane_id}' | head -1)
 [ -n "$OUTER" ] || fail "No outer pane."
 
@@ -106,7 +130,8 @@ esac
 $TMUX bind -T copy-mode MouseDown1Pane run-shell \
     "$TMUX set -g @cm 'x=#{mouse_x} word=#{mouse_word} line=#{mouse_line}'"
 $TMUX copy-mode -t cov:0.0
-sleep 1
+wait_until "copy mode" \
+    '[ "$($TMUX display -p -t cov:0.0 "#{pane_in_mode}")" = 1 ]'
 click 8 1
 CM=$($TMUX show -gv @cm 2>/dev/null)
 case "$CM" in
@@ -114,7 +139,8 @@ case "$CM" in
 *) fail "Unexpected copy-mode mouse_word in: $CM" ;;
 esac
 $TMUX send-keys -t cov:0.0 -X cancel
-sleep 1
+wait_until "copy mode to exit" \
+    '[ "$($TMUX display -p -t cov:0.0 "#{pane_in_mode}")" = 0 ]'
 
 # Hyperlinks: a new window whose pane emits an OSC 8 hyperlink over the text
 # "LINKED".  Clicking it reports the target URL via mouse_hyperlink (this drives
@@ -128,9 +154,11 @@ exec cat
 EOF
 chmod +x "$LINKSH"
 $TMUX neww -t cov: -n link "$LINKSH"
-sleep 1
+wait_until "the link text" \
+    '$TMUX capture-pane -p -t cov:link | grep -q LINKED'
 $TMUX select-window -t cov:link
-sleep 1
+wait_until "the link window to be drawn" \
+    '$TMUX2 capture-pane -p -t "$OUTER" | grep -q LINKED'
 click 3 1
 M=$($TMUX show -gv @m 2>/dev/null)
 rm -f "$LINKSH"

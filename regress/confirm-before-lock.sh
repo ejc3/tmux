@@ -37,40 +37,54 @@ capture()
 
 wait_capture()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		captured=$(capture)
-		printf '%s\n' "$captured" | grep -Fq "$marker" && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_captured=$(capture)
+		printf '%s\n' "$_captured" | grep -Fq "$_marker" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "timed out waiting for '$marker'"
+	fail "timed out waiting for '$_marker'"
+}
+
+# wait_gone: wait until the capture no longer shows a marker.
+wait_gone()
+{
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_captured=$(capture)
+		printf '%s\n' "$_captured" | grep -Fq "$_marker" || return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "timed out waiting for '$_marker' to go"
 }
 
 wait_option()
 {
-	want=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($INNER show-option -gqv @confirmed 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_want=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_got=$($INNER show-option -gqv @confirmed 2>/dev/null)
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "@confirmed is '$got', expected '$want'"
+	fail "@confirmed is '$_got', expected '$_want'"
 }
 
 wait_file()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		[ -f "$marker" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		[ -f "$_marker" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "lock command did not create $marker"
+	fail "lock command did not create $_marker"
 }
 
 $INNER new-session -d -s test -x80 -y24 'exec sleep 100' || exit 1
@@ -80,7 +94,12 @@ $INNER set-option -g window-size manual || exit 1
 $OUTER new-session -d -s outer -x80 -y24 "$INNER attach -t test" || exit 1
 $OUTER set-option -g status off || exit 1
 $OUTER set-option -g window-size manual || exit 1
-sleep 1
+i=0
+until [ -n "$($INNER list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	i=$((i + 1))
+	[ "$i" -lt 400 ] || fail "inner client did not attach"
+	sleep 0.05
+done
 
 client=$($INNER list-clients -F '#{client_name}')
 [ -n "$client" ] || fail "inner client did not attach"
@@ -100,8 +119,11 @@ $INNER set-option -g @confirmed sentinel || exit 1
 $OUTER send-keys M-a || exit 1
 wait_capture "Confirm 'set-option'? (y/n)"
 $OUTER send-keys n || exit 1
-sleep 0.2
-wait_option sentinel
+# The prompt is redrawn away once n is handled; the command would have run by
+# then.
+wait_gone "Confirm 'set-option'? (y/n)"
+got=$($INNER show-option -gqv @confirmed)
+[ "$got" = sentinel ] || fail "@confirmed is '$got', expected 'sentinel'"
 $OUTER send-keys M-a || exit 1
 wait_capture "Confirm 'set-option'? (y/n)"
 $OUTER send-keys y || exit 1
