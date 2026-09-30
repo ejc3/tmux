@@ -6369,6 +6369,13 @@ is enabled.
 .Xc
 When the entire screen is cleared and this option is on, scroll the contents of
 the screen into history before clearing it.
+With
+.Ic clear\-on\-attach
+off, this is done only when the screen is erased as a whole
+.Pq ED 2 ,
+not when it is erased from the top left corner to the end
+.Pq ED 0 ,
+as terminals keeping their own scrollback do not keep it then either.
 .Pp
 .It Ic scroll\-replay Ar lines
 With

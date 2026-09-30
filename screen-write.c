@@ -2214,9 +2214,16 @@ screen_write_clearendofscreen(struct screen_write_ctx *ctx, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
-	/* Scroll into history if it is enabled and clearing entire screen. */
+	/*
+	 * Scroll into history if it is enabled and clearing entire screen.
+	 * With clear-on-attach off the terminal keeps its own scrollback, and
+	 * none keeps what ED 0 erases from the top left (unlike ED 2, where
+	 * they differ): nor does tmux's history then, or a replay of it would
+	 * put the old screen in the terminal's scrollback.
+	 */
 	if (s->cx == 0 &&
 	    s->cy == 0 &&
+	    clear_on_attach &&
 	    (gd->flags & GRID_HISTORY) &&
 	    ctx->wp != NULL &&
 	    options_get_number(ctx->wp->options, "scroll-on-clear")) {

@@ -10,6 +10,9 @@
 #
 # The inner server keeps the terminal's scrollback (clear-on-attach off) and
 # is told the terminal can draw hyperlinks, styled underlines and RGB colour.
+# The outer server, the terminal, has clear-on-attach off too, so it keeps
+# its scrollback as terminals do: nothing from an ED 0 at the top left
+# (scroll-on-clear).
 # A case is a set of chunks written in order with a pause between, so tmux
 # sends what came before a chunk before it reads the chunk; the cases are
 # written by cases.awk below. A case marked to differ is expected to, for the
@@ -460,7 +463,8 @@ run_case() {
 	rm -f $DIR/go $DIR/done.*
 
 	$OUTER new -d -s keep \; set -g history-limit 100000 \; \
-	    set -g default-terminal xterm-256color \; set -g status off || exit 1
+	    set -g default-terminal xterm-256color \; set -g status off \; \
+	    set -s clear-on-attach off || exit 1
 	$INNER new -d -s inner -x 80 -y 24 \
 	    "sh $DIR/write.sh $case $DIR/go $DIR/done.tmux" \; \
 	    set -g status off \; set -s clear-on-attach off \; \
