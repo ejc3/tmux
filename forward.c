@@ -270,10 +270,8 @@ forward_sequence(struct tty *tty, const u_char *s, size_t n,
 			if (memchr(s, '?', n) != NULL)
 				return;
 			break;
-		case 22:				/* pointer shape query */
-			if (p + 1 < s + n && p[1] == '?')
-				return;
-			break;
+		case 22:				/* pointer shape */
+			return;			/* tmux sets it itself */
 		case 9:					/* notifications */
 		case 99:
 		case 777:

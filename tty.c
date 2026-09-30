@@ -489,6 +489,8 @@ tty_stop_tty(struct tty *tty)
 		tty->flags &= ~TTY_OWESCROLL;
 		tty_raw(tty, "\r\n");
 	}
+	if (c->pointer != NULL && (tty->term->flags & TERM_POINTER))
+		tty_raw(tty, "\033]22;\033\\");
 	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
 	if (tty_acs_needed(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
@@ -797,6 +799,18 @@ tty_notify(struct tty *tty, const char *s)
 		return;
 	tty_puts(tty, "\033]");
 	tty_puts(tty, s);
+	tty_puts(tty, "\033\\");
+}
+
+/* Set the mouse pointer shape (OSC 22); NULL for the terminal's own. */
+void
+tty_set_pointer(struct tty *tty, const char *name)
+{
+	if (~tty->term->flags & TERM_POINTER)
+		return;
+	tty_puts(tty, "\033]22;");
+	if (name != NULL)
+		tty_puts(tty, name);
 	tty_puts(tty, "\033\\");
 }
 

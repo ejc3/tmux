@@ -1349,6 +1349,10 @@ struct window_pane {
 	int		 references;
 	u_int		 active_point;
 
+#define WINDOW_PANE_POINTERS 8
+	char		*pointer[WINDOW_PANE_POINTERS]; /* OSC 22 shapes */
+	u_int		 npointer;
+
 	struct window	*window;
 	struct options	*options;
 
@@ -2300,6 +2304,7 @@ struct client {
 	int			 term_features;
 	int		 	 term_nofeatures;
 	char			*term_type;
+	char			*pointer;	/* shape set, or NULL */
 	char		       **term_caps;
 	u_int			 term_ncaps;
 
@@ -3019,6 +3024,7 @@ void	tty_stop_tty(struct tty *);
 void	tty_set_title(struct tty *, const char *);
 void	tty_set_path(struct tty *, const char *);
 void	tty_notify(struct tty *, const char *);
+void	tty_set_pointer(struct tty *, const char *);
 void	tty_set_progress_bar(struct tty *, struct progress_bar *);
 void	tty_default_attributes(struct tty *, u_int,
 	    const struct tty_style_ctx *);
@@ -3394,6 +3400,7 @@ void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
 void	 server_client_notify(struct window_pane *, const char *);
+const char *window_pane_pointer(struct window_pane *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);
 int	 server_client_handle_key(struct client *, struct key_event *);

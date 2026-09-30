@@ -624,6 +624,15 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 		window_pane_report_size(wp, sx, sy);
 }
 
+/* The pointer shape a pane set with OSC 22, or NULL for the default. */
+const char *
+window_pane_pointer(struct window_pane *wp)
+{
+	if (wp == NULL || wp->npointer == 0)
+		return (NULL);
+	return (wp->pointer[wp->npointer - 1]);
+}
+
 /*
  * Tell a pane that asked for in-band resize notifications (mode 2048) its
  * size: rows, columns, then height and width in pixels.
@@ -1633,6 +1642,8 @@ window_pane_free(struct window_pane *wp)
 	log_debug("pane %%%u freed (%d references)", wp->id, wp->references);
 
 	free(wp->searchstr);
+	while (wp->npointer != 0)
+		free(wp->pointer[--wp->npointer]);
 	screen_free(&wp->status_screen);
 	screen_free(&wp->base);
 	free(wp->r.ranges);

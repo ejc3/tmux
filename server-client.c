@@ -43,6 +43,8 @@ static void	server_client_check_modes(struct client *);
 static void	server_client_set_title(struct client *);
 static void	server_client_set_path(struct client *);
 static void	server_client_set_progress_bar(struct client *);
+static void	server_client_set_extras(struct client *);
+static void	server_client_set_pointer(struct client *);
 static void	server_client_reset_state(struct client *);
 static void	server_client_update_latest(struct client *);
 static int	server_client_handle_dead_key(struct window_pane *, key_code);
@@ -408,6 +410,7 @@ server_client_lost(struct client *c)
 
 	free(c->term_name);
 	free(c->term_type);
+	free(c->pointer);
 	tty_term_free_list(c->term_caps, c->term_ncaps);
 
 	status_free(c);
@@ -1782,6 +1785,7 @@ server_client_loop(void)
 		if (c->session != NULL && c->session->curw != NULL) {
 			server_client_check_modes(c);
 			server_client_check_redraw(c);
+			server_client_set_pointer(c);
 			server_client_reset_state(c);
 		}
 	}
@@ -2449,6 +2453,8 @@ server_client_check_redraw(struct client *c)
 	 * would be redrawn is already there.
 	 */
 	if (c->forward_pane != UINT_MAX) {
+		if (c->flags & CLIENT_ALLREDRAWFLAGS)
+			server_client_set_extras(c);
 		c->flags &= ~CLIENT_ALLREDRAWFLAGS;
 		return;
 	}
@@ -2567,11 +2573,7 @@ server_client_check_redraw(struct client *c)
 	 * aren't here just to redraw panes).
 	 */
 	if (c->flags & CLIENT_ALLREDRAWFLAGS) {
-		if (options_get_number(s->options, "set-titles")) {
-			server_client_set_title(c);
-			server_client_set_path(c);
-		}
-		server_client_set_progress_bar(c);
+		server_client_set_extras(c);
 		redraw_screen(c);
 	}
 
@@ -2652,6 +2654,39 @@ server_client_notify(struct window_pane *wp, const char *s)
 			continue;
 		tty_notify(&c->tty, s);
 	}
+}
+
+/*
+ * What the terminal shows besides the panes: the title and path, the
+ * progress bar. Also while forwarding, when nothing is redrawn.
+ */
+static void
+server_client_set_extras(struct client *c)
+{
+	if (options_get_number(c->session->options, "set-titles")) {
+		server_client_set_title(c);
+		server_client_set_path(c);
+	}
+	server_client_set_progress_bar(c);
+}
+
+/* Show the active pane's pointer shape, if it changed. */
+static void
+server_client_set_pointer(struct client *c)
+{
+	struct session		*s = c->session;
+	const char		*name;
+
+	if (s == NULL || (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED)))
+		return;
+	name = window_pane_pointer(s->curw->window->active);
+	if (name == NULL && c->pointer == NULL)
+		return;
+	if (name != NULL && c->pointer != NULL && strcmp(name, c->pointer) == 0)
+		return;
+	free(c->pointer);
+	c->pointer = (name == NULL) ? NULL : xstrdup(name);
+	tty_set_pointer(&c->tty, name);
 }
 
 static void
