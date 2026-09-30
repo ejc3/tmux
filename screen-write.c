@@ -1689,6 +1689,23 @@ screen_write_clear(struct screen *s, u_int px, u_int py, u_int nx, u_int ny,
 	screen_write_keep_wrapped_above(s, py, wrapped);
 }
 
+/*
+ * Scroll the scroll region up or down one line, keeping the wrap of the row
+ * above it, as an insert or delete of a line at its top does.
+ */
+static void
+screen_write_scroll_region(struct screen *s, int up, u_int bg)
+{
+	int	wrapped;
+
+	wrapped = screen_write_wrapped_above(s, s->rupper);
+	if (up)
+		grid_view_scroll_region_up(s->grid, s->rupper, s->rlower, bg);
+	else
+		grid_view_scroll_region_down(s->grid, s->rupper, s->rlower, bg);
+	screen_write_keep_wrapped_above(s, s->rupper, wrapped);
+}
+
 /* Insert ny lines. */
 void
 screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
@@ -1947,7 +1964,7 @@ screen_write_reverseindex(struct screen_write_ctx *ctx, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
-	grid_view_scroll_region_down(s->grid, s->rupper, s->rlower, bg);
+	screen_write_scroll_region(s, 0, bg);
 	screen_write_collect_flush(ctx, 0, __func__);
 
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
@@ -2057,7 +2074,7 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 		ctx->bg = obg;
 	}
 
-	grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
+	screen_write_scroll_region(s, 1, bg);
 	screen_write_collect_scroll(ctx, bg);
 	ctx->scrolled++;
 	ctx->scroll_wrapped = wrapped;
@@ -2079,7 +2096,6 @@ void
 screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 {
 	struct screen	*s = ctx->s;
-	struct grid	*gd = s->grid;
 	u_int		 i;
 
 	if (lines == 0)
@@ -2102,7 +2118,7 @@ screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 #endif
 
 	for (i = 0; i < lines; i++) {
-		grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
+		screen_write_scroll_region(s, 1, bg);
 		screen_write_collect_scroll(ctx, bg);
 	}
 	ctx->scrolled += lines;
@@ -2114,7 +2130,6 @@ void
 screen_write_scrolldown(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 {
 	struct screen	*s = ctx->s;
-	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
 	u_int		 i, ry;
 
@@ -2132,7 +2147,7 @@ screen_write_scrolldown(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 #endif
 
 	for (i = 0; i < lines; i++)
-		grid_view_scroll_region_down(gd, s->rupper, s->rlower, bg);
+		screen_write_scroll_region(s, 0, bg);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = lines;

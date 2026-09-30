@@ -1,8 +1,9 @@
 #!/bin/sh
 
-# Erasing a row a line wraps on to (EL, ED, ECH), or deleting or inserting rows below where
-# a line wraps, leaves the row above wrapped: xterm-like terminals (Ghostty,
-# libvterm, Alacritty, VTE) keep the line joined, so capture-pane -J must too.
+# Erasing a row a line wraps on to (EL, ED, ECH), inserting or deleting rows
+# there (IL, DL), or scrolling a region that starts there leaves the row
+# above wrapped: Ghostty, libvterm and Alacritty keep the line joined (VTE
+# too, except for a region scrolled down), so capture-pane -J must too.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -36,6 +37,12 @@ check '\033[2;1H\033[K\033[2;3HX' 1 aaaaaaaaaaaaaaaaaaaaX EL0
 check '\033[2;20H\033[1K\033[2;3HX' 1 aaaaaaaaaaaaaaaaaaaaX EL1
 check '\033[2;1H\033[J\033[2;3HX' 1 aaaaaaaaaaaaaaaaaaaaX ED0
 check '\033[2;1H\033[20X\033[2;3HX' 1 aaaaaaaaaaaaaaaaaaaaX ECH
+# A scroll region starting at row 2 scrolls down (SD, RI at its top) or up
+# (SU, a line feed at its bottom): row 1 still wraps on to row 2.
+check '\033[2;5r\033[T\033[r\033[2;3HX' 1 aaaaaaaaaaaaaaaaaaaaX SD
+check '\033[2;5r\033[2;1H\033M\033[r\033[2;3HX' 1 aaaaaaaaaaaaaaaaaaaaX RI
+check '\033[2;5r\033[S\033[r' 1 aaaaaaaaaaaaaaaaaaaabbbbbbbbbbcccccccccc SU
+check '\033[2;5r\033[5;1H\n\033[r' 1 aaaaaaaaaaaaaaaaaaaabbbbbbbbbbcccccccccc LF
 # ED 0 from the middle of row 1 erases its end, which ends its wrap.
 check '\033[1;11H\033[J\033[2;3HX' 1 aaaaaaaaaa ED0-above
 exit 0
