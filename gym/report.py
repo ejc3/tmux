@@ -49,9 +49,10 @@ def parity(out, up, br, engine='ghostty'):
             direct, via_up, via_br = ([''] * (n - len(p)) + p
                                       for p in (direct, via_up, via_br))
             img = evidence.compare([
-                (f'program run directly ({engine}, {counts[0]} rows)', direct),
-                (f'through upstream tmux ({engine}, {counts[1]} rows)', via_up),
-                (f'through tmux with the fixes ({engine}, {counts[2]} rows)', via_br)], 80)
+                (f'directly, {engine}, {counts[0]} rows', direct),
+                (f'upstream tmux, {engine}, {counts[1]} rows', via_up),
+                (f'tmux with the fixes, {engine}, {counts[2]} rows', via_br)], 80,
+                stack=True, window=40, scale=2)
             name = f'parity-{case}.png'
             img.save(os.path.join(out, name))
             made.append({'image': name, 'case': case, 'engine': engine,
@@ -75,26 +76,66 @@ def parity(out, up, br, engine='ghostty'):
     return made
 
 
-def engines(out, findings):
+def engines(out, findings, joins=False):
+    """One image per finding: the screen if what is drawn differs, otherwise
+    (with joins) the lines with wrapped rows joined. A join alone looks the
+    same drawn, and a window of columns rarely shows both ends of it, so by
+    default such findings get no image; joined_counts describes them."""
+    def drawn(rows):
+        rows = [r.rstrip() for r in rows]
+        while rows and not rows[-1]:
+            rows.pop()
+        return rows
+
     made = []
     for n, f in enumerate(findings):
         eng = f['engines']
-        panels = [('tmux (upstream)', list(eng['tmux'][0] or []))]
-        for k in ('ghostty', 'libvterm', 'alacritty', 'xterm'):
-            if k in eng and eng[k][0] is not None:
-                panels.append((k, list(eng[k][0])))
+        names = ['tmux'] + [k for k in ('ghostty', 'libvterm', 'alacritty', 'xterm')
+                            if k in eng]
+        panels, shows = None, None
+        for idx, what in ((0, 'screen'), (1, 'joined lines'))[:2 if joins else 1]:
+            ps = []
+            for k in names:
+                v = eng[k][idx]
+                if v is None:
+                    continue
+                if idx == 1:
+                    # tmux's joined lines come without blanks (capture-pane -J).
+                    v = [l.replace(' ', '') for l in v]
+                title = 'tmux (upstream)' if k == 'tmux' else k
+                ps.append((title + ('' if idx == 0 else ', joined'), list(v)))
+            if len(ps) > 1 and any(drawn(p[1]) != drawn(ps[0][1]) for p in ps[1:]):
+                panels, shows = ps, what
+                break
+        if panels is None:
+            continue
         n_rows = max(len(p[1]) for p in panels)
         for p in panels:
             while len(p[1]) < n_rows:
                 p[1].append('')
-        img = evidence.compare(panels, 80, context=2)
+        cols = max([80] + [len(r) for p in panels for r in p[1]])
+        img = evidence.compare(panels, cols, context=2, max_rows=6, stack=True,
+                               window=32, scale=2)
         name = f'engines-{n:02d}.png'
         img.save(os.path.join(out, name))
         agree = [k for k, v in eng.items() if k != 'tmux' and
                  all(a == b for a, b in zip(v, eng['ghostty']) if a is not None and b is not None)]
         made.append({'image': name, 'case': f['case'], 'stream': f['stream'],
-                     'agree_against_tmux': agree})
+                     'shows': shows, 'agree_against_tmux': agree})
     return made
+
+
+def joined_counts(finding):
+    """{engine: number of lines, wrapped rows joined} for a finding."""
+    out = {}
+    for k, v in finding['engines'].items():
+        if v[1] is None:
+            continue
+        lines = [l.replace(' ', '') for l in v[1]]
+        while lines and not lines[-1]:
+            lines.pop()
+        out[k] = len(lines)
+    return out
 
 
 def main():

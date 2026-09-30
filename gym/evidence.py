@@ -142,8 +142,10 @@ def draw_glyph(img, d, x, y, ch, fg):
     d.text((x, y + 1), ch, font=f, fill=fg)
 
 
-def panel(rows, cols, title, marks, first, last):
-    w = cols * CW + 2 * PAD + 30
+def panel(rows, cols, title, marks, first, last, c0=0, c1=None):
+    """Rows first..last and columns c0..c1 of a screen."""
+    c1 = cols if c1 is None else c1
+    w = (c1 - c0) * CW + 2 * PAD + 30
     h = HEAD + (last - first) * CH + 2 * PAD
     img = Image.new('RGB', (w, h), BG)
     d = ImageDraw.Draw(img)
@@ -152,13 +154,13 @@ def panel(rows, cols, title, marks, first, last):
         y = HEAD + (r - first) * CH
         d.text((PAD, y + 2), f'{r:3d}', font=font(MONO, 11), fill=(110, 110, 110))
         row = rows[r] if r < len(rows) else [(' ', None, None, False, False)] * cols
-        for c in range(cols):
-            x = PAD + 30 + c * CW
+        for c in range(c0, c1):
+            x = PAD + 30 + (c - c0) * CW
             cell = row[c]
             if cell is None:
                 continue
             ch, fg, bg, ul, link = cell
-            wide = c + 1 < cols and row[c + 1] is None
+            wide = c + 1 < c1 and row[c + 1] is None
             cw = CW * (2 if wide else 1)
             if bg:
                 d.rectangle([x, y, x + cw - 1, y + CH - 1], fill=bg)
@@ -166,16 +168,19 @@ def panel(rows, cols, title, marks, first, last):
                 draw_glyph(img, d, x, y, ch, fg or FG)
             if ul or link:
                 d.line([x, y + CH - 2, x + cw - 1, y + CH - 2], fill=fg or FG)
-        for c in range(cols):
+        for c in range(c0, c1):
             if (r, c) in marks:
-                x = PAD + 30 + c * CW
+                x = PAD + 30 + (c - c0) * CW
                 d.rectangle([x, y, x + CW - 1, y + CH - 1], outline=RED, width=2)
     return img
 
 
-def compare(panels, cols, context=3, max_rows=26):
+def compare(panels, cols, context=3, max_rows=26, stack=False, window=None,
+            scale=1):
     """panels: [(title, [row text])]. Returns an image, cells differing from
-    the first panel outlined."""
+    the first panel outlined. stack puts the panels one above another;
+    window shows only that many columns, around the first difference; scale
+    enlarges the image (for screens that shrink it to fit, like a phone)."""
     grids = [[cells(r, cols) for r in rows] for _, rows in panels]
     n = max(len(g) for g in grids)
     for g in grids:
@@ -196,14 +201,31 @@ def compare(panels, cols, context=3, max_rows=26):
         first, last = max(0, n - max_rows), n
     if last - first > max_rows:
         last = first + max_rows
-    ims = [panel(g, cols, t, marks[k], first, last) for k, ((t, _), g) in enumerate(zip(panels, grids))]
-    W = sum(i.width for i in ims) + GAP * (len(ims) - 1)
-    H = max(i.height for i in ims)
+    c0, c1 = 0, cols
+    if window is not None and window < cols:
+        dcols = sorted(c for m in marks for _, c in m)
+        start = dcols[0] - 4 if dcols else 0
+        c0 = max(0, min(start, cols - window))
+        c1 = c0 + window
+        panels = [(f'{t}, cols {c0 + 1}-{c1}', r) for t, r in panels]
+    ims = [panel(g, cols, t, marks[k], first, last, c0, c1)
+           for k, ((t, _), g) in enumerate(zip(panels, grids))]
+    if stack:
+        W = max(i.width for i in ims)
+        H = sum(i.height for i in ims) + GAP * (len(ims) - 1)
+    else:
+        W = sum(i.width for i in ims) + GAP * (len(ims) - 1)
+        H = max(i.height for i in ims)
     out = Image.new('RGB', (W, H), (60, 60, 60))
-    x = 0
+    x = y = 0
     for i in ims:
-        out.paste(i, (x, 0))
-        x += i.width + GAP
+        out.paste(i, (x, y))
+        if stack:
+            y += i.height + GAP
+        else:
+            x += i.width + GAP
+    if scale != 1:
+        out = out.resize((out.width * scale, out.height * scale), Image.NEAREST)
     return out
 
 
