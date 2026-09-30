@@ -526,17 +526,18 @@ static const struct {
 };
 
 /*
- * Encode a key as the kitty keyboard protocol does for the flags in effect.
- * tmux has key presses only, and knows only the shift, alt and ctrl
- * modifiers; the key number of a shifted character is the lower case letter
- * for A to Z and otherwise the character itself.
+ * Encode a key as the kitty keyboard protocol does for the flags in effect,
+ * or return -1 for the key to be sent as it would be without them. tmux has
+ * key presses only, and knows only the shift, alt and ctrl modifiers; the key
+ * number of a shifted character is the lower case letter for A to Z and
+ * otherwise the character itself.
  */
 static int
 input_key_kitty(struct bufferevent *bev, key_code key, u_int flags)
 {
 	key_code		 k = key & KEYC_MASK_KEY;
 	u_int			 i, mods = 0, number = 0, shifted = 0, text = 0;
-	int			 plain = 0;
+	int			 plain = 0, function = 1, legacy;
 	char			 final = 'u', tmp[64], field[32];
 	struct utf8_data	 ud;
 	wchar_t			 wc;
@@ -588,6 +589,7 @@ input_key_kitty(struct bufferevent *bev, key_code key, u_int flags)
 			wc = k;
 		else
 			return (-1);
+		function = 0;
 		if (iswupper(wc)) {
 			mods |= 1;
 			shifted = wc;
@@ -612,9 +614,32 @@ input_key_kitty(struct bufferevent *bev, key_code key, u_int flags)
 		return (0);
 	}
 
-	/* Enter, Tab and Backspace alone stay as they are. */
-	if (plain && mods == 0 && (~flags & KKEYS_ALL))
-		return (-1);
+	/*
+	 * Without flag 1, 2 or 8, functional keys are as they are without the
+	 * protocol; so is Escape alone without 1 or 8, and Enter, Tab and
+	 * Backspace alone without 8. Other keys are as they are unless flag 1
+	 * or 8 is set or there is a shifted key (flag 4) or text (flag 16) to
+	 * add.
+	 */
+	legacy = !(flags & (KKEYS_DISAMBIGUATE|KKEYS_EVENTS|KKEYS_ALL));
+	if ((~flags & KKEYS_TEXT) || (~flags & KKEYS_ALL))
+		text = 0;
+	if (function) {
+		if (legacy)
+			return (-1);
+		if (mods == 0 && number == 27 &&
+		    !(flags & (KKEYS_DISAMBIGUATE|KKEYS_ALL)))
+			return (-1);
+		if (plain && mods == 0 && (~flags & KKEYS_ALL))
+			return (-1);
+		shifted = 0;
+	} else {
+		if ((~flags & KKEYS_ALTERNATES) || (~mods & 1))
+			shifted = 0;
+		if (shifted == 0 && text == 0 &&
+		    !(flags & (KKEYS_DISAMBIGUATE|KKEYS_ALL)))
+			return (-1);
+	}
 
 	if (final != 'u') {
 		if (mods == 0 && final != '~')
@@ -630,10 +655,8 @@ input_key_kitty(struct bufferevent *bev, key_code key, u_int flags)
 	}
 
 	n = xsnprintf(tmp, sizeof tmp, "\033[%u", number);
-	if ((flags & KKEYS_ALTERNATES) && (mods & 1) && shifted != 0)
+	if (shifted != 0)
 		n += xsnprintf(tmp + n, sizeof tmp - n, ":%u", shifted);
-	if ((~flags & KKEYS_TEXT) || (~flags & KKEYS_ALL))
-		text = 0;
 	if (mods != 0 || text != 0) {
 		*field = '\0';
 		if (mods != 0)
@@ -766,13 +789,9 @@ input_key(struct screen *s, struct bufferevent *bev, key_code key)
 		return (0);
 	}
 
-	/*
-	 * The kitty keyboard protocol, if the program has asked for it. Without
-	 * flag 1 or 8, presses are sent as they would be anyway.
-	 */
+	/* The kitty keyboard protocol, if the program has asked for it. */
 	flags = screen_kkeys_flags(s);
-	if ((flags & (KKEYS_DISAMBIGUATE|KKEYS_ALL)) &&
-	    input_key_kitty(bev, key, flags) == 0)
+	if (flags != 0 && input_key_kitty(bev, key, flags) == 0)
 		return (0);
 
 	/* Is this backspace? */
