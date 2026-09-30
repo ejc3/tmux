@@ -92,6 +92,10 @@ class Side:
             os.waitpid(self.pid, 0)
         except OSError:
             pass
+        try:
+            os.close(self.fd)
+        except OSError:
+            pass
 
 
 def run(name, tmux, out=None):
