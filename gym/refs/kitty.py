@@ -5,8 +5,9 @@ the same with soft-wrapped rows joined, and "@@cursor X Y 0 0".
 
     xvfb-run -a python3 gym/refs/kitty.py COLS ROWS STREAM
 
-KITTY is the kitty binary (default: a release unpacked in
-/mnt/fcvm-btrfs/term-judges/kitty, see gym/README).
+KITTY is the kitty binary (default: /mnt/fcvm-btrfs/term-judges/kitty, a
+link to kitty's nightly build, kitty-nightly-arm64.txz from the nightly
+release, unpacked; see gym/README).
 """
 
 import json
