@@ -58,8 +58,13 @@ def stream(seed, cols=80, rows=24, n=None):
         elif k < 0.89:
             out.append(r.choice(['\0337', '\0338', '\033[s', '\033[u']))
         elif k < 0.90:
-            out.append('\033[?1049l' if alt else '\033[?1049h')
-            alt = not alt
+            # Alternate screens and the saved cursor, including resets
+            # outside the alternate screen.
+            m = r.choice(['1049', '1049', '1047', '47', '1048'])
+            on = r.random() < 0.5
+            out.append(f'\033[?{m}{"h" if on else "l"}')
+            if m != '1048':
+                alt = on
         elif k < 0.92:
             out.append(r.choice(['\033D', '\033M', '\033E']))
         elif k < 0.94:
