@@ -206,6 +206,43 @@ forward_sgr(struct tty *tty, const u_char *s, size_t n, struct evbuffer *out)
 	evbuffer_add(out, "m", 1);
 }
 
+/* Whether a sequence contains a string. */
+static int
+forward_find(const u_char *s, size_t n, const char *what)
+{
+	size_t	len = strlen(what), i;
+
+	for (i = 0; i + len <= n; i++) {
+		if (memcmp(s + i, what, len) == 0)
+			return (1);
+	}
+	return (0);
+}
+
+/*
+ * A kitty graphics command: the terminal would answer it, and the answer
+ * would reach the pane as if typed, after tmux has answered what came
+ * later. Ask for no answer (q=2), keeping the other keys.
+ */
+static void
+forward_kitty_graphics(const u_char *s, size_t n, struct evbuffer *out)
+{
+	const u_char	*p = s + 3, *end = s + n, *key;
+
+	evbuffer_add(out, "\033_Gq=2", 6);
+	while (p < end && *p != ';' && *p != '\033' && *p != '\007') {
+		key = p;
+		while (p < end && *p != ',' && *p != ';' && *p != '\033' &&
+		    *p != '\007')
+			p++;
+		if (*key != 'q')
+			evbuffer_add_printf(out, ",%.*s", (int)(p - key), key);
+		if (p < end && *p == ',')
+			p++;
+	}
+	evbuffer_add(out, p, end - p);
+}
+
 static void
 forward_sequence(struct tty *tty, const u_char *s, size_t n,
     struct evbuffer *out)
@@ -245,6 +282,21 @@ forward_sequence(struct tty *tty, const u_char *s, size_t n,
 		case 19:
 			if (memchr(s, '?', n) != NULL)
 				return;
+			break;
+		case 22:				/* pointer shape query */
+			if (p + 1 < s + n && p[1] == '?')
+				return;
+			break;
+		case 99:				/* notification query */
+			if (forward_find(s, n, "p=?"))
+				return;
+			break;
+		}
+		goto write;
+	case '_':					/* APC */
+		if (n > 4 && s[2] == 'G' && s[4] == '=') {
+			forward_kitty_graphics(s, n, out);
+			return;
 		}
 		goto write;
 	case 'P':					/* DCS */

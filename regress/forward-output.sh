@@ -19,12 +19,15 @@ DIR=$(mktemp -d)
 trap "$OUTER kill-server 2>/dev/null; $INNER kill-server 2>/dev/null; rm -rf $DIR" 0 1 15
 
 # Autowrap off with a mode tmux manages in the same sequence, a device
-# attributes query, a line too long for the row, autowrap back on, then red
-# as an RGB colour.
+# attributes query, a line too long for the row, autowrap back on, red as an
+# RGB colour, then a kitty graphics command, a pointer shape query and a
+# pointer shape, and a notification query and a notification.
 cat >$DIR/write.sh <<'EOS'
 while [ ! -e "$1/go" ]; do sleep 0.05; done
 printf 'start\r\n\033[?7;1000l\033[cXX%100sYY\033[?7h\r\n' '' | tr ' ' o
 printf '\033[38;2;255;0;0mred\033[m\r\nend\r\n'
+printf '\033_Ga=T,f=100,q=1;AAAA\033\\\033]22;?__current__\033\\'
+printf '\033]22;pointer\033\\\033]99;i=1:p=?;\033\\\033]99;;hello\033\\'
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -61,6 +64,9 @@ run() {
 has() {
 	grep -q "$(printf "$1")" $DIR/out
 }
+hasf() {
+	grep -qF "$(printf "$1")" $DIR/out
+}
 stop() {
 	$INNER kill-server 2>/dev/null
 	$OUTER kill-server 2>/dev/null
@@ -81,6 +87,15 @@ has '\033\\[?7;1000l' && { echo "mouse mode written"; exit 1; }
 has '\033\\[38;5;196mred' ||
     { echo "RGB colour not written as the terminal can show it"; exit 1; }
 has '38;2;255;0;0' && { echo "RGB colour written to a terminal without"; exit 1; }
+# The terminal's answer to a graphics command would reach the program as if
+# typed: it is asked for none. Queries tmux does not answer are not written;
+# what needs no answer is.
+hasf '\033_Gq=2,a=T,f=100;AAAA\033\\' ||
+    { echo "graphics command not written quiet"; exit 1; }
+hasf '\033]22;?' && { echo "pointer shape query written"; exit 1; }
+hasf '\033]22;pointer\033\\' || { echo "pointer shape not written"; exit 1; }
+hasf 'p=?' && { echo "notification query written"; exit 1; }
+hasf '\033]99;;hello\033\\' || { echo "notification not written"; exit 1; }
 stop
 
 # A pane style is tmux's to draw: nothing is forwarded.
