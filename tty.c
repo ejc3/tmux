@@ -1286,6 +1286,39 @@ tty_clear_line(struct tty *tty, const struct grid_cell *defaults, u_int py,
 	tty_repeat_space(tty, nx);
 }
 
+/*
+ * The terminal is waiting to wrap at the end of the row above a line that
+ * continues it, and the line is about to be erased from its start. With the
+ * terminal keeping its own scrollback, wrap into the line with a blank (the
+ * erase replaces it) instead of moving there with a newline, so the terminal
+ * still knows the line continues the row above, as the program's own wrap
+ * told it.
+ */
+static void
+tty_wrap_into(struct tty *tty, const struct tty_ctx *ctx, u_int py)
+{
+	struct screen	*s = ctx->s;
+	struct grid	*gd;
+
+	if (s == NULL || py == 0 || clear_on_attach ||
+	    (tty->flags & TTY_ALTSCREEN) || (tty->term->flags & TERM_NOAM))
+		return;
+	if ((ctx->flags & TTY_CTX_WINDOW_BIGGER) || !tty_full_width(tty, ctx) ||
+	    ctx->xoff != 0)
+		return;
+	if (tty->cx < tty->sx || tty->cy + 1 != ctx->yoff + py ||
+	    tty->cy == tty->rlower)
+		return;
+	gd = s->grid;
+	if (~grid_get_line(gd, gd->hsize + py - 1)->flags & GRID_LINE_WRAPPED)
+		return;
+	log_debug("%s: into %u", __func__, tty->cy + 1);
+	tty_putc(tty, ' ');
+	tty_putc(tty, '\r');
+	tty->cx = 0;
+	tty->flags |= TTY_WRAPPED0;
+}
+
 /* Clear a line, adjusting to visible part of pane. */
 static void
 tty_clear_pane_line(struct tty *tty, const struct tty_ctx *ctx, u_int py,
@@ -1296,8 +1329,11 @@ tty_clear_pane_line(struct tty *tty, const struct tty_ctx *ctx, u_int py,
 
 	log_debug("%s: %s, %u at %u,%u", __func__, c->name, nx, px, py);
 
-	if (tty_clamp_line(tty, ctx, px, py, nx, &l, &x, &rx, &ry))
+	if (tty_clamp_line(tty, ctx, px, py, nx, &l, &x, &rx, &ry)) {
+		if (px == 0)
+			tty_wrap_into(tty, ctx, py);
 		tty_clear_line(tty, &ctx->defaults, ry, x, rx, bg);
+	}
 }
 
 /* Clamp area position to visible part of pane. */
@@ -1996,6 +2032,9 @@ tty_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 		tty_count_history(tty, ctx);
 		return;
 	}
+
+	if (ctx->ocx == 0)
+		tty_wrap_into(tty, ctx, ctx->ocy);
 
 	px = 0;
 	nx = ctx->sx;

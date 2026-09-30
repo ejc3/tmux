@@ -25,6 +25,8 @@
 
 static struct screen_write_citem *screen_write_collect_trim(
 		    struct screen_write_ctx *, u_int, u_int, u_int, int *);
+static void	screen_write_clear(struct screen *, u_int, u_int, u_int, u_int,
+		    u_int);
 static void	screen_write_collect_insert(struct screen_write_ctx *,
 		    struct screen_write_citem *);
 static void	screen_write_collect_insert_clear(struct screen_write_ctx *,
@@ -1631,7 +1633,7 @@ screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 0, 1);
 	ttyctx.bg = bg;
 
-	grid_view_clear(s->grid, s->cx, s->cy, nx, 1, bg);
+	screen_write_clear(s, s->cx, s->cy, nx, 1, bg);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = nx;
@@ -1670,6 +1672,21 @@ screen_write_keep_wrapped_above(struct screen *s, u_int y, int wrapped)
 
 	if (y != 0 && wrapped)
 		grid_get_line(gd, gd->hsize + y - 1)->flags |= GRID_LINE_WRAPPED;
+}
+
+/*
+ * Erase part of the screen starting at row py, keeping the wrap of the row
+ * above (the terminals keep it unless the same erase ends the row above).
+ */
+static void
+screen_write_clear(struct screen *s, u_int px, u_int py, u_int nx, u_int ny,
+    u_int bg)
+{
+	int	wrapped;
+
+	wrapped = screen_write_wrapped_above(s, py);
+	grid_view_clear(s->grid, px, py, nx, ny, bg);
+	screen_write_keep_wrapped_above(s, py, wrapped);
 }
 
 /* Insert ny lines. */
@@ -1782,7 +1799,6 @@ screen_write_clearline(struct screen_write_ctx *ctx, u_int bg)
 	struct screen_write_citem	*ci = ctx->item;
 	struct osc133_data		 od;
 	u_int				 flags;
-	int			 wrapped;
 
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
 	if (gl->cellsize == 0 && COLOUR_DEFAULT(bg))
@@ -1795,9 +1811,7 @@ screen_write_clearline(struct screen_write_ctx *ctx, u_int bg)
 
 	flags = gl->flags & GRID_LINE_OSC133_FLAGS;
 	memcpy(&od, &gl->osc133_data, sizeof od);
-	wrapped = screen_write_wrapped_above(s, s->cy);
-	grid_view_clear(s->grid, 0, s->cy, sx, 1, bg);
-	screen_write_keep_wrapped_above(s, s->cy, wrapped);
+	screen_write_clear(s, 0, s->cy, sx, 1, bg);
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
 	gl->flags |= flags;
 	memcpy(&gl->osc133_data, &od, sizeof gl->osc133_data);
@@ -1835,7 +1849,7 @@ screen_write_clearendofline(struct screen_write_ctx *ctx, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
-	grid_view_clear(s->grid, s->cx, s->cy, sx - s->cx, 1, bg);
+	screen_write_clear(s, s->cx, s->cy, sx - s->cx, 1, bg);
 
 	ci->x = s->cx;
 	ci->used = sx - s->cx;
@@ -1863,9 +1877,9 @@ screen_write_clearstartofline(struct screen_write_ctx *ctx, u_int bg)
 #endif
 
 	if (s->cx > sx - 1)
-		grid_view_clear(s->grid, 0, s->cy, sx, 1, bg);
+		screen_write_clear(s, 0, s->cy, sx, 1, bg);
 	else
-		grid_view_clear(s->grid, 0, s->cy, s->cx + 1, 1, bg);
+		screen_write_clear(s, 0, s->cy, s->cx + 1, 1, bg);
 
 	ci->x = 0;
 	ci->used = s->cx + 1;
@@ -2160,7 +2174,7 @@ screen_write_clearendofscreen(struct screen_write_ctx *ctx, u_int bg)
 		grid_add_push(gd, GRID_PUSH_CLEARBELOW, 0, 0, ttyctx.n);
 	} else {
 		if (s->cx <= sx - 1)
-			grid_view_clear(gd, s->cx, s->cy, sx - s->cx, 1, bg);
+			screen_write_clear(s, s->cx, s->cy, sx - s->cx, 1, bg);
 		grid_view_clear(gd, 0, s->cy + 1, sx, sy - (s->cy + 1), bg);
 	}
 
