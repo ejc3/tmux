@@ -1788,6 +1788,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 		case 2031:	/* theme update notifications */
 			n = (s->mode & MODE_THEME_UPDATES) ? 1 : 2;
 			break;
+		case 2048:	/* in-band resize notifications */
+			n = (s->mode & MODE_INBAND_RESIZE) ? 1 : 2;
+			break;
 		default:
 			n = 0;
 			break;
@@ -2092,6 +2095,9 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			if (ictx->wp != NULL)
 				ictx->wp->flags &= ~PANE_THEMECHANGED;
 			break;
+		case 2048:
+			screen_write_mode_clear(sctx, MODE_INBAND_RESIZE);
+			break;
 		default:
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
 			break;
@@ -2208,6 +2214,13 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 				ictx->wp->last_theme = window_pane_get_theme(ictx->wp);
 				ictx->wp->flags &= ~PANE_THEMECHANGED;
 			}
+			break;
+		case 2048:
+			/* Report the size now, then on every resize. */
+			screen_write_mode_set(sctx, MODE_INBAND_RESIZE);
+			if (ictx->wp != NULL && sctx->s == &ictx->wp->base)
+				window_pane_report_size(ictx->wp, ictx->wp->sx,
+				    ictx->wp->sy);
 			break;
 		case 2026:
 			screen_write_start_sync(ictx->wp);

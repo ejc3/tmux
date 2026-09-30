@@ -620,6 +620,24 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 		if (errno != EINVAL && errno != ENXIO)
 #endif
 		fatal("ioctl failed");
+	if (wp->base.mode & MODE_INBAND_RESIZE)
+		window_pane_report_size(wp, sx, sy);
+}
+
+/*
+ * Tell a pane that asked for in-band resize notifications (mode 2048) its
+ * size: rows, columns, then height and width in pixels.
+ */
+void
+window_pane_report_size(struct window_pane *wp, u_int sx, u_int sy)
+{
+	struct window	*w = wp->window;
+
+	if (wp->fd == -1 || wp->event == NULL)
+		return;
+	bufferevent_write(wp->event, "\033[48;", 5);
+	evbuffer_add_printf(bufferevent_get_output(wp->event), "%u;%u;%u;%ut",
+	    sy, sx, sy * w->ypixel, sx * w->xpixel);
 }
 
 int
