@@ -5,7 +5,8 @@ smallest stream that still shows it.
 
 Engines: tmux (a pane of TMUX_REF), ghostty (libghostty-vt, gym/ghostty/gvt),
 libvterm (Neovim and Vim, gym/refs/lvt), alacritty (alacritty_terminal,
-gym/refs/avt-bin), kitty (a real kitty under Xvfb, gym/refs/kitty.py).
+gym/refs/avt-bin), kitty (a real kitty under Xvfb, gym/refs/kitty.py),
+wezterm (WezTerm's headless mux server, gym/refs/wezterm.py).
 Compared: every row of scrollback and screen, the rows with soft-wrapped
 lines joined, and the cursor.
 
@@ -115,7 +116,9 @@ def engines(tmp):
             Engine('libvterm', [os.path.join(HERE, 'refs', 'lvt'), str(COLS), str(ROWS)]),
             Engine('alacritty', [os.path.join(HERE, 'refs', 'avt-bin'), str(COLS), str(ROWS)]),
             Engine('kitty', ['xvfb-run', '-a', 'python3', os.path.join(HERE, 'refs', 'kitty.py'),
-                             str(COLS), str(ROWS)])]
+                             str(COLS), str(ROWS)]),
+            Engine('wezterm', ['python3', os.path.join(HERE, 'refs', 'wezterm.py'),
+                               str(COLS), str(ROWS)])]
 
 
 def verdict(results):
