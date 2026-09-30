@@ -5,8 +5,9 @@ smallest stream that still shows it.
 
 Engines: tmux (a pane of TMUX_REF), ghostty (libghostty-vt, gym/ghostty/gvt),
 libvterm (Neovim and Vim, gym/refs/lvt), alacritty (alacritty_terminal,
-gym/refs/avt-bin). Compared: every row of scrollback and screen, the rows with
-soft-wrapped lines joined, and the cursor.
+gym/refs/avt-bin), kitty (a real kitty under Xvfb, gym/refs/kitty.py).
+Compared: every row of scrollback and screen, the rows with soft-wrapped
+lines joined, and the cursor.
 
     python3 gym/consensus.py [--fuzz N] [--only NAME] [--no-shrink]
 """
@@ -112,7 +113,9 @@ def engines(tmp):
     return [TmuxEngine(os.environ.get('TMUX_REF', 'tmux'), tmp),
             Engine('ghostty', [os.path.join(HERE, 'ghostty', 'gvt'), str(COLS), str(ROWS), '1']),
             Engine('libvterm', [os.path.join(HERE, 'refs', 'lvt'), str(COLS), str(ROWS)]),
-            Engine('alacritty', [os.path.join(HERE, 'refs', 'avt-bin'), str(COLS), str(ROWS)])]
+            Engine('alacritty', [os.path.join(HERE, 'refs', 'avt-bin'), str(COLS), str(ROWS)]),
+            Engine('kitty', ['xvfb-run', '-a', 'python3', os.path.join(HERE, 'refs', 'kitty.py'),
+                             str(COLS), str(ROWS)])]
 
 
 def verdict(results):

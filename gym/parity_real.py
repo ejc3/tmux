@@ -126,7 +126,7 @@ def main():
     tmux = args[args.index('--tmux') + 1] if '--tmux' in args else 'tmux'
     only = args[args.index('--only') + 1] if '--only' in args else None
     names = (args[args.index('--engines') + 1] if '--engines' in args
-             else 'ghostty,libvterm,alacritty').split(',')
+             else 'ghostty,libvterm,alacritty,kitty').split(',')
     tmp = tempfile.mkdtemp(prefix='gym-parity-real.')
     eng = [e for e in consensus.engines(tmp) if e.name in names]
     cases = validate.parity_cases(tmp)
