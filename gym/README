@@ -53,6 +53,10 @@ Files
   shrink.py      delta debugging over escape sequences and characters
   probe.py       one small stream on the model and on Ghostty
   fuzz.py        seeded random streams
+  keys_parity.py the bytes a program gets for each key and kitty keyboard
+                 mode, in kitty and in tmux in kitty (refs/kitty_keys.py
+                 types X key events with xdotool); fails on a difference
+                 not in its list of known ones
   ghostty/gvt.c, refs/lvt.c, refs/avt/   engine drivers; refs/build.sh builds
                  them (libghostty-vt needs Zig 0.16, libvterm-dev, cargo)
 
