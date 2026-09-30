@@ -58,6 +58,8 @@ assert_key () {
 	format_string=$(format_string "$expected_name")
 
 	# Use a different prompt each time so a stale redraw cannot look ready.
+	# The prompt and the key each take a few milliseconds, and there are
+	# hundreds of keys, so poll every 0.01 s.
 	assertion=$((assertion + 1))
 	prompt="tty-keys-$assertion:"
 	$TMUX2 command-prompt -k -p "$prompt" \
@@ -67,9 +69,9 @@ assert_key () {
 	while ! $TMUX capture-pane -p | grep -Fq "$prompt"; do
 		kill -0 "$prompt_pid" 2>/dev/null || \
 		    fail "$keys -> $expected_name: prompt exited before becoming ready"
-		[ "$i" -lt 400 ] || \
+		[ "$i" -lt 2000 ] || \
 		    fail "$keys -> $expected_name: timed out waiting for prompt"
-		sleep 0.05
+		sleep 0.01
 		i=$((i + 1))
 	done
 
@@ -77,9 +79,9 @@ assert_key () {
 
 	i=0
 	while kill -0 "$prompt_pid" 2>/dev/null; do
-		[ "$i" -lt 400 ] || \
+		[ "$i" -lt 2000 ] || \
 		    fail "$keys -> $expected_name: timed out waiting for key"
-		sleep 0.05
+		sleep 0.01
 		i=$((i + 1))
 	done
 	wait "$prompt_pid" || fail "$keys -> $expected_name: prompt failed"
