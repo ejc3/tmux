@@ -2386,6 +2386,13 @@ tty_reset(struct tty *tty)
 void
 tty_invalidate(struct tty *tty)
 {
+	/*
+	 * Mouse modes are set again at once, not turned off until the next
+	 * redraw: a mouse event in between would reach tmux with the mouse
+	 * off and go to the pane as keys.
+	 */
+	int	mouse = tty->mode & ALL_MOUSE_MODES;
+
 	if (tty->flags & TTY_STARTED)
 		tty_pay_scroll(tty);
 	tty->flags &= ~TTY_OWESCROLL;
@@ -2405,7 +2412,7 @@ tty_invalidate(struct tty *tty)
 	if (tty->client->forward_pane != UINT_MAX) {
 		if (tty->flags & TTY_STARTED) {
 			tty->mode = ALL_MODES;
-			tty_update_mode(tty, MODE_CURSOR, NULL);
+			tty_update_mode(tty, MODE_CURSOR|mouse, NULL);
 		}
 		return;
 	}
@@ -2416,7 +2423,7 @@ tty_invalidate(struct tty *tty)
 		tty_putcode(tty, TTYC_SGR0);
 
 		tty->mode = ALL_MODES;
-		tty_update_mode(tty, MODE_CURSOR, NULL);
+		tty_update_mode(tty, MODE_CURSOR|mouse, NULL);
 
 		tty_cursor(tty, 0, 0);
 		tty_region_off(tty);
