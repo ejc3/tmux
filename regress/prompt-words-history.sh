@@ -67,10 +67,10 @@ wait_result()
 {
 	want=$1
 	i=0
-	while [ "$i" -lt 50 ]; do
+	while [ "$i" -lt 100 ]; do
 		got=$($INNER show-option -gqv @result 2>/dev/null)
 		[ "$got" = "$want" ] && return 0
-		sleep 0.1
+		sleep 0.05
 		i=$((i + 1))
 	done
 	fail "prompt result is '$got', expected '$want'"
