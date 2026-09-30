@@ -60,7 +60,8 @@ Streams are regress/render-parity.sh's cases (from its own cases.awk) plus
 fuzz.py's. Every driver takes events at byte offsets: "OFFSET resize COLS
 ROWS" and "OFFSET hidden K".
 
-Judges outside the tree, on /mnt/fcvm-btrfs/term-judges (scratch disk):
+Judges outside the tree, on /mnt/fcvm-btrfs/term-judges (scratch disk; set
+them up again with refs/setup-judges.sh, which also records VERSIONS):
   kitty -> kitty-nightly   kitty's nightly build (github.com/kovidgoyal/kitty,
                            release "nightly", kitty-nightly-arm64.txz), run
                            under Xvfb by refs/kitty.py; the target the
