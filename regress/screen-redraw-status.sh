@@ -33,16 +33,46 @@ fail() {
 	exit 1
 }
 
+# Wait for the scene to reach the outer pane: the inner server has gone round
+# its loop (so has drawn) and the capture has not changed for 0.15 seconds.
+# Some scenes look the same as the one before, so the capture alone cannot
+# show that the new scene has been drawn.
+settle() {
+	$TMUX2 display -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ $_i -lt 100 ]; do
+		_sum=$($TMUX capturep -p | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ $_same -ge 3 ] && return 0
+		else
+			_same=0
+			_last=$_sum
+		fi
+		_i=$((_i + 1))
+		sleep 0.05
+	done
+	fail "outer pane did not settle"
+}
+
 compare() {
-	sleep 1
+	settle
 	$TMUX capturep -p >$TMP || exit 1
 	if [ -n "$GENERATE" ]; then
 		cp $TMP "$RESULTS/$1.result" || exit 1
 		echo "generated $1"
-	else
-		cmp -s $TMP "$RESULTS/$1.result" || \
-			fail "scene $1 differs from $RESULTS/$1.result"
+		return
 	fi
+	_i=0
+	until cmp -s $TMP "$RESULTS/$1.result"; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] ||
+			fail "scene $1 differs from $RESULTS/$1.result"
+		sleep 0.05
+		$TMUX capturep -p >$TMP || exit 1
+	done
 }
 
 $TMUX kill-server 2>/dev/null
@@ -65,7 +95,13 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+# The client has settled once its terminal answered the startup queries.
+i=0
+while [ -z "$($TMUX2 list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	i=$((i + 1))
+	[ $i -lt 400 ] || fail "inner client did not attach"
+	sleep 0.05
+done
 
 # No status line: the window fills the whole client.
 $TMUX2 set -g status off || exit 1
