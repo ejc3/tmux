@@ -36,7 +36,7 @@ check_capture apc-title 'X'
 
 cmd='i=0; while [ "$i" -lt 12 ]; do '
 cmd="${cmd}printf '\\033[22;0t'; i=\$((i + 1)); done; "
-cmd="${cmd}printf X; sleep 2"
+cmd="${cmd}printf 'X$INPUT_DONE'; sleep 2"
 start_cmd title-stack 20 3 "$cmd"
 check_capture title-stack 'X'
 $TMUX respawn-pane -k -t title-stack: \
