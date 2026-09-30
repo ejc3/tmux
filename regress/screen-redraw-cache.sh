@@ -32,15 +32,35 @@ fail() {
 }
 
 compare() {
-	sleep 1
-	$TMUX capturep -p >$TMP || exit 1
 	if [ -n "$GENERATE" ]; then
+		# There is no result to wait for, so give the scene time to draw.
+		sleep 1
+		$TMUX capturep -p >$TMP || exit 1
 		cp $TMP "$RESULTS/$1.result" || exit 1
 		echo "generated $1"
-	else
-		cmp -s $TMP "$RESULTS/$1.result" || \
-			fail "scene $1 differs from $RESULTS/$1.result"
+		return
 	fi
+	# Wait for the scene to reach the outer pane.
+	_i=0
+	while :; do
+		$TMUX capturep -p >$TMP || exit 1
+		cmp -s $TMP "$RESULTS/$1.result" && return
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || \
+			fail "scene $1 differs from $RESULTS/$1.result"
+		sleep 0.05
+	done
+}
+
+# Wait for the inner client to settle: it knows the terminal type once the
+# terminal has answered its last startup query.
+wait_attached() {
+	_i=0
+	while [ -z "$($TMUX2 display -p '#{client_termtype}' 2>/dev/null)" ]; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || fail "inner client did not attach"
+		sleep 0.05
+	done
 }
 
 new_scene() {
@@ -64,7 +84,7 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+wait_attached
 
 # --- Generation change: a pane is resized in place. ---
 

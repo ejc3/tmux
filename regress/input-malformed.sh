@@ -7,12 +7,12 @@ check_discard()
 {
 	name=$1
 	printf 'OK\n' >"$EXP"
-	i=0
-	while [ "$i" -lt 300 ]; do
+	_i=0
+	while [ "$_i" -lt 300 ]; do
 		capture_grid "$name" >"$TMP"
 		cmp -s "$TMP" "$EXP" && return 0
 		sleep 0.05
-		i=$((i + 1))
+		_i=$((_i + 1))
 	done
 	fail "$name (timed out waiting for discard)"
 }
