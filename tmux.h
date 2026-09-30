@@ -1304,6 +1304,7 @@ enum input_request_type {
 	INPUT_REQUEST_PALETTE,
 	INPUT_REQUEST_CLIPBOARD,
 	INPUT_REQUEST_KGFX,
+	INPUT_REQUEST_NOTIFY,
 	INPUT_REQUEST_QUEUE
 };
 
@@ -3443,6 +3444,9 @@ void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
 void	 server_client_notify(struct window_pane *, const char *);
+char	*server_client_notify_rewrite(struct window_pane *, const char *);
+int	 server_client_notify_reply(struct client *, const char *, size_t,
+	     const char *);
 const char *window_pane_pointer(struct window_pane *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);

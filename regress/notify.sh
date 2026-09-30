@@ -1,8 +1,9 @@
 #!/bin/sh
 
 # Notifications (OSC 9 text, OSC 99, OSC 777) from a pane reach a terminal
-# with the notify feature once each, forwarding or not; a query for what is
-# supported (p=?) and the OSC 9;4 progress bar are not notifications. An
+# with the notify feature once each, forwarding or not, and so does a query
+# for what is supported (p=?), with its identifier naming the pane
+# (notify-routing.sh); the OSC 9;4 progress bar is not a notification. An
 # outer tmux pane stands in for the terminal; what the inner client sends is
 # recorded with pipe-pane.
 
@@ -68,7 +69,8 @@ for mode in on off; do
 			exit 1
 		}
 	done
-	[ "$(count 'p=?')" = 0 ] || { echo "forward-output $mode: query sent"; exit 1; }
+	[ "$(count '\033]99;i=t')" = 1 ] && [ "$(count 'p=?')" = 1 ] ||
+	    { echo "forward-output $mode: query not sent once"; exit 1; }
 	[ "$(count '\033]9;4')" -le 1 ] || { echo "forward-output $mode: progress repeated"; exit 1; }
 done
 exit 0

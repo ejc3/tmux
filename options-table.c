@@ -565,8 +565,8 @@ const struct options_table_entry options_table[] = {
 	  .default_str = "xterm*:clipboard:ccolour:cstyle:focus:title,"
 			 "screen*:title,"
 			 "rxvt*:ignorefkeys,"
-			 "xterm-kitty:kittygraphics,"
-			 "xterm-ghostty:kittygraphics",
+			 "xterm-kitty:kittygraphics:notify,"
+			 "xterm-ghostty:kittygraphics:notify",
 	  .separator = ",",
 	  .text = "List of terminal features, used if they cannot be "
 		  "automatically detected."

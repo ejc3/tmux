@@ -2975,9 +2975,17 @@ input_exit_osc(struct input_ctx *ictx)
 		input_osc_22(ictx, p);
 		break;
 	case 99:
+		/*
+		 * A query for what is supported goes to one terminal, and
+		 * answers after it wait for its answer.
+		 */
+		if (wp != NULL && strstr(p, "p=?") != NULL)
+			input_add_request(ictx, INPUT_REQUEST_NOTIFY, 0);
+		else if (wp != NULL)
+			server_client_notify(wp, ictx->input_buf);
+		break;
 	case 777:
-		/* Notifications, but not a query for what is supported. */
-		if (wp != NULL && strstr(p, "p=?") == NULL)
+		if (wp != NULL)
 			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 10:
@@ -3935,7 +3943,7 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	struct window		*w;
 	struct client		*c = NULL, *loop;
 	struct input_request	*ir;
-	char			 s[64];
+	char			 s[64], *copy;
 
 	if (wp == NULL)
 		return (-1);
@@ -3955,6 +3963,8 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	}
 	if (c == NULL)
 		return (-1);
+	if (type == INPUT_REQUEST_NOTIFY && (~c->tty.term->flags & TERM_NOTIFY))
+		return (-1);
 
 	ir = input_make_request(ictx, type);
 	ir->c = c;
@@ -3969,6 +3979,11 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 		break;
 	case INPUT_REQUEST_CLIPBOARD:
 		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
+		break;
+	case INPUT_REQUEST_NOTIFY:
+		copy = server_client_notify_rewrite(wp, ictx->input_buf);
+		tty_notify(&c->tty, copy);
+		free(copy);
 		break;
 	case INPUT_REQUEST_KGFX:
 	case INPUT_REQUEST_QUEUE:
@@ -4050,7 +4065,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 			break;
 		}
 		if (type == INPUT_REQUEST_CLIPBOARD ||
-		    type == INPUT_REQUEST_KGFX) {
+		    type == INPUT_REQUEST_KGFX ||
+		    type == INPUT_REQUEST_NOTIFY) {
 			found = ir;
 			break;
 		}
@@ -4071,6 +4087,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 			else if (ir->type == INPUT_REQUEST_KGFX &&
 			    *(int *)data)
 				input_send_reply(ir->ictx, ir->data);
+			else if (ir->type == INPUT_REQUEST_NOTIFY)
+				input_send_reply(ir->ictx, data);
 			complete = 1;
 		}
 		input_free_request(ir);

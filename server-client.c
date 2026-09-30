@@ -2641,21 +2641,102 @@ server_client_set_path(struct client *c)
 
 /* Set client progress bar. */
 /*
+ * Find the identifier (i=) in the metadata of an OSC 99 notification
+ * (99;metadata;payload): its start and length, or -1.
+ */
+static int
+server_client_notify_id(const char *s, size_t *start, size_t *len)
+{
+	const char	*meta, *end, *p;
+
+	if (strncmp(s, "99;", 3) != 0)
+		return (-1);
+	meta = s + 3;
+	end = meta + strcspn(meta, ";");
+	for (p = meta; p < end; p += strcspn(p, ":") + 1) {
+		if (p[0] == 'i' && p[1] == '=') {
+			*start = (p + 2) - s;
+			*len = strcspn(p + 2, ":;");
+			return (0);
+		}
+		if (p[strcspn(p, ":")] == '\0')
+			break;
+	}
+	return (-1);
+}
+
+/*
  * A pane sent a notification: pass it to each client with the pane's window
- * in its session, current or not.
+ * in its session, current or not. An OSC 99 identifier becomes one naming
+ * the pane, so what the terminal sends back for it (an activation report, a
+ * close event) finds the pane. (A query goes to one terminal as an input
+ * request, input.c.)
  */
 void
 server_client_notify(struct window_pane *wp, const char *s)
 {
 	struct client	*c;
+	char		*copy;
 
+	copy = server_client_notify_rewrite(wp, s);
 	TAILQ_FOREACH(c, &clients, entry) {
 		if (c->session == NULL || (c->flags & CLIENT_CONTROL))
 			continue;
 		if (!session_has(c->session, wp->window))
 			continue;
-		tty_notify(&c->tty, s);
+		tty_notify(&c->tty, copy);
 	}
+	free(copy);
+}
+
+/* A notification with its OSC 99 identifier made one naming the pane. */
+char *
+server_client_notify_rewrite(struct window_pane *wp, const char *s)
+{
+	char	*copy;
+	size_t	 start, len;
+
+	if (server_client_notify_id(s, &start, &len) == 0)
+		xasprintf(&copy, "%.*st%u_%s", (int)start, s, wp->id, s + start);
+	else
+		copy = xstrdup(s);
+	return (copy);
+}
+
+/*
+ * A terminal sent an OSC 99 notification message (without ESC ] and the
+ * terminator, which is end): if its identifier names a pane, give it to that
+ * pane with the program's own identifier. Returns 1 if it did.
+ */
+int
+server_client_notify_reply(struct client *c, const char *s, size_t n,
+    const char *end)
+{
+	struct window_pane	*wp;
+	char			*copy, *reply, *rest;
+	size_t			 start, len;
+	u_int			 id;
+
+	copy = xstrndup(s, n);
+	if (server_client_notify_id(copy, &start, &len) != 0 ||
+	    copy[start] != 't') {
+		free(copy);
+		return (0);
+	}
+	id = strtoul(copy + start + 1, &rest, 10);
+	if (*rest != '_' || (wp = window_pane_find_by_id(id)) == NULL ||
+	    wp->event == NULL) {
+		free(copy);
+		return (0);
+	}
+	xasprintf(&reply, "\033]%.*s%s%s", (int)start, copy, rest + 1, end);
+	if (strstr(copy, "p=?") != NULL)
+		input_request_reply(c, INPUT_REQUEST_NOTIFY, reply);
+	else
+		bufferevent_write(wp->event, reply, strlen(reply));
+	free(reply);
+	free(copy);
+	return (1);
 }
 
 /*
