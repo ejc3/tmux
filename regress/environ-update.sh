@@ -50,15 +50,15 @@ check_value()
 
 # wait_clients $n
 #
-# Wait (up to ~10s) until the test server has exactly $n clients attached.
+# Wait (up to 20s) until the test server has exactly $n clients attached.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 10 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }

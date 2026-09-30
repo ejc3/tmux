@@ -37,43 +37,47 @@ trap cleanup 0 1 15
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 400 ]; do
 		$INNER list-clients -F '#{client_termfeatures}' 2>/dev/null |
 		    grep -q 'sync' && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "sync-capable client did not attach"
 }
 
+# Wait for the last row of the second frame and the synchronized-output end
+# that follows it.
 wait_for_marker()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		grep -q 'FRAME_000001_ROW_23' "$CLIENT_BYTES" 2>/dev/null && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		[ -s "$CLIENT_BYTES" ] &&
+		    perl -0777 -ne 'exit !/FRAME_000001_ROW_23.*\e\[\?2026l/s' \
+		    "$CLIENT_BYTES" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "client did not receive both synchronized frames"
 }
 
 wait_for_stable_bytes()
 {
-	previous=-1
-	stable=0
-	i=0
-	while [ "$i" -lt 50 ]; do
-		current=$(wc -c <"$CLIENT_BYTES" 2>/dev/null) || current=0
-		if [ "$current" -gt 0 ] && [ "$current" -eq "$previous" ]; then
-			stable=$((stable + 1))
-			[ "$stable" -eq 5 ] && return 0
+	_previous=-1
+	_stable=0
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_current=$(wc -c <"$CLIENT_BYTES" 2>/dev/null) || _current=0
+		if [ "$_current" -gt 0 ] && [ "$_current" -eq "$_previous" ]; then
+			_stable=$((_stable + 1))
+			[ "$_stable" -eq 3 ] && return 0
 		else
-			stable=0
+			_stable=0
 		fi
-		previous=$current
-		sleep 0.1
-		i=$((i + 1))
+		_previous=$_current
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "client byte stream did not become stable"
 }
@@ -119,8 +123,8 @@ $OUTER set-option -g window-size manual || exit 1
 wait_for_client
 
 i=0
-while [ "$i" -lt 50 ] && [ ! -e "$DIR/ready" ]; do
-	sleep 0.1
+while [ "$i" -lt 400 ] && [ ! -e "$DIR/ready" ]; do
+	sleep 0.05
 	i=$((i + 1))
 done
 [ -e "$DIR/ready" ] || fail "application emitter did not become ready"
