@@ -3095,7 +3095,7 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 {
 	struct tty_term	*term = tty->term;
 	u_int		 thisx, thisy;
-	int		 change;
+	int		 change, row;
 
 	if (tty->flags & TTY_BLOCK)
 		return;
@@ -3148,6 +3148,7 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 	 * into line rather than stopping at its last row).
 	 */
 	if (tty_move_relative(tty, thisy)) {
+		row = (cy != thisy);
 		if (cy < thisy) {
 			if (thisy - cy == 1 && tty_term_has(term, TTYC_CUU1))
 				tty_putcode(tty, TTYC_CUU1);
@@ -3159,20 +3160,26 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 		}
 		if (cx == thisx)
 			goto out;
-		thisy = cy;
-		tty->cy = cy;
-		if (cx == 0) {
-			tty_putc(tty, '\r');
-			goto out;
-		}
+		/*
+		 * After a change of row the column is set absolutely, as
+		 * absolute movement would: moving across a character the
+		 * terminal draws wider or narrower than tmux (an emoji
+		 * sequence) would carry the difference along. On the same
+		 * row, move as absolute movement does too.
+		 */
 		change = thisx - cx;
-		if ((u_int)abs(change) > cx || !tty_term_has(term, TTYC_CUB) ||
+		if (cx == 0)
+			tty_putc(tty, '\r');
+		else if (row || (u_int)abs(change) > cx ||
+		    !tty_term_has(term, TTYC_CUB) ||
 		    !tty_term_has(term, TTYC_CUF))
 			tty_putcode_i(tty, TTYC_HPA, cx);
 		else if (change > 0)
 			tty_putcode_i(tty, TTYC_CUB, change);
 		else
 			tty_putcode_i(tty, TTYC_CUF, -change);
+		thisy = cy;
+		tty->cy = cy;
 		goto out;
 	}
 
