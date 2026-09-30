@@ -33,6 +33,7 @@ for t in '' we 'we are' 'we are going'; do
 	printf '\033[11;%dH' $((3 + ${#t}))
 	sleep 0.2
 done
+printf '=END='
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -42,7 +43,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -56,12 +57,13 @@ $INNER show -s forward-output >/dev/null 2>&1 &&
     { $INNER set -s forward-output off || exit 1; }
 $OUTER new -d -s tmux -x 80 -y 24 "unset TMUX; exec $INNER attach -t inner" ||
     exit 1
-wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
+wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 $INNER neww -t inner:2 "sh $DIR/write.sh $DIR" || exit 1
-sleep 0.5
+wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+    exit 1
 $OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
-wait_for "[ -e $DIR/done ]" 50 || exit 1
-sleep 1
+wait_for "grep -q =END= $DIR/out 2>/dev/null" 400 ||
+    { echo "output did not arrive"; exit 1; }
 
 [ -s $DIR/out ] || { echo "nothing recorded"; exit 1; }
 grep -q 'going' $DIR/out || { echo "typing not recorded"; exit 1; }

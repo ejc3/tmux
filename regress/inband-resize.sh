@@ -14,13 +14,22 @@ $TMUX kill-server 2>/dev/null
 TMP=$(mktemp)
 trap "rm -f $TMP; $TMUX kill-server 2>/dev/null" 0 1 15
 
-# The program sets the mode and asks for it, then keeps what it is sent
-# until nothing comes for two seconds.
-$TMUX -f/dev/null new -d -x 80 -y 24 "stty raw -echo min 0 time 20; \
-    printf '\033[?2048h\033[?2048\$p'; cat | cat -v >$TMP" || exit 1
-sleep 0.5
+# Wait until what the program was sent has $1 in it.
+sent() {
+	n=0
+	until grep -q "$1" $TMP 2>/dev/null; do
+		n=$((n + 1))
+		[ $n -gt 400 ] && return 1
+		sleep 0.05
+	done
+}
+
+# The program sets the mode and asks for it, then keeps what it is sent.
+$TMUX -f/dev/null new -d -x 80 -y 24 "stty raw -echo; \
+    printf '\033[?2048h\033[?2048\$p'; exec cat -v >$TMP" || exit 1
+sent '2048;' || { echo "no answer"; exit 1; }
 $TMUX resize-window -x 60 -y 10 || exit 1
-sleep 3
+sent '48;10;60;' || { echo "no report after resize: '$(cat $TMP)'"; exit 1; }
 out=$(cat $TMP)
 case "$out" in
 '^[[48;24;80;'*'t^[[?2048;1$y^[[48;10;60;'*'t') ;;

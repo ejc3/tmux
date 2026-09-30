@@ -19,18 +19,26 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
+}
+
+# Whether the answer has come: it ends with ST, ^[\ once through cat -v.
+replied() {
+	case "$(cat $DIR/r 2>/dev/null)" in
+	*'^[\') return 0 ;;
+	esac
+	return 1
 }
 
 # Answers: the program sends $1 then a query, and keeps the reply.
 answer() {
 	rm -f $DIR/r
-	$INNER new -d -x 40 -y 5 "stty raw -echo min 0 time 10; \
-	    printf '$1\033]22;?$2\033\\\\'; cat | cat -v >$DIR/r" || exit 1
-	wait_for "[ -s $DIR/r ]" 30
-	sleep 1
+	$INNER new -d -x 40 -y 5 "stty raw -echo; \
+	    printf '$1\033]22;?$2\033\\\\'; exec cat -v >$DIR/r" || exit 1
+	wait_for replied 400 || { echo "$1 ?$2: no answer"; exit 1; }
 	$INNER kill-server 2>/dev/null
+	wait_for "! $INNER ls >/dev/null 2>&1" 400
 	out=$(cat $DIR/r)
 	[ "$out" = "^[]22;$3^[\\" ] || { echo "$1 ?$2: '$out', want '$3'"; exit 1; }
 }
@@ -41,6 +49,11 @@ answer '\033]22;wait\033\\\\\033]22;\033\\\\' __current__ 0
 answer '\033]22;>text\033\\\\' __current__ text
 answer '\033]22;=wait\033\\\\\033]22;>text\033\\\\\033]22;<\033\\\\' __current__ wait
 answer '' pointer,nonsense,left_ptr 1,0,0
+
+# How many OSC 22 the terminal has been given.
+shapes() {
+	grep -ao "$(printf '\033')]22;[a-z]*" $DIR/out 2>/dev/null | wc -l
+}
 
 # The terminal: pane 0 sets crosshair; pane 1 sets nothing. Selecting pane 1
 # resets the shape, selecting pane 0 sets it again, and the client leaving
@@ -62,22 +75,22 @@ for mode in on off; do
 	    { $INNER set -s forward-output $mode || exit 1; }
 	$OUTER new -d -s tmux -x 80 -y 24 \
 	    "unset TMUX; exec $INNER attach -t inner" || exit 1
-	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-	sleep 0.5
+	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+	    exit 1
 	$OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
-	sleep 0.2
 	touch $DIR/go
-	wait_for "[ -e $DIR/done ]" 50 || exit 1
-	sleep 0.5
+	# Each step gives the terminal one more OSC 22.
+	wait_for "[ \$(shapes) -ge 1 ]" 400 || { echo "no shape set"; exit 1; }
 	$INNER splitw -d "exec sleep 100000" || exit 1
-	sleep 0.3
 	$INNER selectp -t :.1 || exit 1
-	sleep 0.3
+	wait_for "[ \$(shapes) -ge 2 ]" 400 || { echo "no reset"; exit 1; }
 	$INNER selectp -t :.0 || exit 1
-	sleep 0.5
+	wait_for "[ \$(shapes) -ge 3 ]" 400 || { echo "no shape again"; exit 1; }
 	$INNER kill-server 2>/dev/null
+	wait_for "[ \$(shapes) -ge 4 ]" 400 || { echo "no reset on leaving"; exit 1; }
 	$OUTER kill-server 2>/dev/null
-	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 50
+	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 100
 	got=$(grep -ao "$(printf '\033')]22;[a-z]*" $DIR/out | cat -v | tr '\n' ' ')
 	[ "$got" = "^[]22;crosshair ^[]22; ^[]22;crosshair ^[]22; " ] || {
 		echo "forward-output $mode: terminal given '$got'"

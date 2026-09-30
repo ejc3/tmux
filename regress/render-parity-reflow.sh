@@ -32,6 +32,7 @@ touch "$1/held"
 n=0; while [ ! -e "$1/resized" ] && [ $n -lt 40 ]; do sleep 0.02; n=$((n + 1)); done
 while [ $i -le $(($4 + $3 + $2)) ]; do printf 'line %02d %s\r\n' $i "$x"; i=$((i + 1)); done
 printf '\033[?2026ldone\r\n'
+printf '=END='
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -41,7 +42,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -58,15 +59,17 @@ run() {
 	    set -g status off \; set -s clear-on-attach off || exit 1
 	$OUTER new -d -s tmux -x $1 -y 24 \
 	    "unset TMUX; exec $INNER attach -t inner" || exit 1
-	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-	sleep 0.5
+	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+	    exit 1
 	touch $DIR/go
-	wait_for "[ -e $DIR/held ]" 50 || exit 1
+	wait_for "[ -e $DIR/held ]" 100 || exit 1
 	$OUTER resizew -t tmux -x $2 || exit 1
-	sleep 0.2
+	wait_for "[ \"\$($INNER display -p '#{client_width}')\" = $2 ]" 400 ||
+	    { echo "client not resized"; exit 1; }
 	touch $DIR/resized
-	wait_for "[ -e $DIR/done ]" 50 || exit 1
-	sleep 1
+	wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+	    { echo "output did not arrive"; exit 1; }
 
 	# Every line once, whole, in order, from the last marker on.
 	$OUTER capturep -pJt tmux -S- -E- |

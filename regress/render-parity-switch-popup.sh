@@ -36,7 +36,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -53,23 +53,31 @@ run() {
 	$INNER neww -d -t inner:2 "sh $DIR/write.sh $DIR B" || exit 1
 	$OUTER new -d -s tmux -x 80 -y 24 \
 	    "unset TMUX; exec $INNER attach -t inner" || exit 1
-	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-	sleep 0.5
+	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+	    exit 1
 	touch $DIR/goA
-	wait_for "[ -e $DIR/doneA ]" 50 || exit 1
+	wait_for "$INNER capturep -pt inner:0 | grep -q A22" 400 ||
+	    { echo "A not read"; exit 1; }
+	wait_for "$OUTER capturep -pt tmux | grep -q A22" 400 ||
+	    { echo "A not drawn"; exit 1; }
 	touch $DIR/goB
-	wait_for "[ -e $DIR/doneB ]" 50 || exit 1
-	sleep 0.5
+	wait_for "$INNER capturep -pt inner:2 | grep -q B22" 400 ||
+	    { echo "B not read"; exit 1; }
 
 	client=$($INNER lsc -F '#{client_name}' | head -1)
 	# At the top left, where the history is painted before it scrolls.
 	$INNER display-popup -c "$client" -x 0 -y 10 -w 30 -h 10 \
-	    "exec sleep 100" &
-	sleep 0.5
+	    "echo POPUP; exec sleep 100" &
+	wait_for "$OUTER capturep -pt tmux | grep -q POPUP" 400 ||
+	    { echo "popup not shown"; exit 1; }
+	# Switch under the popup; another command makes the server go round
+	# its loop (and hold the painting back) before the popup goes.
 	$INNER selectw -t inner:2 || exit 1
-	sleep 0.5
+	$INNER display -p x >/dev/null || exit 1
 	$INNER display-popup -C -c "$client"
-	sleep 1
+	wait_for "$OUTER capturep -pt tmux | grep -q B22" 400 ||
+	    { echo "B not drawn"; exit 1; }
 
 	$OUTER capturep -pJt tmux -S- -E- >$DIR/got
 	$INNER kill-server 2>/dev/null

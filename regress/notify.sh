@@ -20,6 +20,7 @@ cat >$DIR/write.sh <<'EOS'
 while [ ! -e "$1/go" ]; do sleep 0.05; done
 printf '\033]9;one\033\\\033]99;;two\033\\\033]777;notify;three;body\033\\'
 printf '\033]99;i=1:p=?;\033\\\033]9;4;1;50\033\\done\r\n'
+printf '=END='
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -29,7 +30,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -45,16 +46,16 @@ run() {
 	    { $INNER set -s forward-output $1 || exit 1; }
 	$OUTER new -d -s tmux -x 80 -y 24 \
 	    "unset TMUX; exec $INNER attach -t inner" || exit 1
-	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-	sleep 0.5
+	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+	    exit 1
 	$OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
-	sleep 0.2
 	touch $DIR/go
-	wait_for "[ -e $DIR/done ]" 50 || exit 1
-	sleep 1
+	wait_for "grep -q =END= $DIR/out 2>/dev/null" 400 ||
+	    { echo "output did not arrive"; exit 1; }
 	$INNER kill-server 2>/dev/null
 	$OUTER kill-server 2>/dev/null
-	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 50
+	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 100
 }
 count() {
 	grep -aoF "$(printf "$1")" $DIR/out | wc -l

@@ -19,6 +19,7 @@ cat >$DIR/write.sh <<'EOS'
 i=0; while [ $i -lt 40 ]; do printf 'line %02d\r\n' $i; i=$((i + 1)); done
 while [ ! -e "$1/go" ]; do sleep 0.05; done
 printf '\033[?1049hx\033[?1049l'
+printf '=END='
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -28,7 +29,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -38,15 +39,16 @@ $INNER new -d -s inner -x 80 -y 24 "sh $DIR/write.sh $DIR" \; \
     set -g status off \; set -s clear-on-attach off || exit 1
 $OUTER new -d -s tmux -x 80 -y 24 "unset TMUX; exec $INNER attach -t inner" ||
     exit 1
-wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-sleep 0.5
+wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+    exit 1
 client=$($INNER lsc -F '#{client_name}' | head -1)
 $INNER display-popup -c "$client" -w 30 -h 5 "echo POPUPTEXT; exec sleep 100" &
-sleep 1
-$OUTER capturep -pt tmux | grep -q POPUPTEXT || { echo 'popup not shown'; exit 1; }
+wait_for "$OUTER capturep -pt tmux | grep -q POPUPTEXT" 400 ||
+    { echo 'popup not shown'; exit 1; }
 touch $DIR/go
-wait_for "[ -e $DIR/done ]" 50 || exit 1
-sleep 1
+wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+    { echo "output did not arrive"; exit 1; }
 
 if ! $OUTER capturep -pt tmux | grep -q POPUPTEXT; then
 	echo 'popup gone'

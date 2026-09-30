@@ -28,6 +28,7 @@ printf 'start\r\n\033[?7;1000l\033[cXX%100sYY\033[?7h\r\n' '' | tr ' ' o
 printf '\033[38;2;255;0;0mred\033[m\r\nend\r\n'
 printf '\033_Ga=T,f=100,q=1;AAAA\033\\\033]22;?__current__\033\\'
 printf '\033]22;pointer\033\\\033]99;i=1:p=?;\033\\\033]99;;hello\033\\'
+printf '=END='
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -37,7 +38,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -52,13 +53,13 @@ run() {
 	[ -z "$1" ] || eval "$INNER $1" || exit 1
 	$OUTER new -d -s tmux -x 80 -y 24 \
 	    "unset TMUX; LC_ALL=C.UTF-8 exec $INNER attach -t inner" || exit 1
-	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-	sleep 0.5
+	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+	    exit 1
 	$OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
-	sleep 0.2
 	touch $DIR/go
-	wait_for "[ -e $DIR/done ]" 50 || exit 1
-	sleep 1
+	wait_for "grep -q =END= $DIR/out 2>/dev/null" 400 ||
+	    { echo "output did not arrive"; exit 1; }
 	[ -s $DIR/out ] || { echo "nothing recorded"; exit 1; }
 }
 has() {
@@ -70,7 +71,7 @@ hasf() {
 stop() {
 	$INNER kill-server 2>/dev/null
 	$OUTER kill-server 2>/dev/null
-	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 50
+	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 100
 }
 
 # The terminal is told to have no RGB colour, so red must be converted.

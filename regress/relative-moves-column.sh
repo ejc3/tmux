@@ -20,8 +20,8 @@ trap "$OUTER kill-server 2>/dev/null; $INNER kill-server 2>/dev/null; rm -rf $DI
 
 # A check mark on row 5, then an X at row 3, column 10.
 cat >$DIR/write.sh <<'EOS'
-while [ ! -e "$1/go" ]; do sleep 0.1; done
-printf '\033[5;1H\342\234\205\033[3;10HX'
+while [ ! -e "$1/go" ]; do sleep 0.05; done
+printf '\033[5;1H\342\234\205\033[3;10HX\033[8;1H=END='
 touch "$1/done"
 exec sleep 100000
 EOS
@@ -31,7 +31,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -44,11 +44,12 @@ $INNER show -s forward-output >/dev/null 2>&1 &&
     { $INNER set -s forward-output off || exit 1; }
 $OUTER new -d -s tmux -x 40 -y 10 "unset TMUX; exec $INNER attach -t inner" ||
     exit 1
-wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-sleep 0.5
+wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+    exit 1
 touch $DIR/go
-wait_for "[ -e $DIR/done ]" 50 || exit 1
-sleep 1
+wait_for "$OUTER capturep -p -t tmux | grep -q =END=" 400 ||
+    { echo "output did not arrive"; exit 1; }
 
 row=$($OUTER capturep -p -t tmux | sed -n 3p)
 [ "$row" = "         X" ] || { echo "row 3 '$row', want X in column 10"; exit 1; }

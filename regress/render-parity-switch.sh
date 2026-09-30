@@ -32,7 +32,7 @@ wait_for() {
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 }
 
@@ -43,15 +43,20 @@ $INNER new -d -s inner -x 80 -y 24 "sh $DIR/write.sh $DIR A" \; \
 $INNER neww -d -t inner:2 "sh $DIR/write.sh $DIR B" || exit 1
 $OUTER new -d -s tmux -x 80 -y 24 "unset TMUX; exec $INNER attach -t inner" ||
     exit 1
-wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
-sleep 0.5
+wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
+wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
+    exit 1
 touch $DIR/goA
-wait_for "[ -e $DIR/doneA ]" 50 || exit 1
+wait_for "$INNER capturep -pt inner:0 | grep -q A22" 400 ||
+    { echo "A not read"; exit 1; }
+wait_for "$OUTER capturep -pt tmux | grep -q A22" 400 ||
+    { echo "A not drawn"; exit 1; }
 touch $DIR/goB
-wait_for "[ -e $DIR/doneB ]" 50 || exit 1
-sleep 0.5
+wait_for "$INNER capturep -pt inner:2 | grep -q B22" 400 ||
+    { echo "B not read"; exit 1; }
 $INNER selectw -t inner:2 || exit 1
-sleep 1
+wait_for "$OUTER capturep -pt tmux | grep -q B22" 400 ||
+    { echo "B not drawn"; exit 1; }
 
 if $OUTER capturep -pJt tmux -S- -E- | grep -q 'AB'; then
 	$OUTER capturep -pJt tmux -S- -E- | grep 'AB' | cut -c1-40
