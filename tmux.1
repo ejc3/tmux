@@ -5155,6 +5155,18 @@ Ignore function keys from
 and use the
 .Nm
 internal set only.
+.It kittygraphics
+Supports the kitty graphics protocol.
+.Nm
+keeps the images programs in panes send and gives them to the terminal;
+where a program displays one, the pane holds Unicode placeholders, which the
+terminal draws the image on, so images move and scroll with the pane.
+An image is fitted to whole cells with its shape kept, and text written over
+part of it removes that part.
+Found by asking the terminal, and assumed for
+.Ql xterm-kitty
+and
+.Ql xterm-ghostty .
 .It kittykeys
 Supports the kitty keyboard protocol;
 .Nm

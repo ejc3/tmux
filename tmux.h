@@ -1303,6 +1303,7 @@ struct window_mode_entry {
 enum input_request_type {
 	INPUT_REQUEST_PALETTE,
 	INPUT_REQUEST_CLIPBOARD,
+	INPUT_REQUEST_KGFX,
 	INPUT_REQUEST_QUEUE
 };
 
@@ -1828,6 +1829,7 @@ struct tty_term {
 #define TERM_POINTER 0x400
 #define TERM_KKEYS 0x800
 #define TERM_MOUSEPIXELS 0x1000
+#define TERM_KGFX 0x2000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1915,9 +1917,10 @@ struct tty {
 #define TTY_KKEYS 0x400000
 #define TTY_HAVEPIXELS 0x800000
 #define TTY_MOUSEPIXELS 0x1000000
+#define TTY_HAVEKGFX 0x2000000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
-	 TTY_HAVEPIXELS)
+	 TTY_HAVEPIXELS|TTY_HAVEKGFX)
 	int		 flags;
 
 	/*
@@ -3111,6 +3114,14 @@ int	 forward_eligible(struct client *, struct window_pane *);
 void	 forward_pane_output(struct window_pane *, const u_char *, size_t);
 void	 forward_pane_parsed(struct window_pane *);
 void	 forward_stop(struct client *);
+
+/* kgfx.c */
+void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,
+	     struct bufferevent *, const u_char *, size_t);
+void	 kgfx_pane_free(struct window_pane *);
+void	 kgfx_replay(struct client *);
+void	 kgfx_known(struct client *);
+void	 kgfx_placeholder(struct window_pane *, struct grid_cell *);
 void	 forward_check(void);
 
 /* tty-term.c */
@@ -3554,6 +3565,7 @@ void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 	     const char *, char);
 void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
+void	 input_kgfx_request(struct input_ctx *, struct client *, const char *);
 void	 input_cancel_requests(struct client *);
 
 /* input-key.c */
@@ -3682,6 +3694,7 @@ char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 
 /* screen-write.c */
 void	 screen_write_make_list(struct screen *);
+void	 screen_write_flush(struct screen_write_ctx *);
 void	 screen_write_free_list(struct screen *);
 int	 screen_write_full_window(struct window_pane *);
 int	 screen_write_passthrough(struct window_pane *);

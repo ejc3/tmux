@@ -206,30 +206,6 @@ forward_sgr(struct tty *tty, const u_char *s, size_t n, struct evbuffer *out)
 	evbuffer_add(out, "m", 1);
 }
 
-/*
- * A kitty graphics command: the terminal would answer it, and the answer
- * would reach the pane as if typed, after tmux has answered what came
- * later. Ask for no answer (q=2), keeping the other keys.
- */
-static void
-forward_kitty_graphics(const u_char *s, size_t n, struct evbuffer *out)
-{
-	const u_char	*p = s + 3, *end = s + n, *key;
-
-	evbuffer_add(out, "\033_Gq=2", 6);
-	while (p < end && *p != ';' && *p != '\033' && *p != '\007') {
-		key = p;
-		while (p < end && *p != ',' && *p != ';' && *p != '\033' &&
-		    *p != '\007')
-			p++;
-		if (*key != 'q')
-			evbuffer_add_printf(out, ",%.*s", (int)(p - key), key);
-		if (p < end && *p == ',')
-			p++;
-	}
-	evbuffer_add(out, p, end - p);
-}
-
 static void
 forward_sequence(struct tty *tty, const u_char *s, size_t n,
     struct evbuffer *out)
@@ -279,10 +255,8 @@ forward_sequence(struct tty *tty, const u_char *s, size_t n,
 		}
 		goto write;
 	case '_':					/* APC */
-		if (n > 4 && s[2] == 'G' && s[4] == '=') {
-			forward_kitty_graphics(s, n, out);
-			return;
-		}
+		if (n > 4 && s[2] == 'G' && s[4] == '=')
+			return;			/* tmux has the images */
 		goto write;
 	case 'P':					/* DCS */
 		if (n > 3 && (s[2] == '$' || s[2] == '+'))	/* DECRQSS, XTGETTCAP */

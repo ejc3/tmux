@@ -421,6 +421,14 @@ tty_send_requests(struct tty *tty)
 		return;
 
 	if (tty->term->flags & TERM_VT100LIKE) {
+		/*
+		 * The kitty graphics query goes before DA1: a terminal that
+		 * answers DA1 first does not have the protocol.
+		 */
+		if (~tty->flags & TTY_HAVEKGFX) {
+			tty_puts(tty, "\033_Gi=4294967295,s=1,v=1,a=q,t=d,"
+			    "f=24;AAAA\033\\");
+		}
 		if (~tty->flags & TTY_HAVEDA)
 			tty_puts(tty, "\033[c");
 		if (~tty->flags & TTY_HAVEDA2)
@@ -433,6 +441,7 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[?u");
 		if (~tty->flags & TTY_HAVEPIXELS)
 			tty_puts(tty, "\033[?1016$p");
+
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else

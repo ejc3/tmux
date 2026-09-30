@@ -88,10 +88,9 @@ has '\033\\[?7;1000l' && { echo "mouse mode written"; exit 1; }
 has '\033\\[38;5;196mred' ||
     { echo "RGB colour not written as the terminal can show it"; exit 1; }
 has '38;2;255;0;0' && { echo "RGB colour written to a terminal without"; exit 1; }
-# The terminal's answer to a graphics command would reach the program as if
-# typed: it is asked for none.
-hasf '\033_Gq=2,a=T,f=100;AAAA\033\\' ||
-    { echo "graphics command not written quiet"; exit 1; }
+# tmux keeps a program's images and gives them to terminals with the
+# protocol itself (kitty-graphics.sh); this one has none.
+hasf '\033_G' && { echo "graphics command written"; exit 1; }
 hasf '\033]22;?' && { echo "pointer shape query written"; exit 1; }
 # tmux sets the pointer shape itself (pointer-shape.sh), and this terminal
 # has no pointer feature.

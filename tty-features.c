@@ -284,6 +284,16 @@ static const struct tty_feature tty_feature_kittykeys = {
 };
 
 /*
+ * Terminal has the kitty graphics protocol, found by asking it (a=q). tmux
+ * gives it the images programs in panes send.
+ */
+static const struct tty_feature tty_feature_kittygraphics = {
+	"kittygraphics",
+	NULL,
+	TERM_KGFX
+};
+
+/*
  * Terminal reports the mouse in pixels (SGR-Pixels, mode 1016), found by
  * asking it with DECRQM.
  */
@@ -432,6 +442,7 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_cstyle,
 	&tty_feature_extkeys,
 	&tty_feature_focus,
+	&tty_feature_kittygraphics,
 	&tty_feature_kittykeys,
 	&tty_feature_ignorefkeys,
 	&tty_feature_margins,

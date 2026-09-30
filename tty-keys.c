@@ -61,6 +61,7 @@ static int	tty_keys_extended_device_attributes(struct tty *, const char *,
 		    size_t, size_t *);
 static int	tty_keys_sync(struct tty *, const char *, size_t, size_t *);
 static int	tty_keys_kkeys(struct tty *, const char *, size_t, size_t *);
+static int	tty_keys_kgfx(struct tty *, const char *, size_t, size_t *);
 static int	tty_keys_palette(struct tty *, const char *, size_t, size_t *);
 
 /* A key tree entry. */
@@ -790,6 +791,17 @@ tty_keys_next(struct tty *tty)
 
 	/* Is this a synchronized update mode response? */
 	switch (tty_keys_sync(tty, buf, len, &size)) {
+	case 0:		/* yes */
+		key = KEYC_UNKNOWN;
+		goto complete_key;
+	case -1:	/* no, or not valid */
+		break;
+	case 1:		/* partial */
+		goto partial_key;
+	}
+
+	/* Is this a kitty graphics response? */
+	switch (tty_keys_kgfx(tty, buf, len, &size)) {
 	case 0:		/* yes */
 		key = KEYC_UNKNOWN;
 		goto complete_key;
@@ -1690,6 +1702,12 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 	tty_update_features(tty);
 	tty->flags |= TTY_HAVEDA;
 
+	/* No answer to the kitty graphics query before this: not there. */
+	if (~tty->flags & TTY_HAVEKGFX) {
+		tty->flags |= TTY_HAVEKGFX;
+		kgfx_known(c);
+	}
+
 	return (0);
 }
 
@@ -1750,6 +1768,48 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 			tty_parse_client_features(c, "mousepixels", ",");
 			tty_update_features(tty);
 		}
+	}
+	return (0);
+}
+
+/*
+ * Handle a kitty graphics response, \033_G...\033\\. The answer to tmux's
+ * query (the largest id) saying OK means the terminal has the protocol.
+ * Returns 0 for success, -1 for failure, 1 for partial.
+ */
+static int
+tty_keys_kgfx(struct tty *tty, const char *buf, size_t len, size_t *size)
+{
+	struct client		*c = tty->client;
+	static const char	 query[] = "\033_Gi=4294967295;";
+	size_t			 i;
+
+	*size = 0;
+	for (i = 0; i < 3; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033_G"[i])
+			return (-1);
+	}
+	for (; i + 1 < len; i++) {
+		if (buf[i] == '\033' && buf[i + 1] == '\\')
+			break;
+	}
+	if (i + 1 >= len)
+		return (1);
+	*size = i + 2;
+	log_debug("%s: received kitty graphics %.*s", c->name, (int)*size,
+	    buf);
+
+	if ((~tty->flags & TTY_HAVEKGFX) && *size >= (sizeof query) - 1 &&
+	    memcmp(buf, query, (sizeof query) - 1) == 0) {
+		tty->flags |= TTY_HAVEKGFX;
+		if (memcmp(buf + (sizeof query) - 1, "OK", 2) == 0) {
+			tty_parse_client_features(c, "kittygraphics", ",");
+			tty_update_features(tty);
+			kgfx_replay(c);
+		}
+		kgfx_known(c);
 	}
 	return (0);
 }

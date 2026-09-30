@@ -3036,8 +3036,13 @@ input_exit_apc(struct input_ctx *ictx)
 	log_debug("%s: \"%s\"", __func__, ictx->input_buf);
 
 	/* A kitty graphics command, not a title. */
-	if (input_is_kitty_graphics(ictx->input_buf))
+	if (input_is_kitty_graphics(ictx->input_buf)) {
+		if (wp != NULL) {
+			kgfx_command(wp, sctx, ictx->event, ictx->input_buf,
+			    ictx->input_len);
+		}
 		return;
+	}
 
 	if (wp != NULL &&
 	    options_get_number(wp->options, "allow-set-title") &&
@@ -3121,6 +3126,7 @@ input_top_bit_set(struct input_ctx *ictx)
 {
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct utf8_data	*ud = &ictx->utf8data;
+	struct grid_cell	 gc;
 
 	ictx->flags &= ~INPUT_LAST;
 
@@ -3146,7 +3152,14 @@ input_top_bit_set(struct input_ctx *ictx)
 	    (int)ud->size, ud->data, ud->width);
 
 	utf8_copy(&ictx->cell.cell.data, ud);
-	screen_write_collect_add(sctx, &ictx->cell.cell);
+	if (ictx->wp != NULL && ud->size == 4 &&
+	    memcmp(ud->data, "\364\216\273\256", 4) == 0) {
+		/* A kitty graphics placeholder: its ids become tmux's. */
+		memcpy(&gc, &ictx->cell.cell, sizeof gc);
+		kgfx_placeholder(ictx->wp, &gc);
+		screen_write_collect_add(sctx, &gc);
+	} else
+		screen_write_collect_add(sctx, &ictx->cell.cell);
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);
 	ictx->flags |= INPUT_LAST;
@@ -3957,11 +3970,28 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	case INPUT_REQUEST_CLIPBOARD:
 		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
 		break;
+	case INPUT_REQUEST_KGFX:
 	case INPUT_REQUEST_QUEUE:
 		break;
 	}
 
 	return (0);
+}
+
+/*
+ * Hold a kitty graphics answer until the client's terminal has said whether it
+ * has the protocol (kgfx.c); answers after it wait behind it.
+ */
+void
+input_kgfx_request(struct input_ctx *ictx, struct client *c,
+    const char *reply)
+{
+	struct input_request	*ir;
+
+	ir = input_make_request(ictx, INPUT_REQUEST_KGFX);
+	ir->c = c;
+	ir->data = xstrdup(reply);
+	TAILQ_INSERT_TAIL(&c->input_requests, ir, centry);
 }
 
 /* Handle a palette reply. */
@@ -4019,7 +4049,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 			found = ir;
 			break;
 		}
-		if (type == INPUT_REQUEST_CLIPBOARD) {
+		if (type == INPUT_REQUEST_CLIPBOARD ||
+		    type == INPUT_REQUEST_KGFX) {
 			found = ir;
 			break;
 		}
@@ -4037,6 +4068,9 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 				input_request_palette_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_CLIPBOARD)
 				input_request_clipboard_reply(ir, data);
+			else if (ir->type == INPUT_REQUEST_KGFX &&
+			    *(int *)data)
+				input_send_reply(ir->ictx, ir->data);
 			complete = 1;
 		}
 		input_free_request(ir);
