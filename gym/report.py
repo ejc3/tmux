@@ -42,6 +42,11 @@ def parity(out, up, br, engine='ghostty'):
             via_br = plain(os.path.join(b, f'{engine}.tmux'))
             if direct == via_up:
                 continue
+            # Scrollback grows upward: line the panels up at the bottom row
+            # (the screen), padding the shorter ones at the top.
+            n = max(len(direct), len(via_up), len(via_br))
+            direct, via_up, via_br = ([''] * (n - len(p)) + p
+                                      for p in (direct, via_up, via_br))
             img = evidence.compare([(f'program run directly ({engine})', direct),
                                     (f'through upstream tmux ({engine})', via_up),
                                     (f'through tmux with the fixes ({engine})', via_br)], 80)
