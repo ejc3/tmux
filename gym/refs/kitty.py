@@ -19,7 +19,8 @@ import sys
 import tempfile
 import time
 
-KITTY = os.environ.get('KITTY', '/mnt/fcvm-btrfs/term-judges/kitty/bin/kitty')
+KITTY = os.environ.get('KITTY', os.path.join(
+    os.environ.get('JUDGES', '/mnt/fcvm-btrfs/term-judges'), 'kitty', 'bin', 'kitty'))
 KITTEN = os.path.join(os.path.dirname(KITTY), 'kitten')
 
 

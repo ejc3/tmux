@@ -18,7 +18,8 @@ import sys
 import tempfile
 import time
 
-BIN = os.environ.get('WEZTERM_BIN', '/mnt/fcvm-btrfs/term-judges/wezterm/usr/bin')
+BIN = os.environ.get('WEZTERM_BIN', os.path.join(
+    os.environ.get('JUDGES', '/mnt/fcvm-btrfs/term-judges'), 'wezterm', 'usr', 'bin'))
 
 CONFIG = r'''
 local wezterm = require 'wezterm'

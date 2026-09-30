@@ -21,7 +21,7 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-J = '/mnt/fcvm-btrfs/term-judges'
+J = os.environ.get('JUDGES', '/mnt/fcvm-btrfs/term-judges')
 
 ST = '\033\\'
 PROBES = [
@@ -81,10 +81,10 @@ def inner(cmd, tmux, mode, tmp):
             'set', '-g', 'status', 'off']
     if mode == 'translate':
         opts += [';', 'set', '-s', 'forward-output', 'off']
-    q = ' '.join("'" + a.replace("'", "'\\''") + "'" if a not in (';',) else "\;"
+    q = ' '.join("'" + a.replace("'", "'\\''") + "'" if a not in (';',) else r"\;"
                  for a in opts)
     return (f"unset TMUX; {tmux} -S {sock} -f /dev/null new -s p "
-            f"\"{cmd}\" \; {q}")
+            f"\"{cmd}\" \\; {q}")
 
 
 def run_kitty(command, tmp):
@@ -127,7 +127,8 @@ TERMINALS = {'kitty': run_kitty, 'wezterm': run_wezterm, 'xterm': run_xterm}
 
 
 def probe(term, tmux, mode):
-    tmp = tempfile.mkdtemp(prefix='gym-proto.', dir='/mnt/fcvm-btrfs/term-judges/tmp')
+    os.makedirs(os.path.join(J, 'tmp'), exist_ok=True)
+    tmp = tempfile.mkdtemp(prefix='gym-proto.', dir=os.path.join(J, 'tmp'))
     try:
         res = os.path.join(tmp, 'res')
         cmd = f"python3 {prober(tmp)} {res}"
