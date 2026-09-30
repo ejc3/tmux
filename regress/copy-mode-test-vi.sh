@@ -118,7 +118,7 @@ $TMUX send-keys -X copy-selection
 # character at the end of a line.
 $TMUX kill-server 2>/dev/null
 _i=0
-while $TMUX ls >/dev/null 2>&1; do
+while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
 	_i=$((_i + 1))
 	if [ $_i -ge 400 ]; then
 		echo "server did not exit" >&2

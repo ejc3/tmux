@@ -490,7 +490,7 @@ run_case() {
 	# same sockets, and one still exiting takes the new command with it.
 	$INNER kill-server 2>/dev/null
 	$OUTER kill-server 2>/dev/null
-	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 50
+	wait_for "$INNER ls 2>&1 | grep -qE 'no server running|No such file' && $OUTER ls 2>&1 | grep -qE 'no server running|No such file'" 50
 
 	if cmp -s $DIR/bare $DIR/tmux; then
 		if [ -e "$case/differ" ]; then

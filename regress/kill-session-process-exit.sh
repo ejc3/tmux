@@ -9,7 +9,7 @@ TERM=screen
 TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 $TMUX kill-server 2>/dev/null
 i=0
-while $TMUX ls >/dev/null 2>&1; do
+while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
 	i=$((i + 1))
 	[ $i -gt 400 ] && { echo "old server did not exit"; exit 1; }
 	sleep 0.05

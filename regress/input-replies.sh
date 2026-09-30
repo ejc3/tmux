@@ -8,7 +8,7 @@ TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 
 $TMUX kill-server 2>/dev/null
 _i=0
-while $TMUX ls >/dev/null 2>&1 && [ "$_i" -lt 400 ]; do
+while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file' && [ "$_i" -lt 400 ]; do
 	sleep 0.05
 	_i=$((_i + 1))
 done

@@ -22,7 +22,7 @@ cleanup_servers()
 	$TMUX kill-server 2>/dev/null
 	$OUT kill-server 2>/dev/null
 	_i=0
-	while $TMUX ls >/dev/null 2>&1 || $OUT ls >/dev/null 2>&1; do
+	while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file' || ! $OUT ls 2>&1 | grep -qE 'no server running|No such file'; do
 		_i=$((_i + 1))
 		if [ "$_i" -ge 400 ]; then
 			echo "servers did not exit after kill-server" >&2

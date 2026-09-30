@@ -38,7 +38,7 @@ answer() {
 	    printf '$1\033]22;?$2\033\\\\'; exec cat -v >$DIR/r" || exit 1
 	wait_for replied 400 || { echo "$1 ?$2: no answer"; exit 1; }
 	$INNER kill-server 2>/dev/null
-	wait_for "! $INNER ls >/dev/null 2>&1" 400
+	wait_for "$INNER ls 2>&1 | grep -qE 'no server running|No such file'" 400
 	out=$(cat $DIR/r)
 	[ "$out" = "^[]22;$3^[\\" ] || { echo "$1 ?$2: '$out', want '$3'"; exit 1; }
 }
@@ -90,7 +90,7 @@ for mode in on off; do
 	$INNER kill-server 2>/dev/null
 	wait_for "[ \$(shapes) -ge 4 ]" 400 || { echo "no reset on leaving"; exit 1; }
 	$OUTER kill-server 2>/dev/null
-	wait_for "! $INNER ls >/dev/null 2>&1 && ! $OUTER ls >/dev/null 2>&1" 100
+	wait_for "$INNER ls 2>&1 | grep -qE 'no server running|No such file' && $OUTER ls 2>&1 | grep -qE 'no server running|No such file'" 100
 	got=$(grep -ao "$(printf '\033')]22;[a-z]*" $DIR/out | cat -v | tr '\n' ' ')
 	[ "$got" = "^[]22;crosshair ^[]22; ^[]22;crosshair ^[]22; " ] || {
 		echo "forward-output $mode: terminal given '$got'"

@@ -32,7 +32,7 @@ check() {
 	x=$($TMUX display -p '#{cursor_x}')
 	$TMUX kill-server 2>/dev/null
 	_g=0
-	while $TMUX ls >/dev/null 2>&1 && [ $_g -lt 400 ]; do
+	while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file' && [ $_g -lt 400 ]; do
 		sleep 0.05
 		_g=$((_g + 1))
 	done
