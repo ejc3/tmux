@@ -42,4 +42,7 @@ for t in *.sh; do
 		echo "SAME $t (fails on upstream too)"
 	fi
 done
+echo
+echo "slowest (seconds, in parallel):"
+for t in *.sh; do echo "$(cat "logs/$t.branch.time") $t"; done | sort -rn | head -10
 exit $bad
