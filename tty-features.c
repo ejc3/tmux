@@ -273,6 +273,16 @@ static const struct tty_feature tty_feature_extkeys = {
 	0
 };
 
+/*
+ * Terminal supports the kitty keyboard protocol (it answers CSI ? u). tmux
+ * asks for it instead of the extkeys sequences.
+ */
+static const struct tty_feature tty_feature_kittykeys = {
+	"kittykeys",
+	NULL,
+	TERM_KKEYS
+};
+
 /* Terminal supports DECSLRM margins. */
 static const char *const tty_feature_margins_capabilities[] = {
 	"Enmg=\\E[?69h",
@@ -412,6 +422,7 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_cstyle,
 	&tty_feature_extkeys,
 	&tty_feature_focus,
+	&tty_feature_kittykeys,
 	&tty_feature_ignorefkeys,
 	&tty_feature_margins,
 	&tty_feature_mouse,

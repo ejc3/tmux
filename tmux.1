@@ -4956,7 +4956,8 @@ not report key releases or repeats, modifier keys pressed alone, or other
 modifiers.
 .Pp
 .Nm
-will always request extended keys itself if the terminal supports them.
+will always request extended keys itself if the terminal supports them,
+with the kitty keyboard protocol if the terminal has it.
 See also the
 .Ic extkeys
 feature for the
@@ -5154,6 +5155,13 @@ Ignore function keys from
 and use the
 .Nm
 internal set only.
+.It kittykeys
+Supports the kitty keyboard protocol;
+.Nm
+asks for it instead of the
+.Ic extkeys
+sequences.
+Found by asking the terminal.
 .It margins
 Supports DECSLRM margins.
 .It mouse
