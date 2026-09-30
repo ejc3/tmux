@@ -29,7 +29,11 @@ check() {
 	exec sleep 1000
 	END
 	$INNER new -d -x 20 -y 6 "sh $TMP/w.sh" \; set -g status off \; \
-	    set -s clear-on-attach off \; set -s forward-output off || exit 1
+	    set -s clear-on-attach off || exit 1
+	# tmux's own drawing: with forwarding the program's output would be
+	# written as it is.
+	$INNER show -s forward-output >/dev/null 2>&1 &&
+	    { $INNER set -s forward-output off || exit 1; }
 	$OUTER new -d -x 20 -y 6 "unset TMUX; exec $INNER attach" \; \
 	    set -g status off || exit 1
 	sleep 1
