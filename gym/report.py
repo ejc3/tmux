@@ -44,12 +44,14 @@ def parity(out, up, br, engine='ghostty'):
                 continue
             # Scrollback grows upward: line the panels up at the bottom row
             # (the screen), padding the shorter ones at the top.
-            n = max(len(direct), len(via_up), len(via_br))
+            counts = [len(p) for p in (direct, via_up, via_br)]
+            n = max(counts)
             direct, via_up, via_br = ([''] * (n - len(p)) + p
                                       for p in (direct, via_up, via_br))
-            img = evidence.compare([(f'program run directly ({engine})', direct),
-                                    (f'through upstream tmux ({engine})', via_up),
-                                    (f'through tmux with the fixes ({engine})', via_br)], 80)
+            img = evidence.compare([
+                (f'program run directly ({engine}, {counts[0]} rows)', direct),
+                (f'through upstream tmux ({engine}, {counts[1]} rows)', via_up),
+                (f'through tmux with the fixes ({engine}, {counts[2]} rows)', via_br)], 80)
             name = f'parity-{case}.png'
             img.save(os.path.join(out, name))
             made.append({'image': name, 'case': case, 'engine': engine,
