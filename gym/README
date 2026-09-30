@@ -53,6 +53,9 @@ Files
   shrink.py      delta debugging over escape sequences and characters
   probe.py       one small stream on the model and on Ghostty
   fuzz.py        seeded random streams
+  refs/kitty_gfx.py  kitty graphics scenarios screenshotted in kitty and in
+                 tmux in kitty (PIL under Xvfb); fails on a difference not in
+                 its list of known ones
   keys_parity.py the bytes a program gets for each key and kitty keyboard
                  mode, in kitty and in tmux in kitty (refs/kitty_keys.py
                  types X key events with xdotool); fails on a difference
