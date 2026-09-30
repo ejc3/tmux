@@ -89,13 +89,15 @@ has '\033\\[38;5;196mred' ||
 has '38;2;255;0;0' && { echo "RGB colour written to a terminal without"; exit 1; }
 # The terminal's answer to a graphics command would reach the program as if
 # typed: it is asked for none. Queries tmux does not answer are not written;
-# what needs no answer is.
+# a pointer shape, which needs no answer, is.
 hasf '\033_Gq=2,a=T,f=100;AAAA\033\\' ||
     { echo "graphics command not written quiet"; exit 1; }
 hasf '\033]22;?' && { echo "pointer shape query written"; exit 1; }
 hasf '\033]22;pointer\033\\' || { echo "pointer shape not written"; exit 1; }
 hasf 'p=?' && { echo "notification query written"; exit 1; }
-hasf '\033]99;;hello\033\\' || { echo "notification not written"; exit 1; }
+# tmux passes notifications on itself (notify.sh), and this terminal has no
+# notify feature.
+hasf '\033]99' && { echo "notification written"; exit 1; }
 stop
 
 # A pane style is tmux's to draw: nothing is forwarded.

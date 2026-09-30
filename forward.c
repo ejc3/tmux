@@ -206,19 +206,6 @@ forward_sgr(struct tty *tty, const u_char *s, size_t n, struct evbuffer *out)
 	evbuffer_add(out, "m", 1);
 }
 
-/* Whether a sequence contains a string. */
-static int
-forward_find(const u_char *s, size_t n, const char *what)
-{
-	size_t	len = strlen(what), i;
-
-	for (i = 0; i + len <= n; i++) {
-		if (memcmp(s + i, what, len) == 0)
-			return (1);
-	}
-	return (0);
-}
-
 /*
  * A kitty graphics command: the terminal would answer it, and the answer
  * would reach the pane as if typed, after tmux has answered what came
@@ -287,10 +274,10 @@ forward_sequence(struct tty *tty, const u_char *s, size_t n,
 			if (p + 1 < s + n && p[1] == '?')
 				return;
 			break;
-		case 99:				/* notification query */
-			if (forward_find(s, n, "p=?"))
-				return;
-			break;
+		case 9:					/* notifications */
+		case 99:
+		case 777:
+			return;			/* tmux passes them on */
 		}
 		goto write;
 	case '_':					/* APC */

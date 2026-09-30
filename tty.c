@@ -789,6 +789,17 @@ tty_set_title(struct tty *tty, const char *title)
 	tty_putcode(tty, TTYC_FSL);
 }
 
+/* Pass a notification (the OSC string, without ESC ] and ST) on. */
+void
+tty_notify(struct tty *tty, const char *s)
+{
+	if (~tty->term->flags & TERM_NOTIFY)
+		return;
+	tty_puts(tty, "\033]");
+	tty_puts(tty, s);
+	tty_puts(tty, "\033\\");
+}
+
 void
 tty_set_path(struct tty *tty, const char *title)
 {

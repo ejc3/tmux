@@ -2636,6 +2636,24 @@ server_client_set_path(struct client *c)
 }
 
 /* Set client progress bar. */
+/*
+ * A pane sent a notification: pass it to each client with the pane's window
+ * in its session, current or not.
+ */
+void
+server_client_notify(struct window_pane *wp, const char *s)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->session == NULL || (c->flags & CLIENT_CONTROL))
+			continue;
+		if (!session_has(c->session, wp->window))
+			continue;
+		tty_notify(&c->tty, s);
+	}
+}
+
 static void
 server_client_set_progress_bar(struct client *c)
 {
