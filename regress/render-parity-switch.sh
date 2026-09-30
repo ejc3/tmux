@@ -27,6 +27,8 @@ touch "$1/done$2"
 exec sleep 100000
 EOS
 
+. ./outer-settle.inc
+
 wait_for() {
 	n=0
 	until eval "$1"; do
@@ -57,6 +59,7 @@ wait_for "$INNER capturep -pt inner:2 | grep -q B22" 400 ||
 $INNER selectw -t inner:2 || exit 1
 wait_for "$OUTER capturep -pt tmux | grep -q B22" 400 ||
     { echo "B not drawn"; exit 1; }
+settle tmux
 
 if $OUTER capturep -pJt tmux -S- -E- | grep -q 'AB'; then
 	$OUTER capturep -pJt tmux -S- -E- | grep 'AB' | cut -c1-40

@@ -31,6 +31,8 @@ touch "$1/done$2"
 exec sleep 100000
 EOS
 
+. ./outer-settle.inc
+
 wait_for() {
 	n=0
 	until eval "$1"; do
@@ -78,10 +80,10 @@ run() {
 	$INNER display-popup -C -c "$client"
 	wait_for "$OUTER capturep -pt tmux | grep -q B22" 400 ||
 	    { echo "B not drawn"; exit 1; }
+	settle tmux
 
 	$OUTER capturep -pJt tmux -S- -E- >$DIR/got
-	$INNER kill-server 2>/dev/null
-	$OUTER kill-server 2>/dev/null
+	gone
 	if grep -q 'AB' $DIR/got; then
 		echo "scroll-replay $1: windows joined"
 		return 1
