@@ -1,0 +1,217 @@
+[
+ {
+  "image": "engines-00.png",
+  "case": "sync-erase-continuation",
+  "stream": "sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss\n\n\u001b[2A\u001b[2Kt",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-01.png",
+  "case": "fuzz-01",
+  "stream": "mN{b03< l]]VH20vD,kl{MFn.g[?8l.ojR: &9z+}V.+FVl*B6X<g,j;O_t[ku^/92qRZ0y_%W_ACq({/\u001b[2KD",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-02.png",
+  "case": "fuzz-09",
+  "stream": "🏽👍",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-03.png",
+  "case": "fuzz-14",
+  "stream": "O?R!]m6r[tW3>=*w(3_gjdc% 8Q6Rgweu}ChPC2t>@d^+#r7n9kckKQbgq9<sS$+PHKTYVF-E.?YhPpW!\u001b[2K,",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-04.png",
+  "case": "fuzz-15",
+  "stream": "FukCSA7KHgTu5zsygk20zUI5OJXLbYPwkdaspVWPHlqSU7N3ALbhpRaekdaeXTafEct6W中국テト文漢\u001b[2K3",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-05.png",
+  "case": "fuzz-22",
+  "stream": " zYv56c>spBOE)5Z5-Dfwg.3Ywqo<Jb?mbqCoP[f3zb-F2CpPfC*d#xEu1!{wJ:zVTRcqZCS7M;M9✅🚀\u001b[2K🚀",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-06.png",
+  "case": "vtfuzz-014",
+  "stream": "\u001b[1;52H\u001b[14dta ea eta delta eta zeta theta\u001bEe\u001b[15;35H\u001b[2K",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-07.png",
+  "case": "vtfuzz-055",
+  "stream": "\u001b[24;14H日語語語語語本日🙂界界🙂本🚀語日本🚀🚀語界語🚀語🙂🚀delta theta elta\u001b[2Kh",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-08.png",
+  "case": "vtfuzz-065",
+  "stream": "beta本語🙂🚀界日🚀界🙂日🚀日🚀本界界本🙂界界日語界本🙂語🙂語🚀日日🙂界日語🙂界lta\u001b[2Ka",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-09.png",
+  "case": "vtfuzz-113",
+  "stream": "silon gamma gamma alpha gamma theta beta beta beta delta zeta epsilon gamma alpha\u001b[2Ks",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-10.png",
+  "case": "vtfuzz-145",
+  "stream": "gamma gamma beta delta gamma eta gamma dta eta beta gamma theta eta delta epsilon\u001b[2Kz",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-11.png",
+  "case": "vtfuzz-155",
+  "stream": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\u001b[2X",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-12.png",
+  "case": "vtfuzz-204",
+  "stream": "elta delta eta alpha delta zeta epsilon alpha epsilon eta gamma theta gamma delta\u001b[2Kl",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-13.png",
+  "case": "vtfuzz-254",
+  "stream": "a gamma epsilon eta delta eta theta delta zeta epsilon delta eta beta theta epsil\u001b[2Ke",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-14.png",
+  "case": "vtfuzz-265",
+  "stream": "\u001b[9;11rm\u001b[4M",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-15.png",
+  "case": "vtfuzz-269",
+  "stream": "\u001b[5;11rn\u001b[3M",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-16.png",
+  "case": "vtfuzz-281",
+  "stream": "b\u001b[2;20r\u001b[2L",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "vte",
+   "xterm"
+  ]
+ },
+ {
+  "image": "engines-17.png",
+  "case": "vtfuzz-288",
+  "stream": "a epsilon eta epsilon theta beta epsilon theta zeta alpha alpha theta dezeta beta\u001b[1L\r",
+  "agree_against_tmux": [
+   "ghostty",
+   "libvterm",
+   "alacritty",
+   "xterm"
+  ]
+ }
+]
