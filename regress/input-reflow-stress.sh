@@ -451,6 +451,12 @@ assert_live_client_redraw()
 	$TMUX set-option -t stress: status-interval 1 >/dev/null || exit 1
 
 	$TMUX2 kill-server 2>/dev/null
+	_k=0
+	until $TMUX2 ls 2>&1 | grep -qE 'no server running|No such file'; do
+		_k=$((_k + 1))
+		[ $_k -lt 400 ] || { echo "old outer server did not exit"; exit 1; }
+		sleep 0.05
+	done
 	$TMUX2 new-session -d -s out -x 100 -y 12 "$TMUX attach -t stress" ||
 		exit 1
 

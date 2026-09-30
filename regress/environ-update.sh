@@ -105,6 +105,12 @@ out=$($TMUX show-environment -t main OTHER 2>&1)
 # reattach with -E: the session values must be left untouched.
 $TMUX2 kill-server 2>/dev/null
 wait_clients 0 || fail "client did not detach"
+_g=0
+until $TMUX2 ls 2>&1 | grep -qE 'no server running|No such file'; do
+	_g=$((_g + 1))
+	[ $_g -lt 400 ] || { echo "client host server did not exit"; exit 1; }
+	sleep 0.05
+done
 
 $TMUX set-environment -t main MYVAR oldvalue2 || exit 1
 $TMUX set-environment -t main ABSENTVAR pre2 || exit 1
