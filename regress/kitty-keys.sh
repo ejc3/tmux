@@ -97,6 +97,12 @@ start '\033[>5u'
 got=$($TMUX display -pt0 '#{pane_key_mode}')
 [ "$got" = "Kitty 5" ] || fail "pane_key_mode is '$got', not 'Kitty 5'"
 
+# Without flags, modified keys that have no sequence of their own are sent as
+# kitty and xterm send them.
+check_key 0 C-Escape '^['
+check_key 0 C-BSpace '^H'
+check_key 0 M-BSpace '^[^?'
+
 # Keys. Text keys stay text with flag 1 and become escapes with flag 8;
 # Enter, Tab and Backspace stay as they are unless modified or flag 8.
 check_key 1 a 'a'

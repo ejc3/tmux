@@ -679,11 +679,12 @@ input_key_vt10x(struct bufferevent *bev, key_code key)
 	}
 
 	/*
-	 * Prevent TAB, CR and LF from being swallowed by the C0 remapping
-	 * logic.
+	 * Prevent TAB, CR, LF and Escape from being swallowed by the C0
+	 * remapping logic.
 	 */
 	onlykey = key & KEYC_MASK_KEY;
-	if (onlykey == '\r' || onlykey == '\n' || onlykey == '\t')
+	if (onlykey == '\r' || onlykey == '\n' || onlykey == '\t' ||
+	    onlykey == C0_ESC)
 		key &= ~KEYC_CTRL;
 
 	/*
@@ -703,6 +704,8 @@ input_key_vt10x(struct bufferevent *bev, key_code key)
 			key = onlykey - '\030';
 		else if (onlykey >= '@' && onlykey <= '~')
 			key = onlykey & 0x1f;
+		else if (onlykey == 0x7f)	/* C-BSpace, as xterm */
+			key = C0_BS;
 		else
 			return (-1);
 	}
