@@ -11,7 +11,8 @@
  *   OFFSET resize COLS ROWS    the terminal is resized
  *   OFFSET hidden K            the terminal grows K rows and shrinks back
  *
- * Output: "@@rows" then every row of scrollback and screen, "@@joined" then
+ * Output: "@@rows" then every row of scrollback and screen (blank rows at the
+ * end included, so the last ROWS rows are the screen), "@@joined" then
  * the same with soft-wrapped rows joined, and "@@cursor X Y PENDING SCREEN".
  */
 
@@ -23,28 +24,42 @@
 static bool
 out(void *userdata, const uint8_t *data, size_t len)
 {
-	(void)userdata;
-	return fwrite(data, 1, len, stdout) == len;
+	return fwrite(data, 1, len, userdata) == len;
 }
 
 static void
-dump(GhosttyTerminal t, bool unwrap)
+dump(GhosttyTerminal t, bool unwrap, bool trim)
 {
 	GhosttyFormatterTerminalOptions o =
 	    GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
 	GhosttyFormatter f;
-	GhosttyWriter w = { .write = out, .userdata = NULL };
+	char		*buf = NULL;
+	size_t		 len = 0, total = 0, n = 1, i;
+	FILE		*m = open_memstream(&buf, &len);
+	GhosttyWriter w = { .write = out, .userdata = m };
 
 	o.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
 	o.unwrap = unwrap;
-	o.trim = true;
+	o.trim = trim;
 	if (ghostty_formatter_terminal_new(NULL, &f, t, o) != GHOSTTY_SUCCESS) {
 		fprintf(stderr, "gvt: formatter failed\n");
 		exit(1);
 	}
 	ghostty_formatter_format(f, w);
 	ghostty_formatter_free(f);
+	fclose(m);
+	fwrite(buf, 1, len, stdout);
 	putchar('\n');
+
+	/* The formatter stops at the last row with content: add the rest. */
+	if (!trim) {
+		for (i = 0; i < len; i++)
+			n += (buf[i] == '\n');
+		ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &total);
+		for (; n < total; n++)
+			putchar('\n');
+	}
+	free(buf);
 }
 
 static uint16_t
@@ -121,9 +136,9 @@ main(int argc, char **argv)
 		ghostty_terminal_vt_write(t, data + at, size - at);
 
 	printf("@@rows\n");
-	dump(t, false);
+	dump(t, false, false);
 	printf("@@joined\n");
-	dump(t, true);
+	dump(t, true, true);
 	ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_CURSOR_PENDING_WRAP, &pending);
 	ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen);
 	printf("@@cursor %u %u %d %d\n",
