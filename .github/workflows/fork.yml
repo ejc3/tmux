@@ -1,0 +1,111 @@
+# Tests for this fork's branch (not for upstream: drop .github/fork and this
+# file from pull requests to tmux/tmux).
+name: 'Fork tests'
+
+on:
+  push:
+    branches: [scroll-native-v4]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regress:
+    name: regress (branch against upstream)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake bison build-essential \
+            libevent-dev libncurses-dev pkg-config
+      - name: base
+        run: |
+          git fetch -q https://github.com/tmux/tmux.git master
+          echo "BASE_COMMIT=$(git merge-base HEAD FETCH_HEAD)" >>"$GITHUB_ENV"
+      - name: build
+        run: |
+          sh autogen.sh && ./configure --enable-sixel && make -j"$(nproc)"
+          git worktree add -q ../base "$BASE_COMMIT"
+          (cd ../base && sh autogen.sh && ./configure --enable-sixel &&
+            make -j"$(nproc)")
+      - name: test
+        run: sh .github/fork/regress.sh ./tmux ../base/tmux
+      - name: logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: regress-logs
+          path: regress/logs/
+          if-no-files-found: ignore
+
+  gym:
+    name: real terminals (gym)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    env:
+      JUDGES: ${{ github.workspace }}/judges
+      GHOSTTY_BUILD: ${{ github.workspace }}/judges/ghostty-build
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: gym2
+          path: gym2
+          persist-credentials: false
+      - name: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake bison build-essential \
+            libevent-dev libncurses-dev pkg-config libvterm-dev xvfb xterm \
+            python3-gi gir1.2-vte-2.91 gir1.2-gtk-3.0 cargo curl xz-utils \
+            libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 \
+            libfontconfig1 dbus-x11
+      - name: cache judges
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: judges/ghostty-build
+          key: ghostty-vt-0538f753-zig-0.16.0-${{ runner.arch }}
+      - name: judges
+        run: sh gym2/gym/refs/setup-judges.sh
+      - name: build
+        run: sh autogen.sh && ./configure --enable-sixel && make -j"$(nproc)"
+      - name: render-parity
+        run: |
+          cd regress
+          TEST_TMUX=$PWD/../tmux sh render-parity.sh
+          RENDER_PARITY_FORWARD=off TEST_TMUX=$PWD/../tmux sh render-parity.sh
+      - name: parity on real terminals
+        run: |
+          cd gym2
+          python3 -u gym/parity_real.py --tmux ../tmux | tee ../parity.txt
+          grep -q '^scrollback: 0 cases differ' ../parity.txt
+      - name: protocol matrix
+        if: always()
+        run: |
+          cd gym2
+          mkdir -p "$JUDGES/tmp"
+          python3 gym/protocols.py --tmux ../tmux --terminals kitty,wezterm,xterm \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gym-results
+          path: |
+            parity.txt
+            judges/VERSIONS
+          if-no-files-found: ignore
