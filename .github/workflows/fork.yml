@@ -73,7 +73,7 @@ jobs:
             libevent-dev libncurses-dev pkg-config libvterm-dev xvfb xterm \
             python3-gi gir1.2-vte-2.91 gir1.2-gtk-3.0 cargo curl xz-utils \
             libgl1-mesa-dri libegl1 libxkbcommon-x11-0 libxcursor1 \
-            libfontconfig1 dbus-x11 xdotool
+            libfontconfig1 dbus-x11 xdotool python3-pil
       - name: cache judges
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -106,6 +106,12 @@ jobs:
         run: |
           cd gym2
           python3 -u gym/keys_parity.py --tmux ../tmux | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: kitty graphics
+        if: always()
+        shell: bash
+        run: |
+          cd gym2
+          python3 -u gym/refs/kitty_gfx.py --tmux ../tmux | tee -a "$GITHUB_STEP_SUMMARY"
       - name: results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
