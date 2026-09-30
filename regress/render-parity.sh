@@ -21,7 +21,8 @@
 # RENDER_PARITY_CASES selects cases by name; RENDER_PARITY_DIR reads cases
 # from a directory instead (NAME/1, NAME/2, ... and NAME/differ).
 # RENDER_PARITY_FORWARD=off turns forward-output off, so the pane is drawn
-# from the grid rather than forwarded as written.
+# from the grid rather than forwarded as written. RENDER_PARITY_JOBS (8) is
+# how many cases run at once, each group of cases with servers of its own.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -30,11 +31,20 @@ export PATH TERM LC_ALL
 E=$(printf '\033')
 
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
-OUTER="$TEST_TMUX -LtestA$$ -f/dev/null"
-INNER="$TEST_TMUX -LtestB$$ -f/dev/null"
+JOBS=${RENDER_PARITY_JOBS:-8}
 DIR=$(mktemp -d)
 CASES=${RENDER_PARITY_DIR:-$DIR/cases}
-trap "$OUTER kill-server 2>/dev/null; $INNER kill-server 2>/dev/null; rm -rf $DIR" 0 1 15
+cleanup() {
+	j=0
+	while [ $j -lt $JOBS ]; do
+		$TEST_TMUX -LtestA$$-$j kill-server 2>/dev/null
+		$TEST_TMUX -LtestB$$-$j kill-server 2>/dev/null
+		j=$((j + 1))
+	done
+	rm -rf $DIR
+}
+trap cleanup 0
+trap 'exit 1' 1 15
 
 # The writer: wait to be told to start, write a marker and scroll it into the
 # history (what came before - attaching the inner client moves the outer
@@ -363,23 +373,25 @@ BEGIN {
 }
 EOF
 
-# Wait up to $2 tenths of a second for a command to succeed.
+# Wait up to $2 twentieths of a second for a command to succeed.
 wait_for() {
 	n=0
 	until eval "$1"; do
 		n=$((n + 1))
 		[ $n -gt "$2" ] && return 1
-		sleep 0.1
+		sleep 0.05
 	done
 	return 0
 }
 
-# Wait until both outer panes have stopped changing.
+# Wait until both outer panes have stopped changing: the inner server has
+# gone round its loop, and the panes stay the same for 0.15 seconds.
 wait_quiet() {
+	$INNER display -p x >/dev/null 2>&1
 	last=
 	same=0
 	n=0
-	while [ $same -lt 5 ] && [ $n -lt 200 ]; do
+	while [ $same -lt 3 ]; do
 		now=$($OUTER capturep -pet bare -S- -E- 2>/dev/null | cksum)
 		now="$now $($OUTER capturep -pet tmux -S- -E- 2>/dev/null | cksum)"
 		if [ "$now" = "$last" ]; then
@@ -389,7 +401,8 @@ wait_quiet() {
 		fi
 		last=$now
 		n=$((n + 1))
-		sleep 0.1
+		[ $n -lt 400 ] || { echo "$name: panes kept changing" >&2; exit 1; }
+		sleep 0.05
 	done
 }
 
@@ -460,13 +473,13 @@ snapshot() {
 run_case() {
 	name=$1
 	case=$CASES/$name
-	rm -f $DIR/go $DIR/done.*
+	rm -f $W/go $W/done.*
 
 	$OUTER new -d -s keep \; set -g history-limit 100000 \; \
 	    set -g default-terminal xterm-256color \; set -g status off \; \
 	    set -s clear-on-attach off || exit 1
 	$INNER new -d -s inner -x 80 -y 24 \
-	    "sh $DIR/write.sh $case $DIR/go $DIR/done.tmux" \; \
+	    "sh $DIR/write.sh $case $W/go $W/done.tmux" \; \
 	    set -g status off \; set -s clear-on-attach off \; \
 	    set -as terminal-features \
 	    ',xterm*:hyperlinks:usstyle:RGB:strikethrough:overline' || exit 1
@@ -474,25 +487,29 @@ run_case() {
 		$INNER set -s forward-output $RENDER_PARITY_FORWARD || exit 1
 	fi
 	$OUTER new -d -s bare -x 80 -y 24 \
-	    "sh $DIR/write.sh $case $DIR/go $DIR/done.bare" || exit 1
+	    "sh $DIR/write.sh $case $W/go $W/done.bare" || exit 1
 	$OUTER new -d -s tmux -x 80 -y 24 \
 	    "unset TMUX; exec $INNER attach -t inner" || exit 1
 
-	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 50 || exit 1
+	# The inner client has attached once it knows what the terminal is.
+	wait_for "[ -n \"\$($INNER lsc -F '#{client_termtype}' 2>/dev/null)\" ]" \
+	    100 || { echo "$name: inner client did not attach" >&2; exit 1; }
 	wait_quiet
-	touch $DIR/go
-	wait_for "[ -e $DIR/done.bare ] && [ -e $DIR/done.tmux ]" 600 || exit 1
+	touch $W/go
+	wait_for "[ -e $W/done.bare ] && [ -e $W/done.tmux ]" 1200 ||
+	    { echo "$name: writers did not finish" >&2; exit 1; }
 	wait_quiet
 
-	snapshot bare >$DIR/bare
-	snapshot tmux >$DIR/tmux
+	snapshot bare >$W/bare
+	snapshot tmux >$W/tmux
 	# Wait for both servers to be gone: the next case starts servers on the
 	# same sockets, and one still exiting takes the new command with it.
 	$INNER kill-server 2>/dev/null
 	$OUTER kill-server 2>/dev/null
-	wait_for "$INNER ls 2>&1 | grep -qE 'no server running|No such file' && $OUTER ls 2>&1 | grep -qE 'no server running|No such file'" 50
+	wait_for "$INNER ls 2>&1 | grep -qE 'no server running|No such file' && $OUTER ls 2>&1 | grep -qE 'no server running|No such file'" 100 ||
+	    { echo "$name: servers did not exit" >&2; exit 1; }
 
-	if cmp -s $DIR/bare $DIR/tmux; then
+	if cmp -s $W/bare $W/tmux; then
 		if [ -e "$case/differ" ]; then
 			echo "$name: now the same (was expected to differ)"
 		fi
@@ -503,7 +520,7 @@ run_case() {
 		return 0
 	fi
 	echo "$name: differs" >&2
-	diff -u $DIR/bare $DIR/tmux | sed -n '1,40p' >&2
+	diff -u $W/bare $W/tmux | sed -n '1,40p' >&2
 	return 1
 }
 
@@ -512,8 +529,32 @@ if [ -z "$RENDER_PARITY_DIR" ]; then
 	mkdir $DIR/cases && LC_ALL=C awk -v dir=$DIR/cases -f $DIR/cases.awk ||
 	    exit 1
 fi
-failed=0
-for name in ${RENDER_PARITY_CASES:-$(cat $CASES/list 2>/dev/null || ls $CASES)}; do
-	run_case "$name" || failed=1
+set -- ${RENDER_PARITY_CASES:-$(cat $CASES/list 2>/dev/null || ls $CASES)}
+# Case i runs in group i % JOBS; each group has its own servers and files.
+pids=
+j=0
+while [ $j -lt $JOBS ]; do
+	(
+		W=$DIR/job$j
+		OUTER="$TEST_TMUX -LtestA$$-$j -f/dev/null"
+		INNER="$TEST_TMUX -LtestB$$-$j -f/dev/null"
+		mkdir $W || exit 1
+		failed=0
+		i=0
+		for name; do
+			if [ $((i % JOBS)) -eq $j ]; then
+				run_case "$name" || failed=1
+			fi
+			i=$((i + 1))
+		done
+		exit $failed
+	) >$DIR/out.$j 2>&1 &
+	pids="$pids $!"
+	j=$((j + 1))
 done
+failed=0
+for pid in $pids; do
+	wait $pid || failed=1
+done
+cat $DIR/out.*
 exit $failed
