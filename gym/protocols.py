@@ -73,18 +73,20 @@ def prober(tmp):
 
 
 def inner(cmd, tmux, mode, tmp):
-    """The command run in the terminal: the prober, or tmux running it."""
+    """The command run in the terminal: the prober, or tmux running it. The
+    options are in a configuration file, so they are set before the prober
+    starts; extended-keys is on, which tmux needs to take part in the kitty
+    keyboard protocol."""
     if mode == 'direct':
         return cmd
     sock = os.path.join(tmp, 'tmux.sock')
-    opts = ['set', '-s', 'clear-on-attach', 'on' if mode == 'default' else 'off', ';',
-            'set', '-g', 'status', 'off']
+    conf = os.path.join(tmp, f'tmux-{mode}.conf')
+    lines = ['set -s clear-on-attach ' + ('on' if mode == 'default' else 'off'),
+             'set -s extended-keys on', 'set -g status off']
     if mode == 'translate':
-        opts += [';', 'set', '-s', 'forward-output', 'off']
-    q = ' '.join("'" + a.replace("'", "'\\''") + "'" if a not in (';',) else r"\;"
-                 for a in opts)
-    return (f"unset TMUX; {tmux} -S {sock} -f /dev/null new -s p "
-            f"\"{cmd}\" \\; {q}")
+        lines.append('set -s forward-output off')
+    open(conf, 'w').write('\n'.join(lines) + '\n')
+    return f"unset TMUX; {tmux} -S {sock} -f {conf} new -s p \"{cmd}\""
 
 
 def run_kitty(command, tmp):
