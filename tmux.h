@@ -3683,6 +3683,7 @@ void	 screen_write_cursorup(struct screen_write_ctx *, u_int);
 void	 screen_write_cursordown(struct screen_write_ctx *, u_int);
 void	 screen_write_cursorright(struct screen_write_ctx *, u_int);
 void	 screen_write_cursorleft(struct screen_write_ctx *, u_int);
+void	 screen_write_wrapnext(struct screen_write_ctx *, int);
 void	 screen_write_alignmenttest(struct screen_write_ctx *);
 void	 screen_write_insertcharacter(struct screen_write_ctx *, u_int, u_int);
 void	 screen_write_deletecharacter(struct screen_write_ctx *, u_int, u_int);
