@@ -48,11 +48,22 @@ check_capture nel 'AA
 BC'
 
 $TMUX kill-server 2>/dev/null
-sleep 0.1
+i=0
+while $TMUX ls >/dev/null 2>&1; do
+	i=$((i + 1))
+	[ $i -ge 400 ] && { echo "FAIL: server did not exit"; exit 1; }
+	sleep 0.05
+done
+# The output ends with OSC 7: once the pane path is set, all of it is read.
 $TMUX new-session -d -x 5 -y 3 -s history \; \
     set-option -g history-limit 3 \; \
-    respawn-pane -k "printf '01\n02\n03\n04\n05\n06'; $INPUT_HOLD" || exit 1
-sleep 0.3
+    respawn-pane -k "printf '01\n02\n03\n04\n05\n06\033]7;done\007'; $INPUT_HOLD" || exit 1
+i=0
+until [ "$($TMUX display -p -t history: '#{pane_path}')" = done ]; do
+	i=$((i + 1))
+	[ $i -ge 400 ] && { echo "FAIL: history output not read"; exit 1; }
+	sleep 0.05
+done
 $TMUX capture-pane -pN -t history: -S - -E - | normalize_capture >"$TMP"
 printf "%s\n" '01
 02

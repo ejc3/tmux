@@ -31,23 +31,40 @@ trap cleanup 0 1 15
 # Press, drag and release with SGR mouse sequences, sent as 1-based positions
 # to the outer pane holding the inner client. This matches the default
 # MouseDown1Border/MouseDrag1Border bindings used to move a floating pane by
-# its border.
+# its border. Waits until the pane has moved; fails if it does not.
 drag()
 {
-	seq=$(printf '\033[<0;%s;%sM' "$1" "$2")
-	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
-	seq=$(printf '\033[<32;%s;%sM' "$3" "$4")
-	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
-	seq=$(printf '\033[<0;%s;%sm' "$3" "$4")
-	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.5
+	_top=$(pane_top)
+	_seq=$(printf '\033[<0;%s;%sM' "$1" "$2")
+	$TMUX2 send-keys -t "$OUTER" -l "$_seq" 2>/dev/null
+	_seq=$(printf '\033[<32;%s;%sM' "$3" "$4")
+	$TMUX2 send-keys -t "$OUTER" -l "$_seq" 2>/dev/null
+	_seq=$(printf '\033[<0;%s;%sm' "$3" "$4")
+	$TMUX2 send-keys -t "$OUTER" -l "$_seq" 2>/dev/null
+	_i=0
+	while [ "$(pane_top)" -eq "$_top" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -ge 400 ] && return 1
+		sleep 0.05
+	done
+	# A press within KEYC_CLICK_TIMEOUT (300ms) of the last one on the same
+	# border is a second click, not MouseDown1Border: let the timer expire.
+	sleep 0.35
 }
 
 pane_top()
 {
 	$TMUX display-message -p -t "$FLOAT" '#{pane_top}'
+}
+
+wait_attached()
+{
+	_i=0
+	until [ -n "$($TMUX list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -ge 400 ] && fail "inner client did not attach"
+		sleep 0.05
+	done
 }
 
 $TMUX new-session -d -s inner -x 60 -y 20 'sleep 100' || exit 1
@@ -62,7 +79,7 @@ FLEFT=$($TMUX display-message -p -t "$FLOAT" '#{pane_left}')
 COL=$((FLEFT + 6))
 
 $TMUX2 new-session -d -s outer -x 60 -y 20 "$TMUX attach -t inner" || exit 1
-sleep 1
+wait_attached
 OUTER=$($TMUX2 list-panes -F '#{pane_id}' | head -1)
 [ -n "$OUTER" ] || fail "no outer pane"
 
@@ -74,14 +91,14 @@ while [ "$(pane_top)" -gt 1 ] && [ "$i" -lt 10 ]; do
 	# The border is on row top-1 (0-based); positions are 1-based.
 	dest=$((top - 3))
 	[ "$dest" -lt 1 ] && dest=1
-	drag $((COL + 1)) "$top" $((COL + 1)) "$dest"
+	drag $((COL + 1)) "$top" $((COL + 1)) "$dest" ||
+	    fail "could not drag the pane up from row $top"
 	i=$((i + 1))
 done
 [ "$(pane_top)" -eq 1 ] || fail "could not drag the pane to the top ($(pane_top))"
 
 # Now drag it back down by the top border in row 0.
-drag $((COL + 1)) 1 $((COL + 1)) 4
-[ "$(pane_top)" -gt 1 ] ||
+drag $((COL + 1)) 1 $((COL + 1)) 4 && [ "$(pane_top)" -gt 1 ] ||
     fail "floating pane at the top could not be dragged by its top border"
 
 exit 0

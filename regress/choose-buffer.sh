@@ -49,14 +49,14 @@ capture()
 # capture is known to show the mode instance under test.
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
 		if printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1'"
 }
@@ -66,14 +66,14 @@ wait_for()
 # Wait (up to ~10s) until the rendered screen no longer contains $marker.
 wait_gone()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
 		if ! printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1' to disappear"
 }
@@ -84,15 +84,15 @@ wait_gone()
 # matching capture is left in CAPTURED.
 wait_count()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
-		c=$(printf '%s\n' "$CAPTURED" | grep -F -c "$1")
-		[ "$c" -eq "$2" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		_c=$(printf '%s\n' "$CAPTURED" | grep -F -c "$1")
+		[ "$_c" -eq "$2" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "timed out waiting for $2 lines of '$1' (have $c)"
+	fail "timed out waiting for $2 lines of '$1' (have $_c)"
 }
 
 # wait_buffers $n
@@ -100,14 +100,14 @@ wait_count()
 # Wait (up to ~10s) until the test server has exactly $n paste buffers.
 wait_buffers()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		c=$($TMUX list-buffers -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 0.5
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 500 ]; do
+		_c=$($TMUX list-buffers -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "expected $1 buffers, have $c"
+	fail "expected $1 buffers, have $_c"
 }
 
 # wait_clients $n
@@ -115,12 +115,12 @@ wait_buffers()
 # Wait (up to ~10s) until the test server has exactly $n clients attached.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 10 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
@@ -130,28 +130,28 @@ wait_clients()
 # Wait (up to ~10s) until a pane enters or leaves mode.
 wait_mode()
 {
-	t=$1
-	want=$2
+	_t=$1
+	_want=$2
 
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t "$t" '#{pane_in_mode}' \
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t "$_t" '#{pane_in_mode}' \
 		    2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane $t mode state is $got, expected $want"
+	fail "pane $_t mode state is $_got, expected $_want"
 }
 
 exit_mode()
 {
-	marker=$1
+	_m=$1
 	shift
 
 	$TMUX send-keys -t aaa:0 "$@" || fail "send-keys $* failed"
 	wait_mode aaa:0 0
-	wait_gone "$marker"
+	wait_gone "$_m"
 }
 
 $TMUX new-session -d -s aaa -x 80 -y 24 'cat' || exit 1
@@ -260,12 +260,12 @@ $TMUX choose-buffer -t aaa:0 -F 'G3' || exit 1
 wait_count ': G3' 1
 exit_mode ': G3' Enter
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	$TMUX capture-pane -p -t aaa:0 | grep -F -q 'hello buffer' && \
 		break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "buffer not pasted into pane"
+[ "$i" -lt 200 ] || fail "buffer not pasted into pane"
 
 exit 0
