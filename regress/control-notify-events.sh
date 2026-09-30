@@ -25,15 +25,14 @@ trap cleanup EXIT
 wait_for()
 {
 	pattern=$1
-	timeout=${2:-6}
-	i=0
+	_i=0
 
-	while [ "$i" -lt "$timeout" ]; do
+	while [ "$_i" -lt 400 ]; do
 		if grep -F -- "$pattern" "$OUT" >/dev/null 2>&1; then
 			return 0
 		fi
-		sleep 1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	echo "missing: $pattern"
 	cat "$OUT"
@@ -44,16 +43,15 @@ wait_for_count()
 {
 	pattern=$1
 	expected=$2
-	timeout=${3:-6}
-	i=0
+	_i=0
 
-	while [ "$i" -lt "$timeout" ]; do
+	while [ "$_i" -lt 400 ]; do
 		count=$(grep -F -- "$pattern" "$OUT" 2>/dev/null | wc -l)
 		if [ "$count" -ge "$expected" ]; then
 			return 0
 		fi
-		sleep 1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	echo "missing count $expected for: $pattern"
 	cat "$OUT"
@@ -77,7 +75,7 @@ PID=$!
 exec 3>"$IN"
 
 send 'display-message -p ready'
-wait_for 'ready' 3 || exit 1
+wait_for 'ready' || exit 1
 
 send 'rename-window notify-renamed'
 wait_for "%window-renamed $wid notify-renamed" || exit 1

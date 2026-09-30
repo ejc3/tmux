@@ -22,6 +22,20 @@ must_fail()
 	return 0
 }
 
+# wait_marker $marker
+#
+# Wait for the pane to print OSC 7 with $marker (after what was printed before
+# it).
+wait_marker()
+{
+	_i=0
+	while [ "$($TMUX display-message -p '#{pane_path}')" != "$1" ]; do
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && fail "pane did not print marker $1"
+		sleep 0.05
+	done
+}
+
 must_equal()
 {
 	got=$1
@@ -101,11 +115,13 @@ must_fail $TMUX set-buffer -b "bad${invalid}name" data
 # Titles set by commands allow '#', ':' and '.'.
 $TMUX select-pane -T 'title#:.ok' || fail "command title rejected"
 must_equal "$($TMUX display-message -p '#{pane_title}')" 'title#:.ok'
-$TMUX send-keys "printf '\\033]2;title#[fg=red]ok\\007'" Enter || exit 1
-sleep 1
+$TMUX send-keys "printf '\\033]2;title#[fg=red]ok\\007\\033]7;m1\\007'" \
+	Enter || exit 1
+wait_marker m1
 must_equal "$($TMUX display-message -p '#{pane_title}')" 'title#[fg=red]ok'
-$TMUX send-keys "printf '\\033]2;title#(bad)\\007'" Enter || exit 1
-sleep 1
+$TMUX send-keys "printf '\\033]2;title#(bad)\\007\\033]7;m2\\007'" \
+	Enter || exit 1
+wait_marker m2
 must_equal "$($TMUX display-message -p '#{pane_title}')" 'title_(bad)'
 
 # Buffer names allow '#', ':' and '.'.
@@ -113,24 +129,28 @@ $TMUX set-buffer -b 'buffer#:.ok' data || fail "buffer name rejected"
 must_equal "$($TMUX list-buffers -F '#{buffer_name}')" 'buffer#:.ok'
 
 # Window names from escape sequences allow '#' except in '#('.
-$TMUX send-keys "printf '\\033kescape#:.ok\\033\\\\'" Enter || exit 1
-sleep 1
+$TMUX send-keys "printf '\\033kescape#:.ok\\033\\\\\\033]7;m3\\007'" \
+	Enter || exit 1
+wait_marker m3
 must_equal "$($TMUX display-message -p '#{window_name}')" 'escape#:.ok'
 
 # Titles from escape sequences allow '#' except in '#('.
-$TMUX send-keys "printf '\\033]2;escape#:.ok\\007'" Enter || exit 1
-sleep 1
+$TMUX send-keys "printf '\\033]2;escape#:.ok\\007\\033]7;m4\\007'" \
+	Enter || exit 1
+wait_marker m4
 must_equal "$($TMUX display-message -p '#{pane_title}')" 'escape#:.ok'
 
 # Invalid UTF-8 from escape sequences is ignored.
 $TMUX rename-window 'before-invalid' || exit 1
-$TMUX send-keys "printf '\\033kbad\\302name\\033\\\\'" Enter || exit 1
-sleep 1
+$TMUX send-keys "printf '\\033kbad\\302name\\033\\\\\\033]7;m5\\007'" \
+	Enter || exit 1
+wait_marker m5
 must_equal "$($TMUX display-message -p '#{window_name}')" 'before-invalid'
 
 $TMUX select-pane -T 'before-invalid-title' || exit 1
-$TMUX send-keys "printf '\\033]2;bad\\302title\\007'" Enter || exit 1
-sleep 1
+$TMUX send-keys "printf '\\033]2;bad\\302title\\007\\033]7;m6\\007'" \
+	Enter || exit 1
+wait_marker m6
 must_equal "$($TMUX display-message -p '#{pane_title}')" 'before-invalid-title'
 
 $TMUX kill-server 2>/dev/null

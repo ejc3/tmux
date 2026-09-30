@@ -28,10 +28,14 @@ printf '\e[14;1H\360\237\207\270\360\237\207\25212\n'
 printf '\e[15;1H\360\237\207\270  \010\010\360\237\207\25213\n'
 $TMUX capturep -pe >>$TMP"
 
-sleep 1
+# The server exits when the pane has captured itself and exited.
+i=0
+while $TMUX has 2>/dev/null; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "server still running"; exit 1; }
+	sleep 0.05
+done
 
 cmp $TMP combine-test.result || exit 1
-
-$TMUX has 2>/dev/null && exit 1
 
 exit 0

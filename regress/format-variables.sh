@@ -303,12 +303,18 @@ $TMUX set-buffer -b buf0 'somebuffer' || exit 1
 # data to report.
 $TMUX new-session -d -s cov2 -t cov || exit 1
 
-sleep 1
 $TMUX send-keys -t cov:win0.0 'some pane content' Enter
 # Ring the bell in the non-current window so a bell alert is raised on the
 # session (this populates session_alert/session_alerts and window_bell_flag).
 $TMUX send-keys -t cov:win1.0 C-g
-sleep 1
+# Wait for both panes to echo what was sent.
+i=0
+until $TMUX capture-pane -p -t cov:win0.0 | grep -q 'some pane content' &&
+    $TMUX capture-pane -p -t cov:win1.0 | grep -q '^^G'; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && fail "Panes did not echo the keys."
+	sleep 0.05
+done
 
 # Attach a control-mode client, held open by a background process keeping the
 # write end of a FIFO open, so client_* variables have a client to read.
@@ -323,7 +329,16 @@ CC=$!
 # server gets a genuine terminal, which populates the terminal-dependent client
 # variables (client_termname, cursor_shape, the I modifier, ...).
 $TMUX2 new-session -d -x 90 -y 30 "$TMUX attach -t cov" || exit 1
-sleep 1
+# Wait for the control client and for the real client to have answered
+# tmux's startup queries.
+i=0
+until $TMUX list-clients -F '#{client_control_mode}' | grep -qx 1 &&
+    $TMUX list-clients -F '#{client_control_mode}:#{client_termtype}' |
+    grep -q '^0:.'; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && fail "Clients did not attach."
+	sleep 0.05
+done
 
 # The real (terminal) client, identified by not being in control mode.
 RC=$($TMUX list-clients -F '#{client_control_mode} #{client_name}' |

@@ -22,12 +22,13 @@ pid=$!
 
 i=0
 target=
-while [ -z "$target" ]; do
-	[ "$i" -eq 50 ] && exit 1
-	i=$((i + 1))
-	sleep 0.1
+while :; do
 	target=$($TMUX lsp -F'#{pane_id} #{pane_start_command}' 2>/dev/null|
 	    awk '/sleep/{print $1; exit}')
+	[ -n "$target" ] && break
+	[ "$i" -eq 400 ] && { echo "split-window -W pane did not appear"; exit 1; }
+	i=$((i + 1))
+	sleep 0.05
 done
 
 $TMUX killp -t "$target"

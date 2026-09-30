@@ -24,19 +24,24 @@ trap "$TMUX kill-server 2>/dev/null; rm -f $FIFO $OUT" 0 1 15
 $TMUX -f/dev/null -C new -s wait-exit <"$FIFO" >"$OUT" 2>&1 &
 CLIENT=$!
 exec 3>"$FIFO"
-sleep 1
 
 # Ask to linger after exit, then detach so the client prints %exit and enters
 # the wait-exit loop.
 printf 'refresh-client -f wait-exit\n' >&3
-sleep 1
+i=0
+until $TMUX list-clients -F '#{client_flags}' 2>/dev/null | grep -q wait-exit
+do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "wait-exit flag not set"; exit 1; }
+	sleep 0.05
+done
 $TMUX detach-client -s wait-exit
 
 # Wait for the client to print %exit and enter the wait-exit loop.
 i=0
-while [ $i -lt 5 ]; do
+while [ $i -lt 400 ]; do
 	grep -q '^%exit' "$OUT" && break
-	sleep 1
+	sleep 0.05
 	i=$((i + 1))
 done
 grep -q '^%exit' "$OUT" || exit 1
@@ -49,9 +54,9 @@ printf 'a\n\n' >&3
 # The client should exit promptly. If it is still alive after the timeout the
 # empty line was lost in a buffer and the client has hung.
 i=0
-while [ $i -lt 10 ]; do
+while [ $i -lt 400 ]; do
 	kill -0 $CLIENT 2>/dev/null || break
-	sleep 1
+	sleep 0.05
 	i=$((i + 1))
 done
 if kill -0 $CLIENT 2>/dev/null; then

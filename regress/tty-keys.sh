@@ -32,8 +32,8 @@ fail () {
 $TMUX2 -f/dev/null new -d || exit 1
 $TMUX -f/dev/null new -d "$TMUX2 attach" || exit 1
 i=0
-while [ -z "$($TMUX2 list-clients -F '#{client_name}')" ]; do
-	[ "$i" -lt 100 ] || fail "inner client did not attach"
+while [ -z "$($TMUX2 list-clients -F '#{client_termtype}')" ]; do
+	[ "$i" -lt 400 ] || fail "inner client did not attach"
 	sleep 0.05
 	i=$((i + 1))
 done
@@ -67,7 +67,7 @@ assert_key () {
 	while ! $TMUX capture-pane -p | grep -Fq "$prompt"; do
 		kill -0 "$prompt_pid" 2>/dev/null || \
 		    fail "$keys -> $expected_name: prompt exited before becoming ready"
-		[ "$i" -lt 100 ] || \
+		[ "$i" -lt 400 ] || \
 		    fail "$keys -> $expected_name: timed out waiting for prompt"
 		sleep 0.05
 		i=$((i + 1))
@@ -77,7 +77,7 @@ assert_key () {
 
 	i=0
 	while kill -0 "$prompt_pid" 2>/dev/null; do
-		[ "$i" -lt 100 ] || \
+		[ "$i" -lt 400 ] || \
 		    fail "$keys -> $expected_name: timed out waiting for key"
 		sleep 0.05
 		i=$((i + 1))
@@ -341,11 +341,16 @@ assert_key 'Escape [O' 'FocusOut'
 $TMUX2 bind C-c set -g @focus-prefix yes
 $TMUX2 set -g focus-events on
 $TMUX send-keys C-b Escape '[O' Escape '[I' C-c
-sleep 0.05
-if [ "$($TMUX2 show -gv @focus-prefix)" != yes ]; then
-	echo "[FAIL] FocusIn and FocusOut left the prefix table"
-	exit_status=1
-fi
+i=0
+while [ "$($TMUX2 show -gv @focus-prefix)" != yes ]; do
+	if [ "$i" -ge 400 ]; then
+		echo "[FAIL] FocusIn and FocusOut left the prefix table"
+		exit_status=1
+		break
+	fi
+	sleep 0.05
+	i=$((i + 1))
+done
 
 # Paste keys
 assert_key 'Escape [200~' 'PasteStart'
