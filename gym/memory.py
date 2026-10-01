@@ -792,6 +792,34 @@ def lifecycle_respawn(g, i):
     g.pane(b'')
 
 
+def lifecycle_menu_pane(g, i):
+    # A menu is open for a pane that is then killed, and is drawn again.
+    pane = g.split()
+    g.server.cmd('display-menu', '-c', g.term.tty(), '-t', pane, '-x', '0',
+                 '-y', '0', 'one', '1', '', 'two', '2', '')
+    g.settle()
+    g.unsplit(pane)
+    g.server.cmd('refresh-client', '-t', g.term.tty())
+    g.settle()
+    g.term.send(b'q')              # close the menu
+    g.settle()
+
+
+def lifecycle_exit_resize(g, i):
+    # A terminal resized while its client is stopped, then closed: the
+    # client sends the resize it had pending after it has said it exits.
+    t = Terminal(g.server, rows=20, cols=60)
+    g.terms.append(t)
+    g.settle()
+    g.server.cmd('suspend-client', '-t', t.tty())
+    wait(lambda: stopped(t.pid), 'client to stop')
+    t.size(20 + i % 3, 61, 0, 0)
+    g.terms.remove(t)
+    t.close()
+    wait(lambda: len(g.server.cmd('list-clients').splitlines()) == 1,
+         'client to go')
+
+
 def lifecycle_truncate(g, i):
     # The file shrinks while tmux reads it.
     path = tmpimage(g.tmp, os.urandom(3 * 256 * 256), 'trunc')
@@ -930,6 +958,8 @@ SCENARIOS = [
     ('lifecycle-panes', None, lifecycle_panes),
     ('lifecycle-respawn', None, lifecycle_respawn),
     ('lifecycle-truncate', None, lifecycle_truncate),
+    ('lifecycle-menu-pane', None, lifecycle_menu_pane),
+    ('lifecycle-exit-resize', None, lifecycle_exit_resize),
     # Upstream leaks.
     ('leak-term-remove', leak_term_remove_setup, leak_term_remove),
     ('leak-run-wait-killed', None, leak_run_wait_killed),
