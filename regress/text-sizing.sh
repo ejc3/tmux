@@ -108,6 +108,11 @@ run "\\033]7;QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ${S}\\033]66;w=2;a\\360${S}
 run "\\033]66;w=2;\\303Ab${S}"
 [ "$(row)" = '^[]66;w=2;Ab^[\' ] || fail "with a bad character the row is $(row)"
 
+# A cell keeps up to 31 bytes of it.
+run "\\033]66;w=1;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx${S}"
+[ "$(row)" = '^[]66;w=1;xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx^[\' ] ||
+    fail "with 34 bytes the row is $(row)"
+
 # capture-pane -C writes it with its escapes as text.
 run "a\\033]66;w=2;\\\\${S}c"
 [ "$($INNER capturep -epCt0 | head -1 | sed 's/ *$//')" = \

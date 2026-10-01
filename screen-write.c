@@ -3289,7 +3289,7 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	}
 
 	/* Check if this combined character would be too long. */
-	if (last.data.size + ud->size > sizeof last.data.data)
+	if (last.data.size + ud->size > UTF8_MAXSIZE)
 		return (zero_width);
 
 	/* Combining; flush any pending output. */

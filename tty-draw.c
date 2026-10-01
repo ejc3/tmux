@@ -282,7 +282,9 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 			else if (current_state == TTY_DRAW_LINE_FIRST)
 				next_state = TTY_DRAW_LINE_SAME;
 			else if (grid_cells_look_equal(gcp, &last)) {
-				if (gcp->data.size > (sizeof buf) - len)
+				if (((gcp->attr & GRID_ATTR_SIZED) ?
+				    TTY_SIZED_SIZE : gcp->data.size) >
+				    (sizeof buf) - len)
 					next_state = TTY_DRAW_LINE_FLUSH;
 				else
 					next_state = TTY_DRAW_LINE_SAME;

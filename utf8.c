@@ -474,7 +474,7 @@ utf8_from_data(const struct utf8_data *ud, utf8_char *uc)
 	if (ud->width > UTF8_MAXWIDTH)
 		fatalx("invalid UTF-8 width: %u", ud->width);
 
-	if (ud->size > UTF8_SIZE)
+	if (ud->size > UTF8_MAXSIZE)
 		goto fail;
 	if (ud->size <= 3) {
 		index = (((utf8_char)ud->data[2] << 16)|

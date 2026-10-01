@@ -722,8 +722,14 @@ typedef u_int utf8_char;
  */
 #define UTF8_SIZE 32
 
+/* The most bytes a grid cell keeps (what the packed size field holds). */
+#define UTF8_MAXSIZE (UTF8_SIZE - 1)
+
 /* The widest a character can be (one given a width with OSC 66). */
 #define UTF8_MAXWIDTH 6
+
+/* The most bytes a terminal is sent for one such character (OSC 66). */
+#define TTY_SIZED_SIZE (UTF8_SIZE + 16)
 struct utf8_data {
 	u_char	data[UTF8_SIZE];
 

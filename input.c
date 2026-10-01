@@ -3382,7 +3382,7 @@ input_sized_parse(const char *p, u_int *w)
 
 /*
  * All of the text given width w (1 to 7) as one character in ud: its valid
- * characters, as many as fit. Returns 0 if there are none.
+ * characters, as many as a cell keeps. Returns 0 if there are none.
  */
 int
 input_sized_data(const char *text, u_int w, struct utf8_data *ud)
@@ -3393,7 +3393,7 @@ input_sized_data(const char *text, u_int w, struct utf8_data *ud)
 	while (*text != '\0') {
 		if (!utf8_next(&text, &one))
 			continue;
-		if (ud->size + one.size > sizeof ud->data)
+		if (ud->size + one.size > UTF8_MAXSIZE)
 			break;
 		memcpy(ud->data + ud->size, one.data, one.size);
 		ud->size += one.size;
