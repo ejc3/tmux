@@ -1454,6 +1454,18 @@ grid_reflow_move(struct grid *gd, struct grid_line *from)
 	return (to);
 }
 
+/*
+ * The columns a cell adds to a line: a character all its width, padding
+ * none (a padding cell may read as width 1 or 0, as it was stored).
+ */
+static u_int
+grid_cell_width(const struct grid_cell *gc)
+{
+	if (gc->flags & GRID_FLAG_PADDING)
+		return (0);
+	return (gc->data.width);
+}
+
 /* Join line below onto this one. */
 static void
 grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
@@ -1491,11 +1503,11 @@ grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		line = yy + 1 + lines;
 
 		/* If the next line is empty, skip it. */
-		if (~gd->linedata[line].flags & GRID_LINE_WRAPPED)
-			wrapped = 0;
 		if (gd->linedata[line].cellused == 0) {
-			if (!wrapped)
+			if (~gd->linedata[line].flags & GRID_LINE_WRAPPED) {
+				wrapped = 0;
 				break;
+			}
 			lines++;
 			continue;
 		}
@@ -1503,12 +1515,15 @@ grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		/*
 		 * Is the destination line now full? Copy the first character
 		 * separately because we need to leave "from" set to the last
-		 * line if this line is full.
+		 * line if this line is full. Only a line joined (in part) ends
+		 * the wrap, not one left for the next row.
 		 */
 		grid_get_cell1(&gd->linedata[line], 0, &gc);
-		if (width + gc.data.width > sx)
+		if (width + grid_cell_width(&gc) > sx)
 			break;
-		width += gc.data.width;
+		if (~gd->linedata[line].flags & GRID_LINE_WRAPPED)
+			wrapped = 0;
+		width += grid_cell_width(&gc);
 		grid_set_cell(target, at, to, &gc);
 		at++;
 
@@ -1516,9 +1531,9 @@ grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		from = &gd->linedata[line];
 		for (want = 1; want < from->cellused; want++) {
 			grid_get_cell1(from, want, &gc);
-			if (width + gc.data.width > sx)
+			if (width + grid_cell_width(&gc) > sx)
 				break;
-			width += gc.data.width;
+			width += grid_cell_width(&gc);
 
 			grid_set_cell(target, at, to, &gc);
 			at++;
@@ -1581,11 +1596,11 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		width = 0;
 		for (i = at; i < used; i++) {
 			grid_get_cell1(gl, i, &gc);
-			if (width + gc.data.width > sx) {
+			if (width + grid_cell_width(&gc) > sx) {
 				lines++;
 				width = 0;
 			}
-			width += gc.data.width;
+			width += grid_cell_width(&gc);
 		}
 	}
 
@@ -1598,14 +1613,14 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 	xx = 0;
 	for (i = at; i < used; i++) {
 		grid_get_cell1(gl, i, &gc);
-		if (width + gc.data.width > sx) {
+		if (width + grid_cell_width(&gc) > sx) {
 			target->linedata[line].flags |= GRID_LINE_WRAPPED;
 
 			line++;
 			width = 0;
 			xx = 0;
 		}
-		width += gc.data.width;
+		width += grid_cell_width(&gc);
 		grid_set_cell(target, xx, line, &gc);
 		xx++;
 	}
@@ -1628,6 +1643,31 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 	 */
 	if (width < sx && (flags & GRID_LINE_WRAPPED))
 		grid_reflow_join(target, gd, sx, yy, width, 1);
+}
+
+/*
+ * Discard the characters wider than the new width, with their padding: no
+ * line can hold them, and kitty discards them too.
+ */
+static void
+grid_reflow_discard(struct grid_line *gl, u_int sx)
+{
+	struct grid_cell	gc;
+	u_int			i, to = 0;
+	int			discarding = 0;
+
+	for (i = 0; i < gl->cellused; i++) {
+		grid_get_cell1(gl, i, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			discarding = (gc.data.width > sx);
+		if (discarding)
+			continue;
+		if (to != i)
+			gl->celldata[to] = gl->celldata[i];
+		to++;
+	}
+	if (to != gl->cellused)
+		gl->cellsize = gl->cellused = to;
 }
 
 /* Reflow lines on grid to new width. */
@@ -1666,6 +1706,8 @@ grid_reflow(struct grid *gd, u_int sx)
 		}
 		if (gl->flags & GRID_LINE_DEAD)
 			continue;
+		if (gl->flags & GRID_LINE_EXTENDED)
+			grid_reflow_discard(gl, sx);
 
 		/*
 		 * Work out the width of this line. at is the point at which
@@ -1682,9 +1724,9 @@ grid_reflow(struct grid *gd, u_int sx)
 		} else {
 			for (i = 0; i < gl->cellused; i++) {
 				grid_get_cell1(gl, i, &gc);
-				if (at == 0 && width + gc.data.width > sx)
+				if (at == 0 && width + grid_cell_width(&gc) > sx)
 					at = i;
-				width += gc.data.width;
+				width += grid_cell_width(&gc);
 			}
 		}
 

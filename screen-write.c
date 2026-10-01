@@ -3354,10 +3354,10 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 
 	/*
 	 * Force the width to 2 for modifiers and variation selector, unless
-	 * the program gave the width.
+	 * the program gave the width or there is no room for it in the line.
 	 */
 	if (last.data.width == 1 && force_wide &&
-	    (~last.attr & GRID_ATTR_SIZED)) {
+	    (~last.attr & GRID_ATTR_SIZED) && cx < screen_size_x(s)) {
 		last.data.width = 2;
 		n = 2;
 		cx++;
