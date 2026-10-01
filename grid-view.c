@@ -54,6 +54,64 @@ grid_view_get_char(struct grid *gd, u_int px, u_int py, struct grid_cell *gc)
 	return (x);
 }
 
+/*
+ * The cells of the character at px: its first cell in *start and one past
+ * its last in *end. This is the rule for characters everywhere: a character
+ * is one to UTF8_MAXWIDTH cells, its first cell and padding after it.
+ */
+void
+grid_view_get_extent(struct grid *gd, u_int px, u_int py, u_int *start,
+    u_int *end)
+{
+	struct grid_cell	gc;
+	u_int			x;
+
+	*start = grid_view_get_char(gd, px, py, &gc);
+	for (x = px + 1; x < gd->sx; x++) {
+		grid_view_get_cell(gd, x, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			break;
+	}
+	*end = x;
+}
+
+/*
+ * Whether an edit starting or ending at px splits a character. A tab is not
+ * one: the terminal has only the blank cells it moved over, and so has tmux
+ * after an edit inside it.
+ */
+int
+grid_view_splits(struct grid *gd, u_int px, u_int py)
+{
+	struct grid_cell	gc;
+
+	if (px == 0 || px >= gd->sx)
+		return (0);
+	grid_view_get_cell(gd, px, py, &gc);
+	if (~gc.flags & GRID_FLAG_PADDING)
+		return (0);
+	grid_view_get_char(gd, px, py, &gc);
+	return ((~gc.flags & GRID_FLAG_TAB) != 0);
+}
+
+/*
+ * An edit starts or ends at px: if that splits a character, clear all of it,
+ * as terminals do, so no character is left without some of its cells.
+ * Returns 1 if a character was cleared.
+ */
+static int
+grid_view_break(struct grid *gd, u_int px, u_int py, u_int bg)
+{
+	u_int	start, end;
+
+	if (!grid_view_splits(gd, px, py))
+		return (0);
+	grid_view_get_extent(gd, px, py, &start, &end);
+	grid_clear(gd, grid_view_x(gd, start), grid_view_y(gd, py),
+	    end - start, 1, bg);
+	return (1);
+}
+
 /* Set cell. */
 void
 grid_view_set_cell(struct grid *gd, u_int px, u_int py,
@@ -108,15 +166,25 @@ grid_view_clear_history(struct grid *gd, u_int bg)
 	return (last);
 }
 
-/* Clear area. */
-void
+/* Clear area, and all of any character it splits. */
+int
 grid_view_clear(struct grid *gd, u_int px, u_int py, u_int nx, u_int ny,
     u_int bg)
 {
+	u_int	yy;
+	int	broken = 0;
+
+	for (yy = py; yy < py + ny; yy++) {
+		broken |= grid_view_break(gd, px, yy, bg);
+		if (nx < gd->sx - px)
+			broken |= grid_view_break(gd, px + nx, yy, bg);
+	}
+
 	px = grid_view_x(gd, px);
 	py = grid_view_y(gd, py);
 
 	grid_clear(gd, px, py, nx, ny, bg);
+	return (broken);
 }
 
 /* Scroll region up. */
@@ -213,36 +281,50 @@ grid_view_delete_lines_region(struct grid *gd, u_int rlower, u_int py,
 	grid_clear(gd, 0, py + ny2, gd->sx, ny - ny2, bg);
 }
 
-/* Insert characters. */
-void
+/*
+ * Insert characters, clearing all of any character split where they go in or
+ * where cells move off the end of the line. Returns 1 if a character was.
+ */
+int
 grid_view_insert_cells(struct grid *gd, u_int px, u_int py, u_int nx, u_int bg)
 {
-	u_int	sx;
+	u_int	sx = gd->sx;
+	int	broken;
 
-	px = grid_view_x(gd, px);
-	py = grid_view_y(gd, py);
+	if (px >= sx)
+		return (0);
+	if (nx >= sx - px)
+		return (grid_view_clear(gd, px, py, sx - px, 1, bg));
 
-	sx = grid_view_x(gd, gd->sx);
-
-	if (px >= sx - 1)
-		grid_clear(gd, px, py, 1, 1, bg);
-	else
-		grid_move_cells(gd, px + nx, px, py, sx - px - nx, bg);
+	broken = grid_view_break(gd, px, py, bg);
+	broken |= grid_view_break(gd, sx - nx, py, bg);
+	grid_move_cells(gd, grid_view_x(gd, px + nx), grid_view_x(gd, px),
+	    grid_view_y(gd, py), sx - px - nx, bg);
+	return (broken);
 }
 
-/* Delete characters. */
-void
+/*
+ * Delete characters, clearing all of any character split where they start or
+ * end. Returns 1 if a character was.
+ */
+int
 grid_view_delete_cells(struct grid *gd, u_int px, u_int py, u_int nx, u_int bg)
 {
-	u_int	sx;
+	u_int	sx = gd->sx;
+	int	broken;
 
-	px = grid_view_x(gd, px);
-	py = grid_view_y(gd, py);
+	if (px >= sx)
+		return (0);
+	if (nx >= sx - px)
+		return (grid_view_clear(gd, px, py, sx - px, 1, bg));
 
-	sx = grid_view_x(gd, gd->sx);
-
-	grid_move_cells(gd, px, px + nx, py, sx - px - nx, bg);
-	grid_clear(gd, sx - nx, py, nx, 1, bg);
+	broken = grid_view_break(gd, px, py, bg);
+	broken |= grid_view_break(gd, px + nx, py, bg);
+	grid_move_cells(gd, grid_view_x(gd, px), grid_view_x(gd, px + nx),
+	    grid_view_y(gd, py), sx - px - nx, bg);
+	grid_clear(gd, grid_view_x(gd, sx - nx), grid_view_y(gd, py), nx, 1,
+	    bg);
+	return (broken);
 }
 
 /* Convert cells into a string. */

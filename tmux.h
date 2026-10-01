@@ -3717,13 +3717,15 @@ void	 grid_reader_cursor_back_to_indentation(struct grid_reader *);
 /* grid-view.c */
 void	 grid_view_get_cell(struct grid *, u_int, u_int, struct grid_cell *);
 u_int	 grid_view_get_char(struct grid *, u_int, u_int, struct grid_cell *);
+void	 grid_view_get_extent(struct grid *, u_int, u_int, u_int *, u_int *);
+int	 grid_view_splits(struct grid *, u_int, u_int);
 void	 grid_view_set_cell(struct grid *, u_int, u_int,
 	     const struct grid_cell *);
 void	 grid_view_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_view_set_cells(struct grid *, u_int, u_int,
 	     const struct grid_cell *, const char *, size_t);
 u_int	 grid_view_clear_history(struct grid *, u_int);
-void	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
+int	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_view_scroll_region_up(struct grid *, u_int, u_int, u_int);
 void	 grid_view_scroll_region_down(struct grid *, u_int, u_int, u_int);
 void	 grid_view_insert_lines(struct grid *, u_int, u_int, u_int);
@@ -3732,8 +3734,8 @@ void	 grid_view_insert_lines_region(struct grid *, u_int, u_int, u_int,
 void	 grid_view_delete_lines(struct grid *, u_int, u_int, u_int);
 void	 grid_view_delete_lines_region(struct grid *, u_int, u_int, u_int,
 	     u_int);
-void	 grid_view_insert_cells(struct grid *, u_int, u_int, u_int, u_int);
-void	 grid_view_delete_cells(struct grid *, u_int, u_int, u_int, u_int);
+int	 grid_view_insert_cells(struct grid *, u_int, u_int, u_int, u_int);
+int	 grid_view_delete_cells(struct grid *, u_int, u_int, u_int, u_int);
 char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 
 /* screen-write.c */
