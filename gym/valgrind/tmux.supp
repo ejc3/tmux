@@ -1,8 +1,20 @@
 # valgrind suppressions for tmux (gym/valgrind/vg-tmux).
 #
-# None are needed: on Ubuntu 24.04 aarch64 (glibc 2.39, libevent 2.1.12,
-# ncurses 6.4) the server and clients report no errors from those libraries,
-# and only definite and indirect leaks are reported (memory still reachable
-# at exit, such as the global options and terminfo, is not). Add an entry
-# here only for an error inside a library that tmux cannot cause, with the
-# reason.
+# No library noise needs suppressing: on Ubuntu 24.04 aarch64 (glibc 2.39,
+# libevent 2.1.12, ncurses 6.4) the server and clients report no errors from
+# those libraries, and only definite and indirect leaks are reported (memory
+# still reachable at exit, such as the global options and terminfo, is not).
+# Each entry says why what it hides is not a defect.
+
+# A pane's child between fork and exec: environ_push replaces environ (the
+# old one is the parent's copy), and if exec fails the child exits at once.
+# Nothing is lost in the server, which has its own environ.
+{
+   pane-child-environ-before-exec
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:calloc
+   fun:xcalloc
+   fun:environ_push
+   fun:spawn_pane
+}
