@@ -170,6 +170,7 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
+static int	input_osc_9_conemu(const char *);
 static void	input_osc_22(struct input_ctx *, const char *);
 static void	input_osc_66(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
@@ -2966,10 +2967,13 @@ input_exit_osc(struct input_ctx *ictx)
 		input_osc_8(ictx, p);
 		break;
 	case 9:
-		/* 9;4 is a progress bar; other forms are notifications. */
+		/*
+		 * 9;4 is a progress bar; the other ConEmu commands (9;1 to
+		 * 9;12, such as 9;9 with the directory) are not notifications.
+		 */
 		if (*p == '4' && (p[1] == ';' || p[1] == '\0'))
 			input_osc_9(ictx, p);
-		else if (wp != NULL)
+		else if (wp != NULL && !input_osc_9_conemu(p))
 			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 22:
@@ -2983,7 +2987,7 @@ input_exit_osc(struct input_ctx *ictx)
 		 * A query for what is supported goes to one terminal, and
 		 * answers after it wait for its answer.
 		 */
-		if (wp != NULL && strstr(p, "p=?") != NULL)
+		if (wp != NULL && server_client_notify_is_query(ictx->input_buf))
 			input_add_request(ictx, INPUT_REQUEST_NOTIFY, 0);
 		else if (wp != NULL)
 			server_client_notify(wp, ictx->input_buf);
@@ -3470,6 +3474,19 @@ input_osc_22(struct input_ctx *ictx, const char *p)
 		return;
 	}
 	screen_pointer_set(s, p);
+}
+
+/* Whether OSC 9 is a ConEmu command (9;1 to 9;12) rather than a notification. */
+static int
+input_osc_9_conemu(const char *p)
+{
+	u_int	n = 0;
+
+	if (*p < '1' || *p > '9')
+		return (0);
+	while (*p >= '0' && *p <= '9' && n <= 12)
+		n = n * 10 + *p++ - '0';
+	return (n <= 12 && (*p == ';' || *p == '\0'));
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */

@@ -77,4 +77,42 @@ wait_is "$INNER capturep -p | grep -o 'p=title^\\[\\\\^\\[\\[?[0-9;]*c' | head -
 terminal_sends "\\033]99;i=other;\\033\\\\X"
 wait_is "$INNER capturep -p | grep -c other" 0
 
+# p=? in the payload, not the metadata, is not a query: the terminal's
+# answer for it reaches the pane.
+terminal_sends "\\033]99;i=t${PANE}_abc;x p=? y\\033\\\\"
+wait_is "$INNER capturep -p | grep -o '99;i=abc;x p=? y'" '99;i=abc;x p=? y'
+
+# One without an identifier is given one naming the pane, the same for each
+# of its chunks, and the terminal's answers for it reach the pane with i=0:
+# an activation report, and the answer to a query.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;d=0:a=report;one\\033\\\\\\033]99;;two\\033\\\\'; \
+    printf '\\033]99;p=?;\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -aoE 'i=t${PANE}\\.[0-9]+:p=\\?;' $DIR/out | wc -l" 1
+anon() {
+	grep -aoE "i=t${PANE}\\.[0-9]+$1" $DIR/out | head -1 | sed 's/[:;].*//'
+}
+A=$(anon ':d=0:a=report;one')
+[ -n "$A" ] || fail "no identifier given"
+[ "$(anon ';two')" = "$A" ] || fail "chunks given '$A' and '$(anon ';two')'"
+Q=$(anon ':p=\?;')
+[ -n "$Q" ] && [ "$Q" != "$A" ] || fail "query given '$Q' after '$A'"
+terminal_sends "\\033]99;${Q}:p=?;p=title\\033\\\\"
+wait_is "$INNER capturep -p | grep -o '99;i=0:p=?;p=title'" '99;i=0:p=?;p=title'
+terminal_sends "\\033]99;${A};\\007"
+wait_is "$INNER capturep -p | grep -o '99;i=0;^G'" '99;i=0;^G'
+
+# A notification with p=? in its payload goes to every terminal, as a query
+# would go to one.
+$OUTER new-window -d \
+    "while [ ! -e $DIR/go2 ]; do sleep 0.05; done; unset TMUX; exec $INNER attach" \
+    || exit 1
+$OUTER pipe-pane -o -t:1 "cat >$DIR/out2" || exit 1
+touch $DIR/go2
+wait_is "$INNER lsc -F '#{client_termtype}' | grep -c ." 2
+$INNER respawn-pane -k \
+    "printf '\\033]99;i=n;ask p=? here\\033\\\\'; exec sleep 1000" || exit 1
+wait_is "grep -ac 'ask p=? here' $DIR/out" 1
+wait_is "grep -ac 'ask p=? here' $DIR/out2" 1
+
 exit $exit_status

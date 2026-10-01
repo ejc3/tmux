@@ -2639,13 +2639,12 @@ server_client_set_path(struct client *c)
 	}
 }
 
-/* Set client progress bar. */
 /*
- * Find the identifier (i=) in the metadata of an OSC 99 notification
- * (99;metadata;payload): its start and length, or -1.
+ * Find a key (such as i= for the identifier) in the metadata of an OSC 99
+ * notification (99;metadata;payload): its value's start and length, or -1.
  */
 static int
-server_client_notify_id(const char *s, size_t *start, size_t *len)
+server_client_notify_key(const char *s, char key, size_t *start, size_t *len)
 {
 	const char	*meta, *end, *p;
 
@@ -2653,16 +2652,27 @@ server_client_notify_id(const char *s, size_t *start, size_t *len)
 		return (-1);
 	meta = s + 3;
 	end = meta + strcspn(meta, ";");
-	for (p = meta; p < end; p += strcspn(p, ":") + 1) {
-		if (p[0] == 'i' && p[1] == '=') {
+	for (p = meta; p < end; p += strcspn(p, ":;") + 1) {
+		if (p[0] == key && p[1] == '=') {
 			*start = (p + 2) - s;
 			*len = strcspn(p + 2, ":;");
 			return (0);
 		}
-		if (p[strcspn(p, ":")] == '\0')
+		if (*p == ';' || p[strcspn(p, ":;")] != ':')
 			break;
 	}
 	return (-1);
+}
+
+/* Whether an OSC 99 notification is a query for what is supported (p=?). */
+int
+server_client_notify_is_query(const char *s)
+{
+	size_t	start, len;
+
+	if (server_client_notify_key(s, 'p', &start, &len) != 0)
+		return (0);
+	return (len == 1 && s[start] == '?');
 }
 
 /*
@@ -2689,24 +2699,39 @@ server_client_notify(struct window_pane *wp, const char *s)
 	free(copy);
 }
 
-/* A notification with its OSC 99 identifier made one naming the pane. */
+/*
+ * A notification with its OSC 99 identifier made one naming the pane: t, the
+ * pane, _ and the program's identifier. One without an identifier is given
+ * t, the pane, . and a number, the same for each of its chunks (until d=0
+ * is not given), and the terminal's i=0 goes back for it.
+ */
 char *
 server_client_notify_rewrite(struct window_pane *wp, const char *s)
 {
 	char	*copy;
 	size_t	 start, len;
+	int	 done;
 
-	if (server_client_notify_id(s, &start, &len) == 0)
-		xasprintf(&copy, "%.*st%u_%s", (int)start, s, wp->id, s + start);
-	else
-		copy = xstrdup(s);
+	if (strncmp(s, "99;", 3) != 0)
+		return (xstrdup(s));
+	if (server_client_notify_key(s, 'i', &start, &len) == 0) {
+		xasprintf(&copy, "%.*st%u_%s", (int)start, s, wp->id,
+		    s + start);
+		return (copy);
+	}
+	done = (server_client_notify_key(s, 'd', &start, &len) != 0 ||
+	    len != 1 || s[start] != '0');
+	xasprintf(&copy, "99;i=t%u.%u%s%s", wp->id, wp->notify_anon,
+	    s[3] == ';' ? "" : ":", s + 3);
+	if (done)
+		wp->notify_anon++;
 	return (copy);
 }
 
 /*
  * A terminal sent an OSC 99 notification message (without ESC ] and the
  * terminator, which is end): if its identifier names a pane, give it to that
- * pane with the program's own identifier. Returns 1 if it did.
+ * pane with the program's own identifier (0 for none). Returns 1 if it did.
  */
 int
 server_client_notify_reply(struct client *c, const char *s, size_t n,
@@ -2714,23 +2739,32 @@ server_client_notify_reply(struct client *c, const char *s, size_t n,
 {
 	struct window_pane	*wp;
 	char			*copy, *reply, *rest;
-	size_t			 start, len;
-	u_int			 id;
+	const char		*id;
+	size_t			 start, len, idlen;
+	u_int			 pane;
 
 	copy = xstrndup(s, n);
-	if (server_client_notify_id(copy, &start, &len) != 0 ||
+	if (server_client_notify_key(copy, 'i', &start, &len) != 0 ||
 	    copy[start] != 't') {
 		free(copy);
 		return (0);
 	}
-	id = strtoul(copy + start + 1, &rest, 10);
-	if (*rest != '_' || (wp = window_pane_find_by_id(id)) == NULL ||
-	    wp->event == NULL) {
+	pane = strtoul(copy + start + 1, &rest, 10);
+	if ((*rest != '_' && *rest != '.') ||
+	    (wp = window_pane_find_by_id(pane)) == NULL || wp->event == NULL) {
 		free(copy);
 		return (0);
 	}
-	xasprintf(&reply, "\033]%.*s%s%s", (int)start, copy, rest + 1, end);
-	if (strstr(copy, "p=?") != NULL)
+	if (*rest == '_') {
+		id = rest + 1;
+		idlen = copy + start + len - id;
+	} else {
+		id = "0";
+		idlen = 1;
+	}
+	xasprintf(&reply, "\033]%.*s%.*s%s%s", (int)start, copy, (int)idlen, id,
+	    copy + start + len, end);
+	if (server_client_notify_is_query(copy))
 		input_request_reply(c, INPUT_REQUEST_NOTIFY, reply);
 	else
 		bufferevent_write(wp->event, reply, strlen(reply));
@@ -2779,6 +2813,7 @@ server_client_set_pointer(struct client *c)
 	tty_set_pointer(tty, name);
 }
 
+/* Set client progress bar. */
 static void
 server_client_set_progress_bar(struct client *c)
 {

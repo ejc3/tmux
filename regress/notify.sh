@@ -2,8 +2,9 @@
 
 # Notifications (OSC 9 text, OSC 99, OSC 777) from a pane reach a terminal
 # with the notify feature once each, forwarding or not, and so does a query
-# for what is supported (p=?), with its identifier naming the pane
-# (notify-routing.sh); the OSC 9;4 progress bar is not a notification. An
+# for what is supported (p=?), with its identifier naming the pane (one
+# without is given one, notify-routing.sh); the OSC 9;4 progress bar and other
+# ConEmu commands (9;9 with the directory, 9;12) are not notifications. An
 # outer tmux pane stands in for the terminal; what the inner client sends is
 # recorded with pipe-pane.
 
@@ -21,6 +22,7 @@ cat >$DIR/write.sh <<'EOS'
 while [ ! -e "$1/go" ]; do sleep 0.05; done
 printf '\033]9;one\033\\\033]99;;two\033\\\033]777;notify;three;body\033\\'
 printf '\033]99;i=1:p=?;\033\\\033]9;4;1;50\033\\done\r\n'
+printf '\033]9;9;/tmp\033\\\033]9;12\033\\'
 printf '=END='
 touch "$1/done"
 exec sleep 100000
@@ -63,14 +65,16 @@ count() {
 }
 for mode in on off; do
 	run $mode
-	for n in '\033]9;one' '\033]99;;two' '\033]777;notify;three;body'; do
+	for n in '\033]9;one' '.0;two' '\033]777;notify;three;body'; do
 		[ "$(count "$n")" = 1 ] || {
 			echo "forward-output $mode: $n sent $(count "$n") times"
 			exit 1
 		}
 	done
-	[ "$(count '\033]99;i=t')" = 1 ] && [ "$(count 'p=?')" = 1 ] ||
+	[ "$(count '\033]99;i=t')" = 2 ] && [ "$(count 'p=?')" = 1 ] ||
 	    { echo "forward-output $mode: query not sent once"; exit 1; }
+	[ "$(count '\033]9;9')" = 0 ] && [ "$(count '\033]9;12')" = 0 ] ||
+	    { echo "forward-output $mode: ConEmu command sent"; exit 1; }
 	[ "$(count '\033]9;4')" -le 1 ] || { echo "forward-output $mode: progress repeated"; exit 1; }
 done
 exit 0

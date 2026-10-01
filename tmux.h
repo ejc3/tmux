@@ -1384,6 +1384,7 @@ struct window_pane {
 	u_int		 id;
 	int		 references;
 	u_int		 active_point;
+	u_int		 notify_anon;	/* OSC 99 without an identifier */
 
 	struct window	*window;
 	struct options	*options;
@@ -3461,6 +3462,7 @@ int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
 void	 server_client_notify(struct window_pane *, const char *);
 char	*server_client_notify_rewrite(struct window_pane *, const char *);
+int	 server_client_notify_is_query(const char *);
 int	 server_client_notify_reply(struct client *, const char *, size_t,
 	     const char *);
 const char *window_pane_pointer(struct window_pane *);
