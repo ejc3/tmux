@@ -15,6 +15,7 @@ DIR=$(mktemp -d)
 OUTER=
 INNER=
 trap '$OUTER kill-server 2>/dev/null; $INNER kill-server 2>/dev/null; rm -rf $DIR' 0 1 15
+. ./outer-settle.inc
 
 # $4 numbered lines of 60 columns, then $3 more in one synchronized update,
 # then, once the terminal has been resized, $2 more, and the update ends.
@@ -76,8 +77,7 @@ run() {
 	    awk '/@@render-parity@@/ { n = 0 }
 		/^line [0-9][0-9] / { l[n++] = $0 }
 		END { for (i = 0; i < n; i++) print l[i] }' >$DIR/got
-	$INNER kill-server 2>/dev/null
-	$OUTER kill-server 2>/dev/null
+	gone
 	x=$(printf '%50s' '' | tr ' ' x)
 	i=1; while [ $i -le $(($3 + $4 + $5)) ]; do
 		printf 'line %02d %s\n' $i "$x"; i=$((i + 1))
