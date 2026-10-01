@@ -99,14 +99,66 @@ for mode in on off; do
 	wait_for "[ \$(shapes) -ge 2 ]" 400 || { echo "no reset"; exit 1; }
 	$INNER selectp -t :.0 || exit 1
 	wait_for "[ \$(shapes) -ge 3 ]" 400 || { echo "no shape again"; exit 1; }
+	# Suspending resets it and resuming sets it again. (The client's
+	# SIGTSTP is discarded, its process group being orphaned; SIGCONT
+	# wakes it as fg would.)
+	pid=$($INNER lsc -F '#{client_pid}')
+	$INNER suspendc || exit 1
+	wait_for "[ \$(shapes) -ge 4 ]" 400 || { echo "no reset on suspend"; exit 1; }
+	kill -CONT $pid || exit 1
+	wait_for "[ \$(shapes) -ge 5 ]" 400 || { echo "no shape on resume"; exit 1; }
 	$INNER kill-server 2>/dev/null
-	wait_for "[ \$(shapes) -ge 4 ]" 400 || { echo "no reset on leaving"; exit 1; }
+	wait_for "[ \$(shapes) -ge 6 ]" 400 || { echo "no reset on leaving"; exit 1; }
 	$OUTER kill-server 2>/dev/null
 	wait_for "$INNER ls 2>&1 | grep -qE 'no server running|No such file' && $OUTER ls 2>&1 | grep -qE 'no server running|No such file'" 100
 	got=$(grep -ao "$(printf '\033')]22;[a-z]*" $DIR/out | cat -v | tr '\n' ' ')
-	[ "$got" = "^[]22;crosshair ^[]22; ^[]22;crosshair ^[]22; " ] || {
+	[ "$got" = "^[]22;crosshair ^[]22; ^[]22;crosshair ^[]22; ^[]22;crosshair ^[]22; " ] || {
 		echo "forward-output $mode: terminal given '$got'"
 		exit 1
 	}
 done
+
+# A terminal that is found to have the feature after attaching (here when it
+# answers XTVERSION as kitty) is given the shape set before then. A pty stands
+# in for the terminal: it answers nothing but what is written to $DIR/in.
+cat >$DIR/term.py <<'EOS'
+import os, pty, select, struct, sys, fcntl, termios
+out = open(sys.argv[1], "ab", 0)
+fifo = os.open(sys.argv[2], os.O_RDWR)
+pid, fd = pty.fork()
+if pid == 0:
+	fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+	os.execvp(sys.argv[3], sys.argv[3:])
+while True:
+	r = select.select([fd, fifo], [], [])[0]
+	if fifo in r:
+		os.write(fd, os.read(fifo, 4096))
+	if fd in r:
+		try:
+			data = os.read(fd, 4096)
+		except OSError:
+			break
+		if not data:
+			break
+		out.write(data)
+os.waitpid(pid, 0)
+EOS
+rm -f $DIR/out
+mkfifo $DIR/in || exit 1
+$INNER new -d -x 80 -y 24 \
+    "printf '\033]22;crosshair\033\\\\\033]7;done\007'; exec sleep 100000" \; \
+    set -g status off || exit 1
+wait_for "[ \"\$($INNER display -p '#{pane_path}')\" = done ]" 400 ||
+    { echo "shape not set"; exit 1; }
+TERM=xterm-256color python3 $DIR/term.py $DIR/out $DIR/in \
+    sh -c "unset TMUX; exec $INNER attach" &
+wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 400 || { echo "no client"; exit 1; }
+$INNER display -p x >/dev/null	# a server loop with the client attached
+printf '\033P>|kitty(0.40.0)\033\\' >$DIR/in
+wait_for "$INNER lsc -F '#{client_termfeatures}' | grep -q pointer" 400 ||
+    { echo "pointer feature not learned"; exit 1; }
+wait_for "grep -aq \"\$(printf '\033')]22;crosshair\" $DIR/out" 400 ||
+    { echo "shape not given once the feature was learned"; exit 1; }
+$INNER kill-server 2>/dev/null
+wait
 exit 0

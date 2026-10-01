@@ -2753,14 +2753,21 @@ server_client_set_extras(struct client *c)
 	server_client_set_progress_bar(c);
 }
 
-/* Show the active pane's pointer shape, if it changed. */
+/*
+ * Show the active pane's pointer shape, if it changed. What the terminal was
+ * last given is kept only once it has been sent: the terminal may learn the
+ * pointer feature after attaching, and stopping the tty resets the shape.
+ */
 static void
 server_client_set_pointer(struct client *c)
 {
 	struct session		*s = c->session;
+	struct tty		*tty = &c->tty;
 	const char		*name;
 
 	if (s == NULL || (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED)))
+		return;
+	if ((~tty->flags & TTY_STARTED) || (~tty->term->flags & TERM_POINTER))
 		return;
 	name = window_pane_pointer(s->curw->window->active);
 	if (name == NULL && c->pointer == NULL)
@@ -2769,7 +2776,7 @@ server_client_set_pointer(struct client *c)
 		return;
 	free(c->pointer);
 	c->pointer = (name == NULL) ? NULL : xstrdup(name);
-	tty_set_pointer(&c->tty, name);
+	tty_set_pointer(tty, name);
 }
 
 static void
