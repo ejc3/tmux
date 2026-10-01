@@ -415,11 +415,33 @@ cmdq_insert_hook(__unused struct session *s, struct cmdq_item *item,
 	free(name);
 }
 
+/* Run a lost client's queue (see cmdq_continue). */
+static void
+cmdq_continue_lost(__unused int fd, __unused short events, void *arg)
+{
+	struct client	*c = arg;
+
+	cmdq_next(c);
+	server_client_unref(c);
+}
+
 /* Continue processing command queue. */
 void
 cmdq_continue(struct cmdq_item *item)
 {
+	struct client	*c = item->client;
+
 	item->flags &= ~CMDQ_WAITING;
+
+	/*
+	 * The server loop no longer runs the queue of a client that has been
+	 * lost, so run it once the caller has finished with the item;
+	 * otherwise the item and its reference keep the client forever.
+	 */
+	if (c != NULL && item->queue == c->queue && (c->flags & CLIENT_DEAD)) {
+		c->references++;
+		event_once(-1, EV_TIMEOUT, cmdq_continue_lost, c, NULL);
+	}
 }
 
 /* Remove an item. */
