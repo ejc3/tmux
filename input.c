@@ -95,6 +95,15 @@ struct input_param {
 	};
 };
 
+/* A kitty graphics placeholder as the program wrote it. */
+struct input_kgfx_cell {
+	int				fg;
+	int				us;
+	u_int				row;
+	u_int				column;
+	u_int				high;	/* of the image id */
+};
+
 /* Input parser context. */
 struct input_ctx {
 	struct window_pane	       *wp;
@@ -136,14 +145,15 @@ struct input_ctx {
 	struct utf8_data		last;
 
 	/*
-	 * The last kitty graphics placeholder written and the number of its
-	 * diacritics so far (-1 once anything else is written), its colours
-	 * as the program gave them and the high byte of its image id.
+	 * The last kitty graphics placeholder written (in a pane with kitty
+	 * graphics in tmux) and the number of its diacritics so far (-1 once
+	 * anything else is written), and the placeholder before it, if it was
+	 * written just before.
 	 */
 	int				kgfx_marks;
-	int				kgfx_fg;
-	int				kgfx_us;
-	u_int				kgfx_high;
+	struct input_kgfx_cell		kgfx_cell;
+	struct input_kgfx_cell		kgfx_last;
+	int				kgfx_same;	/* same colours as last */
 
 	/* Replies go here, not to the pane, if not NULL. */
 	struct evbuffer		       *capture;
@@ -3157,59 +3167,115 @@ input_exit_rename(struct input_ctx *ictx)
 }
 
 /*
- * A kitty graphics placeholder: its ids become tmux's. With fewer than three
- * diacritics it has the high byte of the image id of the placeholder before
- * it, if that has the same colours.
+ * Write the placeholder before the cursor again with the image id's high byte
+ * now known, in place.
+ */
+static void
+input_kgfx_rewrite(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	struct grid_cell	 gc;
+	u_int			 cx = s->cx, cy = s->cy;
+	int			 mode = s->mode;
+
+	if (cx == 0)
+		return;
+	grid_view_get_cell(s->grid, cx - 1, cy, &gc);
+	if (gc.data.size < 4 || memcmp(gc.data.data, "\364\216\273\256", 4))
+		return;
+	gc.fg = ictx->kgfx_cell.fg;
+	gc.us = ictx->kgfx_cell.us;
+	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_cell.high);
+	s->mode &= ~MODE_INSERT;
+	screen_write_cursormove(sctx, cx - 1, cy, 0);
+	screen_write_cell(sctx, &gc);
+	s->mode = mode;
+}
+
+/*
+ * A kitty graphics placeholder, in a pane with kitty graphics in tmux: its ids
+ * become tmux's. Like kitty, without diacritics it follows the placeholder to
+ * its left if that has the same colours: the same row, the next column and the
+ * same high byte of the image id.
  */
 static void
 input_kgfx_placeholder(struct input_ctx *ictx)
 {
+	struct input_kgfx_cell	*cell = &ictx->kgfx_cell;
+	struct input_kgfx_cell	*last = &ictx->kgfx_last;
 	struct grid_cell	 gc;
 
 	memcpy(&gc, &ictx->cell.cell, sizeof gc);
-	if (ictx->kgfx_marks == -1 || gc.fg != ictx->kgfx_fg ||
-	    gc.us != ictx->kgfx_us)
-		ictx->kgfx_high = 0;
+	if (ictx->kgfx_marks != -1)
+		memcpy(last, cell, sizeof *last);
+	ictx->kgfx_same = (ictx->kgfx_marks != -1 && gc.fg == last->fg &&
+	    gc.us == last->us);
+	cell->fg = gc.fg;
+	cell->us = gc.us;
+	if (ictx->kgfx_same) {
+		cell->row = last->row;
+		cell->column = last->column + 1;
+		cell->high = last->high;
+	} else
+		cell->row = cell->column = cell->high = 0;
 	ictx->kgfx_marks = 0;
-	ictx->kgfx_fg = gc.fg;
-	ictx->kgfx_us = gc.us;
-	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_high);
+	kgfx_placeholder(ictx->wp, &gc, cell->high);
 	screen_write_collect_add(&ictx->ctx, &gc);
 }
 
 /*
- * A character after a placeholder: if it is its third diacritic, the high
- * byte of the image id, the placeholder is written again for that image and
- * the diacritic is not (tmux's ids are smaller). Returns 1 if it is.
+ * A character after a placeholder. A diacritic gives its row, then its column,
+ * then the high byte of the image id; as kitty, the high byte is the one of the
+ * placeholder to the left only if that has the same colours and row (and the
+ * column before, if there is a column). If the high byte changes, the
+ * placeholder is written again; the third diacritic is not written (tmux's ids
+ * are smaller). Returns 1 if the character has been handled.
  */
 static int
 input_kgfx_mark(struct input_ctx *ictx)
 {
-	struct screen_write_ctx	*sctx = &ictx->ctx;
-	struct screen		*s = sctx->s;
+	struct input_kgfx_cell	*cell = &ictx->kgfx_cell;
+	struct input_kgfx_cell	*last = &ictx->kgfx_last;
 	struct utf8_data	*ud = &ictx->utf8data;
-	struct grid_cell	 gc;
-	u_int			 cx = s->cx, cy = s->cy;
+	u_int			 high = cell->high;
 	int			 n;
 
 	if (ud->width != 0 || (n = kgfx_diacritic(ud)) == -1) {
 		ictx->kgfx_marks = -1;
 		return (0);
 	}
-	if (++ictx->kgfx_marks != 3)
+	switch (++ictx->kgfx_marks) {
+	case 1:
+		cell->row = n;
+		if (ictx->kgfx_same && last->row == cell->row) {
+			cell->column = last->column + 1;
+			cell->high = last->high;
+		} else {
+			cell->column = 0;
+			cell->high = 0;
+		}
+		break;
+	case 2:
+		cell->column = n;
+		if (ictx->kgfx_same && last->row == cell->row &&
+		    last->column + 1 == cell->column)
+			cell->high = last->high;
+		else
+			cell->high = 0;
+		break;
+	case 3:
+		cell->high = n;
+		if (cell->high != high)
+			input_kgfx_rewrite(ictx);
+		ictx->flags |= INPUT_LAST;
+		return (1);
+	default:
 		return (0);
-	ictx->kgfx_high = n;
-	if (cx == 0)
-		return (1);
-	grid_view_get_cell(s->grid, cx - 1, cy, &gc);
-	if (gc.data.size < 4 || memcmp(gc.data.data, "\364\216\273\256", 4))
-		return (1);
-	gc.fg = ictx->kgfx_fg;
-	gc.us = ictx->kgfx_us;
-	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_high);
-	screen_write_cursormove(sctx, cx - 1, cy, 0);
-	screen_write_cell(sctx, &gc);
-	ictx->flags |= INPUT_LAST;
+	}
+	screen_write_collect_add(&ictx->ctx, &ictx->cell.cell);
+	if (cell->high != high)
+		input_kgfx_rewrite(ictx);
 	return (1);
 }
 
@@ -3219,7 +3285,6 @@ input_top_bit_set(struct input_ctx *ictx)
 {
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct utf8_data	*ud = &ictx->utf8data;
-	struct grid_cell	 gc;
 
 	if (!ictx->utf8started && (~ictx->flags & INPUT_LAST))
 		ictx->kgfx_marks = -1;
@@ -3247,12 +3312,10 @@ input_top_bit_set(struct input_ctx *ictx)
 	    (int)ud->size, ud->data, ud->width);
 
 	utf8_copy(&ictx->cell.cell.data, ud);
-	if (ictx->wp != NULL && ud->size == 4 &&
-	    memcmp(ud->data, "\364\216\273\256", 4) == 0)
+	if (ictx->wp != NULL && (ictx->wp->flags & PANE_KGFX) &&
+	    ud->size == 4 && memcmp(ud->data, "\364\216\273\256", 4) == 0)
 		input_kgfx_placeholder(ictx);
-	else if (ictx->kgfx_marks != -1 && input_kgfx_mark(ictx))
-		return (0);
-	else
+	else if (ictx->kgfx_marks == -1 || !input_kgfx_mark(ictx))
 		screen_write_collect_add(sctx, &ictx->cell.cell);
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);

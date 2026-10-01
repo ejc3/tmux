@@ -200,6 +200,37 @@ run "\\033[38;5;5m$PH\\314\\205\\314\\205\\314\\215$PH\\033[m"
     fail "image 16777221 placeholders: $($INNER capturep -ept0 | head -1 | cat -v)"
 $INNER capturep -pt0 | grep -q "$(printf '\314\215')" &&
     fail "the third diacritic was kept"
+BIG=$RGB
+
+# As kitty, a placeholder with only a row has the high byte of the one to its
+# left if it is on the same row, and one with a row and column if its column
+# is the next (here image 5 is the image with the low bytes alone).
+transmit "\\033_Ga=t,q=2,i=5,f=24,s=2,v=2;$RED\\033\\\\"
+run "\\033[38;5;5m$PH\\314\\205\\314\\205\\314\\215$PH\\314\\215\\033[m"
+[ "$($INNER capturep -ept0 | head -1 | grep -o '38;[0-9;]*m' | tr '\n' ' ')" = "38;2;${BIG}m 38;2;${RGB}m " ] ||
+    fail "next row: $($INNER capturep -ept0 | head -1 | cat -v)"
+run "\\033[38;5;5m$PH\\314\\205\\314\\205\\314\\215$PH\\314\\205\\033[m"
+[ "$($INNER capturep -ept0 | head -1 | grep -o '38;[0-9;]*m' | tr '\n' ' ')" = "38;2;${BIG}m " ] ||
+    fail "same row: $($INNER capturep -ept0 | head -1 | cat -v)"
+run "\\033[38;5;5m$PH\\314\\205\\314\\205\\314\\215$PH\\314\\205\\314\\216\\033[m"
+[ "$($INNER capturep -ept0 | head -1 | grep -o '38;[0-9;]*m' | tr '\n' ' ')" = "38;2;${BIG}m 38;2;${RGB}m " ] ||
+    fail "not the next column: $($INNER capturep -ept0 | head -1 | cat -v)"
+
+# A placeholder written again for its high byte is written in place, also in
+# insert mode.
+run "XYZ\\r\\033[4h\\033[38;5;5m$PH\\314\\205\\314\\205\\314\\215\\033[m\\033[4l"
+[ "$(placeholders)" = 1 ] || fail "insert mode: $(placeholders) placeholders"
+[ "$($INNER capturep -pt0 | head -1 | sed "s/$PH[^X]*//")" = XYZ ] ||
+    fail "insert mode: $($INNER capturep -pt0 | head -1 | cat -v)"
+
+# A pane that has not used kitty graphics through tmux has its placeholders
+# as written (for kitty graphics passed through to the terminal).
+$INNER neww -d -n passthrough \
+    "printf '\\033[38;5;42m$PH\\314\\205\\314\\205\\314\\216\\033[m\\033]7;done\\007'; exec cat" ||
+    exit 1
+wait_is "$INNER display -pt:passthrough '#{pane_path}'" done
+[ "$($INNER capturep -ept:passthrough | head -1 | cat -v)" = "$(printf '\033[38;5;42m%s\314\205\314\205\314\216\033[39m' "$PH" | cat -v)" ] ||
+    fail "passthrough placeholder: $($INNER capturep -ept:passthrough | head -1 | cat -v)"
 
 # Frames have their format and compression and are read from files as
 # images are.

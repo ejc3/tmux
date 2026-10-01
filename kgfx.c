@@ -1586,6 +1586,9 @@ kgfx_command(struct window_pane *wp, struct screen_write_ctx *ctx,
 	if ((cmd = kgfx_parse(buf, len)) == NULL)
 		return;
 
+	/* The pane's placeholders are for tmux's images from now on. */
+	wp->flags |= PANE_KGFX;
+
 	/* Data that is not base64 is an error in the command: it is ignored. */
 	if (!kgfx_base64(cmd->payload)) {
 		kgfx_free_cmd(cmd);
