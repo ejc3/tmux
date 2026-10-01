@@ -57,6 +57,7 @@ struct format_tree;
 struct hyperlinks_uri;
 struct hyperlinks;
 struct input_ctx;
+struct kgfx_client;
 struct input_request;
 struct input_requests;
 struct job;
@@ -1943,7 +1944,6 @@ struct tty {
 #define TTY_HAVEGRAPHEMES 0x4000000
 #define TTY_GRAPHEMES 0x8000000
 #define TTY_PIXELSFROM0 0x10000000
-#define TTY_KGFXLOST 0x20000000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
 	 TTY_HAVEPIXELS|TTY_HAVEKGFX|TTY_HAVEGRAPHEMES)
@@ -2366,6 +2366,8 @@ struct client {
 	int		 	 term_nofeatures;
 	char			*term_type;
 	char			*pointer;	/* shape set, or NULL */
+
+	struct kgfx_client	*kgfx;		/* kitty graphics given */
 	char		       **term_caps;
 	u_int			 term_ncaps;
 
@@ -3148,7 +3150,11 @@ void	 forward_stop(struct client *);
 void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,
 	     struct bufferevent *, const u_char *, size_t);
 void	 kgfx_pane_free(struct window_pane *);
-void	 kgfx_replay(struct client *);
+void	 kgfx_client_free(struct client *);
+void	 kgfx_client_sync(struct client *);
+void	 kgfx_client_written(struct client *);
+void	 kgfx_client_dropped(struct client *);
+size_t	 kgfx_client_queued(struct client *);
 void	 kgfx_known(struct client *);
 void	 kgfx_placeholder(struct window_pane *, struct grid_cell *, u_int);
 int	 kgfx_diacritic(const struct utf8_data *);

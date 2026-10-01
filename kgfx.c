@@ -92,8 +92,8 @@ static const u_int kgfx_diacritics[] = {
 #define KGFX_QUOTA (256 * 1024 * 1024)
 
 /*
- * Most data (base64) in one transmission, and in all of those being put
- * together from chunks.
+ * Most data (base64) in one transmission, including one being put together
+ * from chunks (a pane has at most one).
  */
 #define KGFX_MAXDATA KGFX_QUOTA
 
@@ -126,9 +126,10 @@ struct kgfx_placement {
 	u_int				 gpid;	  /* tmux's */
 	int				 virtual; /* the program's own U=1 */
 	int				 z;
-	u_int				 order;
+	struct kgfx_image		*image;
 	char				*keys;	  /* for terminals: c=,r=,... */
 	TAILQ_ENTRY(kgfx_placement)	 entry;
+	TAILQ_ENTRY(kgfx_placement)	 order_entry;
 };
 
 /* An image. */
@@ -151,6 +152,10 @@ static TAILQ_HEAD(, kgfx_image) kgfx_images =
 static size_t	kgfx_size;
 static u_int	kgfx_count;
 static u_int	kgfx_nplacements;
+
+/* Every placement, oldest first. */
+static TAILQ_HEAD(, kgfx_placement) kgfx_placement_order =
+    TAILQ_HEAD_INITIALIZER(kgfx_placement_order);
 static u_int	kgfx_next_gid = 1;
 static u_int	kgfx_next_gpid = 1;
 static u_int	kgfx_order;
@@ -169,7 +174,6 @@ struct kgfx_pending {
 };
 static TAILQ_HEAD(, kgfx_pending) kgfx_pendings =
     TAILQ_HEAD_INITIALIZER(kgfx_pendings);
-static size_t	kgfx_pending_size;
 
 static void	kgfx_delete_image(struct window_pane *, struct kgfx_image *,
 		    int);
@@ -335,60 +339,192 @@ kgfx_supported(struct window_pane *wp)
 }
 
 /*
- * A terminal has answered tmux's query, or not answered it: an answer to a
- * program's query waiting for it goes if the terminal has the protocol.
+ * A terminal has answered tmux's query, or not answered it, or tmux has
+ * stopped waiting: an answer to a program's query waiting for it goes if the
+ * terminal has the protocol, as far as is known.
  */
 void
 kgfx_known(struct client *c)
 {
-	input_kgfx_known(c, kgfx_client(c));
+	input_kgfx_known(c, (c->tty.term->flags & TERM_KGFX) != 0);
 }
 
 /*
- * Send a string to a terminal. An image is not output that can be dropped
- * when the terminal falls behind; if output is being dropped already, the
- * terminal is given the images again when it catches up.
+ * Giving images to terminals. Each client has a kgfx_client, and this holds:
+ *
+ *	Every image tmux keeps whose order is below next (every image, if next
+ *	is 0) has been queued for the client's terminal in full, with its
+ *	placements (unless placements is set: they are to be given again),
+ *	since the terminal last lost output. The images from next on are
+ *	given, in order, by kgfx_client_sync.
+ *
+ * Image data is given only to a terminal that can take output now
+ * (kgfx_deliverable) and only while the graphics output queued for it and not
+ * yet written (the segments) is under KGFX_CLIENT_BUDGET; otherwise next is
+ * moved back to the image, so the sync gives it. Graphics output does not
+ * count towards the output that makes tmux drop output for a terminal that
+ * falls behind (it is bounded by the budget, and by the limits on images and
+ * placements); if output is dropped anyway, next goes back to the first image
+ * not yet written and every placement is given again. kgfx_client_sync is
+ * called whenever that can change: when the client attaches, its tty starts,
+ * it is found to take images, it stops dropping output, and its queued
+ * graphics output falls below half the budget.
  */
+struct kgfx_segment {
+	u_int				 order;	/* the image's, 0 if not data */
+	uint64_t			 start;	/* in all output ever queued */
+	uint64_t			 end;
+	TAILQ_ENTRY(kgfx_segment)	 entry;
+};
+struct kgfx_client {
+	u_int				 next;
+	u_int				 done;	/* written up to this order */
+	int				 placements;
+	int				 abort;	/* an upload may be cut short */
+	TAILQ_HEAD(kgfx_segments, kgfx_segment) segments;
+};
+
+/* Image data queued for one terminal and not yet written. */
+#define KGFX_CLIENT_BUDGET (4 * 1024 * 1024)
+
+/*
+ * Ends a string a terminal may be in (output was dropped in the middle of
+ * one) and stops an upload it may be in, with a delete of an id tmux does not
+ * give out.
+ */
+#define KGFX_ABORT "\033\\\033_Ga=d,d=i,i=16777216,q=2\033\\"
+
+/* A client's state, made when first needed: nothing given yet. */
+static struct kgfx_client *
+kgfx_client_get(struct client *c)
+{
+	struct kgfx_client	*kg = c->kgfx;
+
+	if (kg == NULL) {
+		kg = c->kgfx = xcalloc(1, sizeof *kg);
+		kg->next = 1;
+		kg->placements = 1;
+		TAILQ_INIT(&kg->segments);
+	}
+	return (kg);
+}
+
+/* Free a client's state. */
+void
+kgfx_client_free(struct client *c)
+{
+	struct kgfx_client	*kg = c->kgfx;
+	struct kgfx_segment	*sg, *sg1;
+
+	if (kg == NULL)
+		return;
+	TAILQ_FOREACH_SAFE(sg, &kg->segments, entry, sg1) {
+		TAILQ_REMOVE(&kg->segments, sg, entry);
+		free(sg);
+	}
+	free(kg);
+	c->kgfx = NULL;
+}
+
+/* Whether a client's terminal takes images and can be given output now. */
+static int
+kgfx_deliverable(struct client *c)
+{
+	return (kgfx_client(c) && (~c->tty.flags & TTY_BLOCK));
+}
+
+/*
+ * Image data queued for a client and not yet written; segments that have
+ * been written go, and the images in them are done.
+ */
+size_t
+kgfx_client_queued(struct client *c)
+{
+	struct kgfx_client	*kg = c->kgfx;
+	struct kgfx_segment	*sg, *sg1;
+	uint64_t		 gone;
+	size_t			 queued = 0;
+
+	if (kg == NULL)
+		return (0);
+	gone = c->written - EVBUFFER_LENGTH(c->tty.out);
+	TAILQ_FOREACH_SAFE(sg, &kg->segments, entry, sg1) {
+		if (sg->end <= gone) {
+			if (sg->order > kg->done)
+				kg->done = sg->order;
+			TAILQ_REMOVE(&kg->segments, sg, entry);
+			free(sg);
+			continue;
+		}
+		queued += sg->end - (sg->start > gone ? sg->start : gone);
+	}
+	return (queued);
+}
+
+/*
+ * Output for a client has been dropped: the images not yet written, the
+ * placements and any upload cut short must be given again.
+ */
+void
+kgfx_client_dropped(struct client *c)
+{
+	struct kgfx_client	*kg = kgfx_client_get(c);
+	struct kgfx_segment	*sg, *sg1;
+
+	TAILQ_FOREACH_SAFE(sg, &kg->segments, entry, sg1) {
+		TAILQ_REMOVE(&kg->segments, sg, entry);
+		free(sg);
+	}
+	kg->next = kg->done + 1;
+	kg->placements = 1;
+	kg->abort = 1;
+}
+
+/*
+ * Send a string to a terminal, as a segment of image order (0 if it is not
+ * image data).
+ */
+static void
+kgfx_puts_order(struct client *c, const char *s, u_int order)
+{
+	struct kgfx_client	*kg = kgfx_client_get(c);
+	struct kgfx_segment	*sg;
+	uint64_t		 start = c->written;
+
+	tty_puts(&c->tty, s);
+	if (c->written == start)
+		return;
+	sg = TAILQ_LAST(&kg->segments, kgfx_segments);
+	if (sg != NULL && sg->end == start && sg->order == order) {
+		sg->end = c->written;
+		return;
+	}
+	sg = xcalloc(1, sizeof *sg);
+	sg->order = order;
+	sg->start = start;
+	sg->end = c->written;
+	TAILQ_INSERT_TAIL(&kg->segments, sg, entry);
+}
+
+/* Send a string that is not image data to a terminal. */
 static void
 kgfx_puts(struct client *c, const char *s)
 {
-	struct tty	*tty = &c->tty;
-
-	if (tty->flags & TTY_BLOCK) {
-		tty->flags |= TTY_KGFXLOST;
-		return;
-	}
-	tty->flags |= TTY_NOBLOCK;
-	tty_puts(tty, s);
-}
-
-/* Send a string to one terminal, or every terminal that takes images. */
-static void
-kgfx_send(struct client *only, const char *s)
-{
-	struct client	*c;
-
-	if (only != NULL) {
-		kgfx_puts(only, s);
-		return;
-	}
-	TAILQ_FOREACH(c, &clients, entry) {
-		if (kgfx_client(c))
-			kgfx_puts(c, s);
-	}
+	kgfx_puts_order(c, s, 0);
 }
 
 /*
- * Send data (base64) to terminals in chunks: the first after keys, the rest
- * after more (each chunk of a frame has a=f).
+ * Send data (base64) to a terminal in chunks: the first after keys, the rest
+ * after more (each chunk of a frame has a=f). The data is a segment of image
+ * order (0 for a frame).
  */
 static void
 kgfx_send_data(struct client *c, const char *keys, const char *more_keys,
-    const char *data, size_t size)
+    const char *data, size_t size, u_int order)
 {
-	char	*s;
-	size_t	 off = 0, n;
-	int	 more;
+	char			*s;
+	size_t			 off = 0, n;
+	int			 more;
 
 	do {
 		n = size - off;
@@ -402,13 +538,13 @@ kgfx_send_data(struct client *c, const char *keys, const char *more_keys,
 			xasprintf(&s, "\033_G%sm=%d,q=2;%.*s\033\\", more_keys,
 			    more, (int)n, data + off);
 		}
-		kgfx_send(c, s);
+		kgfx_puts_order(c, s, order);
 		free(s);
 		off += n;
 	} while (more);
 }
 
-/* Send an image to terminals, in chunks. */
+/* Send an image to a terminal, in chunks. */
 static void
 kgfx_send_image(struct client *c, struct kgfx_image *im)
 {
@@ -417,11 +553,11 @@ kgfx_send_image(struct client *c, struct kgfx_image *im)
 	if (im->data == NULL)
 		return;
 	xasprintf(&keys, "a=t,q=2,i=%u%s", im->gid, im->keys);
-	kgfx_send_data(c, keys, "", im->data, im->size);
+	kgfx_send_data(c, keys, "", im->data, im->size, im->order);
 	free(keys);
 }
 
-/* Send a placement to terminals: always a virtual one. */
+/* Send a placement to a terminal: always a virtual one. */
 static void
 kgfx_send_placement(struct client *c, struct kgfx_image *im,
     struct kgfx_placement *pl)
@@ -430,23 +566,143 @@ kgfx_send_placement(struct client *c, struct kgfx_image *im,
 
 	xasprintf(&s, "\033_Ga=p,U=1,q=2,i=%u,p=%u%s\033\\", im->gid, pl->gpid,
 	    pl->keys);
-	kgfx_send(c, s);
+	kgfx_puts(c, s);
 	free(s);
 }
 
-/* Give a terminal that has just been found to take images all of them. */
-void
-kgfx_replay(struct client *c)
+/* Whether a client's terminal has been given an image. */
+static int
+kgfx_given(struct client *c, struct kgfx_image *im)
 {
+	struct kgfx_client	*kg = kgfx_client_get(c);
+
+	return (kg->next == 0 || im->order < kg->next);
+}
+
+/*
+ * Give a client's terminal the images it does not have, in order, as far as
+ * its budget allows; see above.
+ */
+void
+kgfx_client_sync(struct client *c)
+{
+	struct kgfx_client	*kg = kgfx_client_get(c);
 	struct kgfx_image	*im;
 	struct kgfx_placement	*pl;
 
-	if (!kgfx_client(c))
+	if (!kgfx_deliverable(c))
+		return;
+	if (kg->abort) {
+		kgfx_puts(c, KGFX_ABORT);
+		kg->abort = 0;
+	}
+	if (kg->next == 0 && !kg->placements)
 		return;
 	TAILQ_FOREACH(im, &kgfx_images, entry) {
+		if (kgfx_given(c, im)) {
+			if (kg->placements) {
+				TAILQ_FOREACH(pl, &im->placements, entry)
+					kgfx_send_placement(c, im, pl);
+			}
+			continue;
+		}
+		if (kgfx_client_queued(c) >= KGFX_CLIENT_BUDGET) {
+			log_debug("%s: %s images from %u later", __func__,
+			    c->name, im->order);
+			kg->next = im->order;
+			kg->placements = 0;
+			return;
+		}
 		kgfx_send_image(c, im);
 		TAILQ_FOREACH(pl, &im->placements, entry)
 			kgfx_send_placement(c, im, pl);
+	}
+	kg->next = 0;
+	kg->placements = 0;
+}
+
+/*
+ * Output has been written to a client's terminal: give it more images if it
+ * is waiting for them and its queued data is under half the budget.
+ */
+void
+kgfx_client_written(struct client *c)
+{
+	struct kgfx_client	*kg = c->kgfx;
+
+	if (kg == NULL || kg->next == 0)
+		return;
+	if (kgfx_client_queued(c) < KGFX_CLIENT_BUDGET / 2)
+		kgfx_client_sync(c);
+}
+
+/* Give a new image to every terminal that can have it now. */
+static void
+kgfx_give_image(struct kgfx_image *im)
+{
+	struct client		*c;
+	struct kgfx_client	*kg;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		kg = kgfx_client_get(c);
+		if (kg->next != 0)
+			continue;
+		if (!kgfx_deliverable(c) ||
+		    kgfx_client_queued(c) >= KGFX_CLIENT_BUDGET) {
+			kg->next = im->order;
+			continue;
+		}
+		kgfx_send_image(c, im);
+	}
+}
+
+/* Give a placement to every terminal that has its image. */
+static void
+kgfx_give_placement(struct kgfx_image *im, struct kgfx_placement *pl)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (!kgfx_given(c, im))
+			continue;
+		if (!kgfx_deliverable(c)) {
+			kgfx_client_get(c)->placements = 1;
+			continue;
+		}
+		kgfx_send_placement(c, im, pl);
+	}
+}
+
+/*
+ * Send a command about an image (a delete, an animation) to every terminal
+ * that has it and can take output now.
+ */
+static void
+kgfx_give_command(struct kgfx_image *im, const char *s)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (kgfx_deliverable(c) && kgfx_given(c, im))
+			kgfx_puts(c, s);
+	}
+}
+
+/*
+ * Send frame data for an image to every terminal that has it, if it is under
+ * its budget (a frame is not given again).
+ */
+static void
+kgfx_give_frame(struct kgfx_image *im, const char *keys, const char *data)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (!kgfx_deliverable(c) || !kgfx_given(c, im))
+			continue;
+		if (kgfx_client_queued(c) >= KGFX_CLIENT_BUDGET)
+			continue;
+		kgfx_send_data(c, keys, "a=f,", data, strlen(data), 0);
 	}
 }
 
@@ -578,25 +834,17 @@ kgfx_fits(size_t have, size_t more)
 static void
 kgfx_limits(void)
 {
-	struct kgfx_image	*im, *oldest_im = NULL;
-	struct kgfx_placement	*pl, *oldest;
+	struct kgfx_image	*im;
+	struct kgfx_placement	*pl;
 
 	while (kgfx_count > KGFX_MAXIMAGES) {
 		im = TAILQ_FIRST(&kgfx_images);
 		kgfx_delete_image(window_pane_find_by_id(im->pane), im, 1);
 	}
 	while (kgfx_nplacements > KGFX_MAXPLACEMENTS) {
-		oldest = NULL;
-		TAILQ_FOREACH(im, &kgfx_images, entry) {
-			TAILQ_FOREACH(pl, &im->placements, entry) {
-				if (oldest == NULL || pl->order < oldest->order) {
-					oldest = pl;
-					oldest_im = im;
-				}
-			}
-		}
-		kgfx_delete_placement(window_pane_find_by_id(oldest_im->pane),
-		    oldest_im, oldest);
+		pl = TAILQ_FIRST(&kgfx_placement_order);
+		im = pl->image;
+		kgfx_delete_placement(window_pane_find_by_id(im->pane), im, pl);
 	}
 	TAILQ_FOREACH(im, &kgfx_images, entry) {
 		if (kgfx_size <= KGFX_QUOTA)
@@ -641,6 +889,42 @@ kgfx_path_temporary(const char *path)
 {
 	return (kgfx_path_in(path, "/tmp") || kgfx_path_in(path, "/dev/shm") ||
 	    kgfx_path_in(path, getenv("TMPDIR")));
+}
+
+/*
+ * Delete a temporary file once read: the entry named (not what a symbolic
+ * link names), if it is a regular file in a temporary directory.
+ */
+static void
+kgfx_unlink_temporary(const char *name)
+{
+	char		 copy[PATH_MAX], dir[PATH_MAX], entry[PATH_MAX];
+	const char	*base;
+	struct stat	 sb;
+
+	if (strlcpy(copy, name, sizeof copy) >= sizeof copy)
+		return;
+	base = strrchr(copy, '/');
+	if (base == NULL)
+		return;
+	if (base == copy)
+		strlcpy(dir, "/", sizeof dir);
+	else {
+		copy[base - copy] = '\0';
+		if (realpath(copy, dir) == NULL)
+			return;
+	}
+	base = strrchr(name, '/') + 1;
+	if (*base == '\0' || strcmp(base, ".") == 0 || strcmp(base, "..") == 0)
+		return;
+	if ((size_t)snprintf(entry, sizeof entry, "%s/%s",
+	    strcmp(dir, "/") == 0 ? "" : dir, base) >= sizeof entry)
+		return;
+	if (!kgfx_path_temporary(entry))
+		return;
+	if (lstat(entry, &sb) != 0 || !S_ISREG(sb.st_mode))
+		return;
+	unlink(entry);
 }
 
 /*
@@ -703,8 +987,8 @@ kgfx_read_medium(char t, const char *payload, struct kgfx_cmd *cmd,
 	fd = -1;
 	if (t == 's')
 		shm_unlink(name);
-	else if (t == 't' && kgfx_path_temporary(path))
-		unlink(path);
+	else if (t == 't')
+		kgfx_unlink_temporary(name);
 
 	out = xmalloc(outsize);
 	if (b64_ntop(data, size, out, outsize) == -1) {
@@ -904,7 +1188,7 @@ kgfx_transmit(struct window_pane *wp, struct bufferevent *bev,
 	    __func__, wp->id, im->id, number, im->gid, im->size, im->width,
 	    im->height);
 
-	kgfx_send_image(NULL, im);
+	kgfx_give_image(im);
 	kgfx_limits();
 	return (im);
 }
@@ -1085,9 +1369,10 @@ kgfx_delete_placement(struct window_pane *wp, struct kgfx_image *im,
 	if (wp != NULL && !pl->virtual)
 		kgfx_clear_cells(wp, im->gid, pl->gpid);
 	xasprintf(&s, "\033_Ga=d,d=i,q=2,i=%u,p=%u\033\\", im->gid, pl->gpid);
-	kgfx_send(NULL, s);
+	kgfx_give_command(im, s);
 	free(s);
 	TAILQ_REMOVE(&im->placements, pl, entry);
+	TAILQ_REMOVE(&kgfx_placement_order, pl, order_entry);
 	kgfx_nplacements--;
 	free(pl->keys);
 	free(pl);
@@ -1105,7 +1390,7 @@ kgfx_delete_image(struct window_pane *wp, struct kgfx_image *im, int data)
 	if (!data)
 		return;
 	xasprintf(&s, "\033_Ga=d,d=I,q=2,i=%u\033\\", im->gid);
-	kgfx_send(NULL, s);
+	kgfx_give_command(im, s);
 	free(s);
 	TAILQ_REMOVE(&kgfx_images, im, entry);
 	kgfx_count--;
@@ -1211,13 +1496,14 @@ kgfx_display(struct window_pane *wp, struct screen_write_ctx *ctx,
 	pl->gpid = kgfx_new_gpid();
 	pl->virtual = (kgfx_number(cmd, 'U', 0) == 1);
 	pl->z = kgfx_signed(cmd, 'z', 0);
-	pl->order = ++kgfx_order;
+	pl->image = im;
 	xasprintf(&pl->keys, ",c=%u,r=%u%s", columns, rows, keys);
 	free(keys);
 	TAILQ_INSERT_TAIL(&im->placements, pl, entry);
+	TAILQ_INSERT_TAIL(&kgfx_placement_order, pl, order_entry);
 	kgfx_nplacements++;
 	kgfx_limits();
-	kgfx_send_placement(NULL, im, pl);
+	kgfx_give_placement(im, pl);
 	kgfx_reply(bev, cmd, im->id, im->number, p, "OK");
 	if (pl->virtual)
 		return;
@@ -1328,7 +1614,7 @@ kgfx_delete(struct window_pane *wp, struct screen *s, struct kgfx_cmd *cmd)
 		if ((im = kgfx_find(wp->id, id)) != NULL) {
 			xasprintf(&str, "\033_Ga=d,d=%c,q=2,i=%u\033\\", d,
 			    im->gid);
-			kgfx_send(NULL, str);
+			kgfx_give_command(im, str);
 			free(str);
 		}
 		return;
@@ -1454,13 +1740,13 @@ kgfx_animation(struct window_pane *wp, struct bufferevent *bev,
 	if (data != NULL) {
 		keys = kgfx_keys(cmd, "xywhXYcrszvCfo");
 		xasprintf(&s, "a=f,q=2,i=%u%s", im->gid, keys);
-		kgfx_send_data(NULL, s, "a=f,", data, strlen(data));
+		kgfx_give_frame(im, s, data);
 		free(data);
 	} else {
 		keys = kgfx_keys(cmd, "xywhXYcrszvC");
 		xasprintf(&s, "\033_Ga=%c,q=2,i=%u%s\033\\", a, im->gid,
 		    keys);
-		kgfx_send(NULL, s);
+		kgfx_give_command(im, s);
 	}
 	free(s);
 	free(keys);
@@ -1540,7 +1826,6 @@ static void
 kgfx_free_pending(struct kgfx_pending *pd)
 {
 	TAILQ_REMOVE(&kgfx_pendings, pd, entry);
-	kgfx_pending_size -= pd->size;
 	kgfx_free_cmd(pd->first);
 	evbuffer_free(pd->data);
 	free(pd);
@@ -1557,8 +1842,7 @@ kgfx_add_chunk(struct kgfx_pending *pd, const char *payload)
 
 	if (pd->failed)
 		return;
-	if (!kgfx_fits(pd->size, n) || !kgfx_fits(kgfx_pending_size, n)) {
-		kgfx_pending_size -= pd->size;
+	if (!kgfx_fits(pd->size, n)) {
 		pd->size = 0;
 		evbuffer_drain(pd->data, EVBUFFER_LENGTH(pd->data));
 		pd->failed = 1;
@@ -1566,7 +1850,6 @@ kgfx_add_chunk(struct kgfx_pending *pd, const char *payload)
 	}
 	evbuffer_add(pd->data, payload, n);
 	pd->size += n;
-	kgfx_pending_size += n;
 }
 
 /*

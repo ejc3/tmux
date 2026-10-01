@@ -1882,7 +1882,7 @@ tty_keys_kgfx(struct tty *tty, const char *buf, size_t len, size_t *size)
 	    (~tty->term->flags & TERM_KGFX)) {
 		tty_parse_client_features(c, "kittygraphics", ",");
 		tty_update_features(tty);
-		kgfx_replay(c);
+		kgfx_client_sync(c);
 	}
 	if (~tty->flags & TTY_HAVEKGFX) {
 		tty->flags |= TTY_HAVEKGFX;

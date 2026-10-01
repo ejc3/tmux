@@ -215,11 +215,8 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if (tty->discarded < TTY_BLOCK_STOP(tty)) {
 		tty->flags &= ~TTY_BLOCK;
+		kgfx_client_sync(c);
 		tty_invalidate(tty);
-		if (tty->flags & TTY_KGFXLOST) {
-			tty->flags &= ~TTY_KGFXLOST;
-			kgfx_replay(c);
-		}
 		return;
 	}
 	tty->discarded = 0;
@@ -238,7 +235,8 @@ tty_block_maybe(struct tty *tty)
 	else if (tty->flags & TTY_NOBLOCK)
 		return (0);
 
-	if (size < TTY_BLOCK_START(tty))
+	/* Images do not count: kgfx.c keeps them within a budget. */
+	if (size - kgfx_client_queued(c) < TTY_BLOCK_START(tty))
 		return (0);
 
 	if (tty->flags & TTY_BLOCK)
@@ -249,6 +247,7 @@ tty_block_maybe(struct tty *tty)
 
 	evbuffer_drain(tty->out, size);
 	c->discarded += size;
+	kgfx_client_dropped(c);
 
 	tty->discarded = 0;
 	evtimer_add(&tty->timer, &tv);
@@ -277,6 +276,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 		    c->redraw);
 	} else if (tty_block_maybe(tty))
 		return;
+	kgfx_client_written(c);
 
 	if (EVBUFFER_LENGTH(tty->out) != 0)
 		event_add(&tty->event_out, NULL);
@@ -432,6 +432,9 @@ tty_start_tty(struct tty *tty)
 	tty->mouse_drag_flag = 0;
 	tty->mouse_drag_update = NULL;
 	tty->mouse_drag_release = NULL;
+
+	/* Images made while it was stopped. */
+	kgfx_client_sync(c);
 }
 
 void

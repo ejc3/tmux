@@ -104,8 +104,16 @@ touch $DIR/go2
 wait_is "$INNER display -pt0 '#{pane_path}'" evicted
 wait_is placeholders 0
 
-# Chunks being put together are within the same limit on data.
-grep -q 'kgfx_fits(pd->size, n) || !kgfx_fits(kgfx_pending_size, n)' \
-    ../kgfx.c || fail "chunks not limited"
+# Chunks being put together are within the same limit on data, for each
+# pane (a pane has one upload at a time), not for all panes together: one
+# pane's upload never finished must not stop another's.
+grep -q 'if (!kgfx_fits(pd->size, n)) {' ../kgfx.c ||
+    fail "chunks not limited for each pane"
+grep -q 'kgfx_pending_size' ../kgfx.c && fail "chunks limited for all panes"
+
+# The oldest placement is found at once (tmux keeps them in order), not by
+# looking at every placement for each new one past the limit.
+grep -q 'pl = TAILQ_FIRST(&kgfx_placement_order);' ../kgfx.c ||
+    fail "oldest placement looked for"
 
 exit $exit_status

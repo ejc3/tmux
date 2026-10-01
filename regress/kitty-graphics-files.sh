@@ -15,7 +15,24 @@ export LC_ALL
 OUTER="$TEST_TMUX -LtestA$$ -f/dev/null"
 INNER="$TEST_TMUX -LtestB$$"
 DIR=$(mktemp -d)
-HERE=$(pwd)/kgfx-tty-graphics-protocol-$$
+
+# A writable directory outside every temporary directory tmux knows (/tmp,
+# /dev/shm and TMPDIR), for a file that must not be deleted.
+HERE=
+for d in "$(pwd)" "$HOME" /var/tmp; do
+	r=$(cd "$d" 2>/dev/null && pwd -P) || continue
+	[ -n "$r" ] && [ -w "$r" ] || continue
+	inside=
+	for t in /tmp /dev/shm "$TMPDIR"; do
+		[ -n "$t" ] || continue
+		t=$(cd "$t" 2>/dev/null && pwd -P) || continue
+		case "$r/" in "$t"/*) inside=1 ;; esac
+	done
+	if [ -z "$inside" ]; then
+		HERE=$r/kgfx-tty-graphics-protocol-$$
+		break
+	fi
+done
 SHM=/kgfx-test-$$
 trap '$OUTER kill-server 2>/dev/null; timeout -s KILL 5 $INNER kill-server 2>/dev/null || pkill -9 -f -- "-LtestB$$"; rm -rf $DIR $HERE /dev/shm$SHM' 0 1 15
 
@@ -101,10 +118,23 @@ printf '\377\000\000' >$DIR/a-tty-graphics-protocol
 run "\\033_Ga=t,i=3,s=1,v=1,f=24,t=t;$(b64 $DIR/a-tty-graphics-protocol)\\033\\\\"
 wait_is "answers" '_Gi=3;OK'
 [ -e $DIR/a-tty-graphics-protocol ] && fail "temporary file not deleted"
-printf '\377\000\000' >$HERE
-run "\\033_Ga=t,i=4,s=1,v=1,f=24,t=t;$(b64 $HERE)\\033\\\\"
-wait_is "answers" '_Gi=4;OK'
-[ -e $HERE ] || fail "file outside a temporary directory deleted"
+if [ -n "$HERE" ]; then
+	printf '\377\000\000' >$HERE
+	run "\\033_Ga=t,i=4,s=1,v=1,f=24,t=t;$(b64 $HERE)\\033\\\\"
+	wait_is "answers" '_Gi=4;OK'
+	[ -e $HERE ] || fail "file outside a temporary directory deleted"
+else
+	echo "SKIP: no writable directory outside the temporary directories"
+fi
+
+# A symbolic link in a temporary directory: the file it names is read, but
+# neither is deleted (only a regular file is).
+printf '\377\000\000' >$DIR/target
+ln -s $DIR/target $DIR/link-tty-graphics-protocol
+run "\\033_Ga=t,i=6,s=1,v=1,f=24,t=t;$(b64 $DIR/link-tty-graphics-protocol)\\033\\\\"
+wait_is "answers" '_Gi=6;OK'
+[ -e $DIR/target ] || fail "the file a link names was deleted"
+[ -L $DIR/link-tty-graphics-protocol ] || fail "the link was deleted"
 
 # Shared memory: the part O and S give, read (not mapped, which a program
 # could truncate under tmux), then unlinked.
