@@ -1618,13 +1618,16 @@ window_pane_destroy(struct window_pane *wp)
 	screen_write_sync_clear_dirty(wp);
 	kgfx_pane_free(wp);
 
+	/* An empty pane (spawned with -E) has an event but no fd. */
+	if (wp->event != NULL) {
+		bufferevent_free(wp->event);
+		wp->event = NULL;
+	}
 	if (wp->fd != -1) {
 #ifdef HAVE_UTEMPTER
 		utempter_remove_record(wp->fd);
 		kill(getpid(), SIGCHLD);
 #endif
-		bufferevent_free(wp->event);
-		wp->event = NULL;
 		close(wp->fd);
 		wp->fd = -1;
 	}
