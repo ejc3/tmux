@@ -127,6 +127,90 @@ gid=$(sent | grep -ao 'a=p,U=1,q=2,i=[0-9]*,p=[0-9]*,c=2,r=1' | tail -1 |
 wait_is "$INNER capturep -ept0 | grep -o '38;2;0;0;$gid' | head -1" \
     "38;2;0;0;$gid"
 
+# tmux's id for an image: run $1, which transmits one, and set G to the id
+# the terminal was sent it with, and RGB to it as a colour.
+transmit() {
+	_n=$(sent | grep -ao 'a=t,q=2,i=' | wc -l)
+	run "$1"
+	wait_is "sent | grep -ao 'a=t,q=2,i=' | wc -l" $((_n + 1))
+	G=$(sent | grep -ao 'a=t,q=2,i=[0-9]*' | tail -1 | sed 's/.*i=//')
+	RGB="$((G >> 16));$(((G >> 8) & 255));$((G & 255))"
+}
+
+# The program's answers.
+answers() {
+	$INNER capturep -pJt0 | grep -o '_Gi=[^^]*'
+}
+
+# Sending an image again with its id keeps tmux's id, which the program's
+# placeholders have.
+transmit "\\033_Ga=t,q=2,i=60,f=24,s=2,v=2;$RED\\033\\\\"
+g=$G
+transmit "\\033_Ga=t,q=2,i=60,f=24,s=2,v=2;$RED\\033\\\\"
+[ "$G" = "$g" ] || fail "image 60 sent again is $G, not $g"
+
+# An image with only a number gets an id no image of the pane has: here the
+# next of tmux's ids is the program's id of an image.
+transmit "\\033_Ga=t,q=2,i=61,f=24,s=2,v=2;$RED\\033\\\\"
+n=$((G + 2))
+run "\\033_Ga=t,q=2,i=$n,f=24,s=2,v=2;$RED\\033\\\\\\033_Ga=t,I=7,f=24,s=2,v=2;$RED\\033\\\\"
+wait_is "answers | grep -c ',I=7;OK'" 1
+[ "$(answers | grep ',I=7;OK')" != "_Gi=$n,I=7;OK" ] ||
+    fail "the id given for number 7 is image $n's"
+
+# Data that is not base64 is ignored, as kitty ignores it; PNG and
+# compressed data are checked as far as their headers.
+run "\\033_Ga=t,i=71,f=24,s=1,v=1;AA*A\\033\\\\\\033_Ga=p,i=71\\033\\\\"
+wait_is "answers | grep -c 'i=71;ENOENT'" 1
+[ "$(answers | grep -c 'i=71;OK')" = 0 ] || fail "answered data not base64"
+run "\\033_Ga=t,i=72,f=100;AAAAAAAA\\033\\\\"
+wait_is "answers" \
+    '_Gi=72;EBADPNG:The supplied data of 6 bytes is not a valid PNG image'
+run "\\033_Ga=t,i=73,f=24,s=1,v=1,o=z;AAAA\\033\\\\"
+wait_is "answers" \
+    '_Gi=73;EINVAL:Failed to inflate image data with error: incorrect header check'
+
+# Deleting the last placement with a capital deletes the image.
+run "\\033_Ga=T,q=2,i=50,p=5,f=24,s=2,v=2,c=1,r=1;$RED\\033\\\\\\033_Ga=d,d=I,i=50,p=5\\033\\\\\\033_Ga=p,i=50\\033\\\\"
+wait_is "answers | grep -c 'i=50;ENOENT'" 1
+
+# A delete stops a transmission in chunks.
+run "\\033_Ga=t,q=2,i=70,f=24,s=2,v=2,m=1;$RED\\033\\\\\\033_Ga=d,d=i,i=99\\033\\\\\\033_Ga=p,i=70\\033\\\\"
+wait_is "answers | grep -c 'i=70;ENOENT'" 1
+
+# An image deleted while the alternate screen is in use goes from the
+# screen saved too.
+run "\\033[H\\033_Ga=T,q=2,i=51,f=24,s=2,v=2,c=2,r=1;$RED\\033\\\\\\033[?1049h\\033_Ga=d,d=I,i=51\\033\\\\\\033[?1049l"
+wait_is placeholders 0
+
+# The program's placeholder for an image (or a placement) it does not have
+# names none, not another pane's.
+run "\\033[38;5;99m$PH\\314\\205\\314\\205\\033[m"
+$INNER capturep -ept0 | grep -q '38;5;99' && fail "unknown image 99 kept"
+$INNER capturep -ept0 | grep -q '38;2;0;0;0m' || fail "unknown image 99 not 0"
+run "\\033_Ga=T,q=2,U=1,i=52,f=24,s=2,v=2,c=1,r=1;$RED\\033\\\\\\033[38;5;52;58;5;9m$PH\\314\\205\\314\\205\\033[m"
+$INNER capturep -ept0 | grep -q '58;2;255;255;255m' ||
+    fail "unknown placement 9: $($INNER capturep -ept0 | head -1 | cat -v)"
+
+# A third diacritic gives the high byte of the image id; the next placeholder
+# with the same colours has it too. The terminal gets tmux's id without it.
+transmit "\\033_Ga=T,q=2,U=1,i=16777221,f=24,s=2,v=2,c=2,r=1;$RED\\033\\\\"
+run "\\033[38;5;5m$PH\\314\\205\\314\\205\\314\\215$PH\\033[m"
+[ "$($INNER capturep -ept0 | head -1 | grep -o '38;[0-9;]*m')" = "38;2;${RGB}m" ] ||
+    fail "image 16777221 placeholders: $($INNER capturep -ept0 | head -1 | cat -v)"
+$INNER capturep -pt0 | grep -q "$(printf '\314\215')" &&
+    fail "the third diacritic was kept"
+
+# Frames have their format and compression and are read from files as
+# images are.
+transmit "\\033_Ga=t,q=2,i=80,f=24,s=2,v=2;$RED\\033\\\\"
+run "\\033_Ga=f,q=2,i=80,s=1,v=1,f=24,o=z;eJwA\\033\\\\"
+wait_is "sent | grep -ao 'a=f,q=2,i=$G,s=1,v=1,f=24,o=z,m=0;eJwA' | wc -l" 1
+printf '\000\377\000' >$DIR/frame
+P=$(printf %s "$DIR/frame" | base64 | tr -d '\n')
+run "\\033_Ga=f,q=2,i=80,t=f,s=1,v=1,f=24;$P\\033\\\\"
+wait_is "sent | grep -ao 'a=f,q=2,i=$G,s=1,v=1,f=24,m=0;AP8A' | wc -l" 1
+
 # A pane that goes takes its images from the terminal too.
 $INNER splitw -d 'exec sleep 1000' || exit 1
 n=$(sent | grep -ao 'a=d,d=I' | wc -l)

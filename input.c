@@ -135,6 +135,16 @@ struct input_ctx {
 	int				ch;
 	struct utf8_data		last;
 
+	/*
+	 * The last kitty graphics placeholder written and the number of its
+	 * diacritics so far (-1 once anything else is written), its colours
+	 * as the program gave them and the high byte of its image id.
+	 */
+	int				kgfx_marks;
+	int				kgfx_fg;
+	int				kgfx_us;
+	u_int				kgfx_high;
+
 	const struct input_state       *state;
 	int				flags;
 #define INPUT_DISCARD 0x1
@@ -1003,6 +1013,7 @@ input_reset(struct input_ctx *ictx, int clear)
 
 	ictx->state = &input_state_ground;
 	ictx->flags = 0;
+	ictx->kgfx_marks = -1;
 }
 
 /* Return pending data. */
@@ -1319,6 +1330,7 @@ input_print(struct input_ctx *ictx)
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);
 	ictx->flags |= INPUT_LAST;
+	ictx->kgfx_marks = -1;
 
 	ictx->cell.cell.attr &= ~GRID_ATTR_CHARSET;
 
@@ -3137,6 +3149,63 @@ input_exit_rename(struct input_ctx *ictx)
 	server_status_window(w);
 }
 
+/*
+ * A kitty graphics placeholder: its ids become tmux's. With fewer than three
+ * diacritics it has the high byte of the image id of the placeholder before
+ * it, if that has the same colours.
+ */
+static void
+input_kgfx_placeholder(struct input_ctx *ictx)
+{
+	struct grid_cell	 gc;
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (ictx->kgfx_marks == -1 || gc.fg != ictx->kgfx_fg ||
+	    gc.us != ictx->kgfx_us)
+		ictx->kgfx_high = 0;
+	ictx->kgfx_marks = 0;
+	ictx->kgfx_fg = gc.fg;
+	ictx->kgfx_us = gc.us;
+	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_high);
+	screen_write_collect_add(&ictx->ctx, &gc);
+}
+
+/*
+ * A character after a placeholder: if it is its third diacritic, the high
+ * byte of the image id, the placeholder is written again for that image and
+ * the diacritic is not (tmux's ids are smaller). Returns 1 if it is.
+ */
+static int
+input_kgfx_mark(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	struct utf8_data	*ud = &ictx->utf8data;
+	struct grid_cell	 gc;
+	u_int			 cx = s->cx, cy = s->cy;
+	int			 n;
+
+	if (ud->width != 0 || (n = kgfx_diacritic(ud)) == -1) {
+		ictx->kgfx_marks = -1;
+		return (0);
+	}
+	if (++ictx->kgfx_marks != 3)
+		return (0);
+	ictx->kgfx_high = n;
+	if (cx == 0)
+		return (1);
+	grid_view_get_cell(s->grid, cx - 1, cy, &gc);
+	if (gc.data.size < 4 || memcmp(gc.data.data, "\364\216\273\256", 4))
+		return (1);
+	gc.fg = ictx->kgfx_fg;
+	gc.us = ictx->kgfx_us;
+	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_high);
+	screen_write_cursormove(sctx, cx - 1, cy, 0);
+	screen_write_cell(sctx, &gc);
+	ictx->flags |= INPUT_LAST;
+	return (1);
+}
+
 /* Open UTF-8 character. */
 static int
 input_top_bit_set(struct input_ctx *ictx)
@@ -3145,6 +3214,8 @@ input_top_bit_set(struct input_ctx *ictx)
 	struct utf8_data	*ud = &ictx->utf8data;
 	struct grid_cell	 gc;
 
+	if (!ictx->utf8started && (~ictx->flags & INPUT_LAST))
+		ictx->kgfx_marks = -1;
 	ictx->flags &= ~INPUT_LAST;
 
 	if (!ictx->utf8started) {
@@ -3170,12 +3241,11 @@ input_top_bit_set(struct input_ctx *ictx)
 
 	utf8_copy(&ictx->cell.cell.data, ud);
 	if (ictx->wp != NULL && ud->size == 4 &&
-	    memcmp(ud->data, "\364\216\273\256", 4) == 0) {
-		/* A kitty graphics placeholder: its ids become tmux's. */
-		memcpy(&gc, &ictx->cell.cell, sizeof gc);
-		kgfx_placeholder(ictx->wp, &gc);
-		screen_write_collect_add(sctx, &gc);
-	} else
+	    memcmp(ud->data, "\364\216\273\256", 4) == 0)
+		input_kgfx_placeholder(ictx);
+	else if (ictx->kgfx_marks != -1 && input_kgfx_mark(ictx))
+		return (0);
+	else
 		screen_write_collect_add(sctx, &ictx->cell.cell);
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);

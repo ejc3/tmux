@@ -1942,6 +1942,7 @@ struct tty {
 #define TTY_HAVEGRAPHEMES 0x4000000
 #define TTY_GRAPHEMES 0x8000000
 #define TTY_PIXELSFROM0 0x10000000
+#define TTY_KGFXLOST 0x20000000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
 	 TTY_HAVEPIXELS|TTY_HAVEKGFX|TTY_HAVEGRAPHEMES)
@@ -3146,7 +3147,8 @@ void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,
 void	 kgfx_pane_free(struct window_pane *);
 void	 kgfx_replay(struct client *);
 void	 kgfx_known(struct client *);
-void	 kgfx_placeholder(struct window_pane *, struct grid_cell *);
+void	 kgfx_placeholder(struct window_pane *, struct grid_cell *, u_int);
+int	 kgfx_diacritic(const struct utf8_data *);
 void	 forward_check(void);
 
 /* tty-term.c */

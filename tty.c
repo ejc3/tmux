@@ -216,6 +216,10 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 	if (tty->discarded < TTY_BLOCK_STOP(tty)) {
 		tty->flags &= ~TTY_BLOCK;
 		tty_invalidate(tty);
+		if (tty->flags & TTY_KGFXLOST) {
+			tty->flags &= ~TTY_KGFXLOST;
+			kgfx_replay(c);
+		}
 		return;
 	}
 	tty->discarded = 0;

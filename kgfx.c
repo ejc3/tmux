@@ -91,8 +91,23 @@ static const u_int kgfx_diacritics[] = {
 /* Image data kept (to give to terminals that come later), in bytes. */
 #define KGFX_QUOTA (256 * 1024 * 1024)
 
+/*
+ * Most data (base64) in one transmission, and in all of those being put
+ * together from chunks.
+ */
+#define KGFX_MAXDATA KGFX_QUOTA
+
+/* Most placements kept: more and the oldest go. */
+#define KGFX_MAXPLACEMENTS 16384
+
+/* A placement id tmux does not give out, for placements it does not know. */
+#define KGFX_NOPLACEMENT KGFX_MAXID
+
 /* Any failure to read a file, as kitty: nothing about why or what is there. */
 #define KGFX_FILE_ERROR "EBADF:Failed to read image file"
+
+/* More data than KGFX_MAXDATA. */
+#define KGFX_SIZE_ERROR "EFBIG:Too much data"
 
 /* Most keys in a command. */
 #define KGFX_MAXKEYS 32
@@ -111,6 +126,7 @@ struct kgfx_placement {
 	u_int				 gpid;	  /* tmux's */
 	int				 virtual; /* the program's own U=1 */
 	int				 z;
+	u_int				 order;
 	char				*keys;	  /* for terminals: c=,r=,... */
 	TAILQ_ENTRY(kgfx_placement)	 entry;
 };
@@ -134,22 +150,32 @@ static TAILQ_HEAD(, kgfx_image) kgfx_images =
     TAILQ_HEAD_INITIALIZER(kgfx_images);
 static size_t	kgfx_size;
 static u_int	kgfx_count;
+static u_int	kgfx_nplacements;
 static u_int	kgfx_next_gid = 1;
 static u_int	kgfx_next_gpid = 1;
 static u_int	kgfx_order;
 
-/* A chunked transmission being put together. */
+/*
+ * A chunked transmission being put together. One with too much data is
+ * failed: the rest of its chunks are dropped and the last answers the error.
+ */
 struct kgfx_pending {
 	u_int				 pane;
 	struct kgfx_cmd			*first;
 	struct evbuffer			*data;
+	size_t				 size;
+	int				 failed;
 	TAILQ_ENTRY(kgfx_pending)	 entry;
 };
 static TAILQ_HEAD(, kgfx_pending) kgfx_pendings =
     TAILQ_HEAD_INITIALIZER(kgfx_pendings);
+static size_t	kgfx_pending_size;
 
 static void	kgfx_delete_image(struct window_pane *, struct kgfx_image *,
 		    int);
+static void	kgfx_delete_placement(struct window_pane *,
+		    struct kgfx_image *, struct kgfx_placement *);
+static void	kgfx_free_pending(struct kgfx_pending *);
 
 /* Free a command. */
 static void
@@ -318,6 +344,24 @@ kgfx_known(struct client *c)
 	input_kgfx_known(c, kgfx_client(c));
 }
 
+/*
+ * Send a string to a terminal. An image is not output that can be dropped
+ * when the terminal falls behind; if output is being dropped already, the
+ * terminal is given the images again when it catches up.
+ */
+static void
+kgfx_puts(struct client *c, const char *s)
+{
+	struct tty	*tty = &c->tty;
+
+	if (tty->flags & TTY_BLOCK) {
+		tty->flags |= TTY_KGFXLOST;
+		return;
+	}
+	tty->flags |= TTY_NOBLOCK;
+	tty_puts(tty, s);
+}
+
 /* Send a string to one terminal, or every terminal that takes images. */
 static void
 kgfx_send(struct client *only, const char *s)
@@ -325,41 +369,56 @@ kgfx_send(struct client *only, const char *s)
 	struct client	*c;
 
 	if (only != NULL) {
-		tty_puts(&only->tty, s);
+		kgfx_puts(only, s);
 		return;
 	}
 	TAILQ_FOREACH(c, &clients, entry) {
 		if (kgfx_client(c))
-			tty_puts(&c->tty, s);
+			kgfx_puts(c, s);
 	}
+}
+
+/*
+ * Send data (base64) to terminals in chunks: the first after keys, the rest
+ * after more (each chunk of a frame has a=f).
+ */
+static void
+kgfx_send_data(struct client *c, const char *keys, const char *more_keys,
+    const char *data, size_t size)
+{
+	char	*s;
+	size_t	 off = 0, n;
+	int	 more;
+
+	do {
+		n = size - off;
+		if (n > KGFX_CHUNK)
+			n = KGFX_CHUNK;
+		more = (off + n < size);
+		if (off == 0) {
+			xasprintf(&s, "\033_G%s,m=%d;%.*s\033\\", keys, more,
+			    (int)n, data);
+		} else {
+			xasprintf(&s, "\033_G%sm=%d,q=2;%.*s\033\\", more_keys,
+			    more, (int)n, data + off);
+		}
+		kgfx_send(c, s);
+		free(s);
+		off += n;
+	} while (more);
 }
 
 /* Send an image to terminals, in chunks. */
 static void
 kgfx_send_image(struct client *c, struct kgfx_image *im)
 {
-	char	*s;
-	size_t	 off = 0, n;
-	int	 more;
+	char	*keys;
 
 	if (im->data == NULL)
 		return;
-	do {
-		n = im->size - off;
-		if (n > KGFX_CHUNK)
-			n = KGFX_CHUNK;
-		more = (off + n < im->size);
-		if (off == 0) {
-			xasprintf(&s, "\033_Ga=t,q=2,i=%u%s,m=%d;%.*s\033\\",
-			    im->gid, im->keys, more, (int)n, im->data);
-		} else {
-			xasprintf(&s, "\033_Gm=%d,q=2;%.*s\033\\", more,
-			    (int)n, im->data + off);
-		}
-		kgfx_send(c, s);
-		free(s);
-		off += n;
-	} while (more);
+	xasprintf(&keys, "a=t,q=2,i=%u%s", im->gid, im->keys);
+	kgfx_send_data(c, keys, "", im->data, im->size);
+	free(keys);
 }
 
 /* Send a placement to terminals: always a virtual one. */
@@ -469,7 +528,7 @@ kgfx_new_gpid(void)
 {
 	u_int	gpid = kgfx_next_gpid++;
 
-	if (kgfx_next_gpid > KGFX_MAXID)
+	if (kgfx_next_gpid >= KGFX_NOPLACEMENT)
 		kgfx_next_gpid = 1;
 	return (gpid);
 }
@@ -505,12 +564,40 @@ kgfx_find_number(u_int pane, u_int number)
 	return (found);
 }
 
-/* Keep the stored data within the quota: the oldest images lose theirs. */
-static void
-kgfx_quota(void)
+/* Whether more data (base64) can go with what there is, within the limit. */
+static int
+kgfx_fits(size_t have, size_t more)
 {
-	struct kgfx_image	*im;
+	return (have <= KGFX_MAXDATA && more <= KGFX_MAXDATA - have);
+}
 
+/*
+ * Keep within the limits on images, placements and data kept: the oldest go
+ * first (images lose their data before they go).
+ */
+static void
+kgfx_limits(void)
+{
+	struct kgfx_image	*im, *oldest_im = NULL;
+	struct kgfx_placement	*pl, *oldest;
+
+	while (kgfx_count > KGFX_MAXIMAGES) {
+		im = TAILQ_FIRST(&kgfx_images);
+		kgfx_delete_image(window_pane_find_by_id(im->pane), im, 1);
+	}
+	while (kgfx_nplacements > KGFX_MAXPLACEMENTS) {
+		oldest = NULL;
+		TAILQ_FOREACH(im, &kgfx_images, entry) {
+			TAILQ_FOREACH(pl, &im->placements, entry) {
+				if (oldest == NULL || pl->order < oldest->order) {
+					oldest = pl;
+					oldest_im = im;
+				}
+			}
+		}
+		kgfx_delete_placement(window_pane_find_by_id(oldest_im->pane),
+		    oldest_im, oldest);
+	}
 	TAILQ_FOREACH(im, &kgfx_images, entry) {
 		if (kgfx_size <= KGFX_QUOTA)
 			break;
@@ -523,78 +610,104 @@ kgfx_quota(void)
 	}
 }
 
+/* Whether a path (resolved) is in a directory (resolved too). */
+static int
+kgfx_path_in(const char *path, const char *dir)
+{
+	char	resolved[PATH_MAX];
+	size_t	len;
+
+	if (dir == NULL || *dir == '\0' || realpath(dir, resolved) == NULL)
+		return (0);
+	len = strlen(resolved);
+	if (len != 0 && resolved[len - 1] == '/')
+		len--;
+	return (strncmp(path, resolved, len) == 0 && path[len] == '/');
+}
+
+/* Whether a file (resolved) may be read: not in /proc, /sys or /dev. */
+static int
+kgfx_path_allowed(const char *path)
+{
+	if (kgfx_path_in(path, "/dev/shm"))
+		return (1);
+	return (!kgfx_path_in(path, "/proc") && !kgfx_path_in(path, "/sys") &&
+	    !kgfx_path_in(path, "/dev"));
+}
+
+/* Whether a file (resolved) is in a temporary directory, so may be deleted. */
+static int
+kgfx_path_temporary(const char *path)
+{
+	return (kgfx_path_in(path, "/tmp") || kgfx_path_in(path, "/dev/shm") ||
+	    kgfx_path_in(path, getenv("TMPDIR")));
+}
+
 /*
  * Read the data from a file, a temporary file or shared memory (base64 of the
- * name) and make it base64 data, so terminals elsewhere can have it.
+ * name) and make it base64 data, so terminals elsewhere can have it. Only a
+ * regular file is opened (it is checked before), and it is read, not mapped,
+ * so one that is truncated while it is read is only an error.
  */
 static char *
 kgfx_read_medium(char t, const char *payload, struct kgfx_cmd *cmd,
     const char **error)
 {
 	u_char		 name[PATH_MAX], *data = NULL;
-	char		*out;
+	char		 path[PATH_MAX], *out;
 	int		 n, fd = -1;
-	size_t		 size, want, off, got;
+	size_t		 size, want, off, got, outsize;
 	struct stat	 sb;
 	ssize_t		 r;
-	void		*map;
 
 	*error = KGFX_FILE_ERROR;
 	n = b64_pton(payload, name, sizeof name - 1);
-	if (n <= 0)
+	if (n <= 0 || memchr(name, '\0', n) != NULL)
 		return (NULL);
 	name[n] = '\0';
 
-	if (t == 's') {
-		*error = KGFX_FILE_ERROR;
+	if (t == 's')
 		fd = shm_open(name, O_RDONLY, 0);
-		if (fd == -1)
-			return (NULL);
-		if (fstat(fd, &sb) != 0)
-			goto fail;
-		map = mmap(NULL, sb.st_size, PROT_READ, MAP_SHARED, fd, 0);
-		if (map == MAP_FAILED)
-			goto fail;
-		size = sb.st_size;
-		data = xmalloc(size);
-		memcpy(data, map, size);
-		munmap(map, sb.st_size);
-		close(fd);
-		shm_unlink(name);
-		fd = -1;
-	} else {
+	else {
 		/* A temporary file must be one kitty would delete. */
-		if (t == 't' && strstr(name, "tty-graphics-protocol") == NULL) {
-			*error = KGFX_FILE_ERROR;
+		if (t == 't' && strstr(name, "tty-graphics-protocol") == NULL)
 			return (NULL);
-		}
-		*error = KGFX_FILE_ERROR;
-		fd = open(name, O_RDONLY);
-		if (fd == -1 || fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode))
-			goto fail;
-		off = kgfx_number(cmd, 'O', 0);
-		want = kgfx_number(cmd, 'S', 0);
-		if (off > (size_t)sb.st_size)
-			goto fail;
-		size = sb.st_size - off;
-		if (want != 0 && want < size)
-			size = want;
-		if (lseek(fd, off, SEEK_SET) == -1)
-			goto fail;
-		data = xmalloc(size ? size : 1);
-		for (got = 0; got < size; got += r) {
-			r = read(fd, data + got, size - got);
-			if (r <= 0)
-				goto fail;
-		}
-		close(fd);
-		fd = -1;
-		if (t == 't')
-			unlink(name);
+		if (realpath(name, path) == NULL || !kgfx_path_allowed(path))
+			return (NULL);
+		if (stat(path, &sb) != 0 || !S_ISREG(sb.st_mode))
+			return (NULL);
+		fd = open(path, O_RDONLY|O_NONBLOCK|O_NOCTTY|O_NOFOLLOW);
 	}
+	if (fd == -1 || fstat(fd, &sb) != 0 || !S_ISREG(sb.st_mode))
+		goto fail;
 
-	out = xmalloc(size * 4 / 3 + 8);
-	if (b64_ntop(data, size, out, size * 4 / 3 + 8) == -1) {
+	off = kgfx_number(cmd, 'O', 0);
+	want = kgfx_number(cmd, 'S', 0);
+	if (off > (size_t)sb.st_size)
+		goto fail;
+	size = sb.st_size - off;
+	if (want != 0 && want < size)
+		size = want;
+	outsize = 4 * ((size + 2) / 3) + 1;
+	if (!kgfx_fits(0, outsize)) {
+		*error = KGFX_SIZE_ERROR;
+		goto fail;
+	}
+	data = xmalloc(size ? size : 1);
+	for (got = 0; got < size; got += r) {
+		r = pread(fd, data + got, size - got, off + got);
+		if (r <= 0)
+			goto fail;
+	}
+	close(fd);
+	fd = -1;
+	if (t == 's')
+		shm_unlink(name);
+	else if (t == 't' && kgfx_path_temporary(path))
+		unlink(path);
+
+	out = xmalloc(outsize);
+	if (b64_ntop(data, size, out, outsize) == -1) {
 		free(out);
 		out = NULL;
 	}
@@ -608,20 +721,73 @@ fail:
 	return (NULL);
 }
 
+/* The size of data (base64) decoded. */
+static size_t
+kgfx_decoded_size(const char *data)
+{
+	size_t	len = strlen(data), have = len / 4 * 3, pad = 0;
+
+	if (len >= 1 && data[len - 1] == '=')
+		pad++;
+	if (len >= 2 && data[len - 2] == '=')
+		pad++;
+	return (have > pad ? have - pad : 0);
+}
+
+/*
+ * The size in pixels of PNG data (base64), from its header. Returns 0 if it
+ * does not start as PNG does.
+ */
+static int
+kgfx_png_size(const char *data, u_int *width, u_int *height)
+{
+	char	 head[33];
+	u_char	 b[24];
+
+	if (strlen(data) < 32)
+		return (0);
+	memcpy(head, data, 32);
+	head[32] = '\0';
+	if (b64_pton(head, b, sizeof b) < 24)
+		return (0);
+	if (memcmp(b, "\211PNG\r\n\032\n", 8) != 0 || memcmp(b + 12, "IHDR", 4))
+		return (0);
+	*width = ((u_int)b[16] << 24)|(b[17] << 16)|(b[18] << 8)|b[19];
+	*height = ((u_int)b[20] << 24)|(b[21] << 16)|(b[22] << 8)|b[23];
+	return (1);
+}
+
+/* Whether compressed data (base64) starts as zlib's does. */
+static int
+kgfx_zlib_header(const char *data)
+{
+	char	 head[5];
+	u_char	 b[3];
+
+	if (strlen(data) < 4)
+		return (0);
+	memcpy(head, data, 4);
+	head[4] = '\0';
+	if (b64_pton(head, b, sizeof b) < 2)
+		return (0);
+	return ((b[0] & 0xf) == 8 && ((b[0] << 8)|b[1]) % 31 == 0);
+}
+
 /*
  * Check the transmission keys and data (base64) as kitty would: the error to
  * answer with, or NULL.
  */
 static const char *
-kgfx_check(struct kgfx_cmd *cmd, const char *data)
+kgfx_check(struct kgfx_cmd *cmd, const char *data, u_int dw, u_int dh)
 {
 	static char	 error[128];
 	u_int		 f = kgfx_number(cmd, 'f', 32);
-	u_int		 w = kgfx_number(cmd, 's', 0);
-	u_int		 h = kgfx_number(cmd, 'v', 0);
+	u_int		 w = kgfx_number(cmd, 's', dw);
+	u_int		 h = kgfx_number(cmd, 'v', dh);
 	char		 t = kgfx_char(cmd, 't', 'd');
 	char		 o = kgfx_char(cmd, 'o', 0);
-	size_t		 len = strlen(data), have, need;
+	size_t		 have, need;
+	u_int		 pw, ph;
 
 	if (t != 'd' && t != 'f' && t != 't' && t != 's') {
 		xsnprintf(error, sizeof error,
@@ -638,15 +804,24 @@ kgfx_check(struct kgfx_cmd *cmd, const char *data)
 		    "EINVAL:Unknown image format: %u", f);
 		return (error);
 	}
+	/*
+	 * Compressed data and PNG are checked as far as their headers: the
+	 * rest is for the terminal.
+	 */
+	if (o == 'z' && !kgfx_zlib_header(data)) {
+		return ("EINVAL:Failed to inflate image data with error: "
+		    "incorrect header check");
+	}
+	if (f == 100 && o != 'z' && !kgfx_png_size(data, &pw, &ph)) {
+		xsnprintf(error, sizeof error, "EBADPNG:The supplied data of "
+		    "%zu bytes is not a valid PNG image", kgfx_decoded_size(data));
+		return (error);
+	}
 	if (f == 100 || o == 'z')
 		return (NULL);
 	if (w == 0 || h == 0)
 		return ("EINVAL:Zero width/height not allowed");
-	have = len / 4 * 3;
-	if (len >= 1 && data[len - 1] == '=')
-		have--;
-	if (len >= 2 && data[len - 2] == '=')
-		have--;
+	have = kgfx_decoded_size(data);
 	need = (size_t)w * h * (f / 8);
 	if (have < need) {
 		xsnprintf(error, sizeof error,
@@ -654,25 +829,6 @@ kgfx_check(struct kgfx_cmd *cmd, const char *data)
 		return (error);
 	}
 	return (NULL);
-}
-
-/* The size in pixels of PNG data (base64), from its header. */
-static void
-kgfx_png_size(const char *data, u_int *width, u_int *height)
-{
-	char	 head[33];
-	u_char	 b[24];
-
-	if (strlen(data) < 32)
-		return;
-	memcpy(head, data, 32);
-	head[32] = '\0';
-	if (b64_pton(head, b, sizeof b) < 24)
-		return;
-	if (memcmp(b, "\211PNG\r\n\032\n", 8) != 0 || memcmp(b + 12, "IHDR", 4))
-		return;
-	*width = ((u_int)b[16] << 24)|(b[17] << 16)|(b[18] << 8)|b[19];
-	*height = ((u_int)b[20] << 24)|(b[21] << 16)|(b[22] << 8)|b[23];
 }
 
 /* Transmit an image (a=t or a=T). */
@@ -687,6 +843,7 @@ kgfx_transmit(struct window_pane *wp, struct bufferevent *bev,
 	u_int			 f = kgfx_number(cmd, 'f', 32);
 	char			*data;
 	const char		*error;
+	u_int			 gid;
 
 	if (t == 'd')
 		data = xstrdup(cmd->payload);
@@ -698,39 +855,48 @@ kgfx_transmit(struct window_pane *wp, struct bufferevent *bev,
 		}
 	} else
 		data = xstrdup("");
-	if ((error = kgfx_check(cmd, data)) != NULL) {
+	if ((error = kgfx_check(cmd, data, 0, 0)) != NULL) {
 		kgfx_reply(bev, cmd, id, number, 0, error);
 		free(data);
 		return (NULL);
 	}
 
-	/* The same id replaces the image, and its placements go. */
-	if ((im = kgfx_find(wp->id, id)) != NULL)
+	/*
+	 * The same id replaces the image, and its placements go; it keeps
+	 * tmux's id, which the program's placeholders have.
+	 */
+	if ((im = kgfx_find(wp->id, id)) != NULL) {
+		gid = im->gid;
 		kgfx_delete_image(wp, im, 1);
-
-	im = xcalloc(1, sizeof *im);
-	TAILQ_INIT(&im->placements);
-	if ((im->gid = kgfx_new_gid()) == 0) {
-		free(im);
+	} else if ((gid = kgfx_new_gid()) == 0) {
 		free(data);
 		kgfx_reply(bev, cmd, id, number, 0, "ENOSPC:too many images");
 		return (NULL);
 	}
+
+	/* An image with only a number gets an id the pane does not use. */
+	if (id == 0 && number != 0) {
+		id = gid;
+		while (id == 0 || kgfx_find(wp->id, id) != NULL)
+			id++;
+	}
+
+	im = xcalloc(1, sizeof *im);
+	TAILQ_INIT(&im->placements);
+	im->gid = gid;
 	im->pane = wp->id;
 	im->number = number;
-	im->id = (id != 0 || number == 0) ? id : im->gid;
+	im->id = id;
 	im->order = ++kgfx_order;
 	im->keys = kgfx_keys(cmd, "fsvoN");
 	im->data = data;
 	im->size = strlen(data);
 	if (f == 100)
-		kgfx_png_size(data, &im->width, &im->height);
+		(void)kgfx_png_size(data, &im->width, &im->height);
 	else {
 		im->width = kgfx_number(cmd, 's', 0);
 		im->height = kgfx_number(cmd, 'v', 0);
 	}
-	while (kgfx_count >= KGFX_MAXIMAGES)
-		kgfx_delete_image(NULL, TAILQ_FIRST(&kgfx_images), 1);
 	TAILQ_INSERT_TAIL(&kgfx_images, im, entry);
 	kgfx_count++;
 	kgfx_size += im->size;
@@ -739,7 +905,7 @@ kgfx_transmit(struct window_pane *wp, struct bufferevent *bev,
 	    im->height);
 
 	kgfx_send_image(NULL, im);
-	kgfx_quota();
+	kgfx_limits();
 	return (im);
 }
 
@@ -792,21 +958,17 @@ kgfx_is_cell(struct grid_cell *gc, u_int *gid, u_int *gpid)
 }
 
 /*
- * Clear a pane's placeholder cells of an image (and a placement, if gpid is
- * not 0), in the rows from first to last (absolute, including history).
+ * Clear the placeholder cells of an image (and a placement, if gpid is not 0)
+ * in a grid, including its history.
  */
-static void
-kgfx_clear_cells(struct window_pane *wp, u_int gid, u_int gpid, u_int first,
-    u_int last)
+static int
+kgfx_clear_grid(struct grid *gd, u_int gid, u_int gpid)
 {
-	struct grid		*gd = wp->base.grid;
 	struct grid_cell	 gc;
 	u_int			 x, y, cgid, cgpid;
 	int			 changed = 0;
 
-	if (last >= gd->hsize + gd->sy)
-		last = gd->hsize + gd->sy - 1;
-	for (y = first; y <= last; y++) {
+	for (y = 0; y < gd->hsize + gd->sy; y++) {
 		for (x = 0; x < grid_get_line(gd, y)->cellsize; x++) {
 			grid_get_cell(gd, x, y, &gc);
 			if (!kgfx_is_cell(&gc, &cgid, &cgpid))
@@ -817,6 +979,23 @@ kgfx_clear_cells(struct window_pane *wp, u_int gid, u_int gpid, u_int first,
 			changed = 1;
 		}
 	}
+	return (changed);
+}
+
+/*
+ * Clear a pane's placeholder cells of an image (and a placement, if gpid is
+ * not 0), on its screen and the one saved while the alternate screen is in
+ * use.
+ */
+static void
+kgfx_clear_cells(struct window_pane *wp, u_int gid, u_int gpid)
+{
+	int	changed;
+
+	changed = kgfx_clear_grid(wp->base.grid, gid, gpid);
+	if (wp->base.saved_grid != NULL &&
+	    kgfx_clear_grid(wp->base.saved_grid, gid, gpid))
+		changed = 1;
 	if (changed)
 		wp->flags |= PANE_REDRAW;
 }
@@ -840,20 +1019,47 @@ kgfx_colour_id(int colour)
 	return (0);
 }
 
+/* The number of a row or column diacritic, or -1. */
+int
+kgfx_diacritic(const struct utf8_data *ud)
+{
+	wchar_t	wc;
+	u_int	lo = 0, hi = KGFX_MAXCELLS, mid;
+
+	if (utf8_towc(ud, &wc) != UTF8_DONE)
+		return (-1);
+	while (lo < hi) {
+		mid = (lo + hi) / 2;
+		if (kgfx_diacritics[mid] == (u_int)wc)
+			return (mid);
+		if (kgfx_diacritics[mid] < (u_int)wc)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return (-1);
+}
+
 /*
- * A placeholder cell a program writes itself: its colours name the
- * program's image and placement, which become tmux's.
+ * A placeholder cell a program writes itself: its colours (and high, the
+ * most significant byte of the image id, from a third diacritic) name the
+ * program's image and placement, which become tmux's. An image or placement
+ * the pane does not have becomes one no terminal has, never another pane's.
  */
 void
-kgfx_placeholder(struct window_pane *wp, struct grid_cell *gc)
+kgfx_placeholder(struct window_pane *wp, struct grid_cell *gc, u_int high)
 {
 	struct kgfx_image	*im;
 	struct kgfx_placement	*pl;
 	u_int			 id, p;
 
-	id = kgfx_colour_id(gc->fg);
-	if ((im = kgfx_find(wp->id, id)) == NULL)
+	id = kgfx_colour_id(gc->fg) | (high << 24);
+	if (id == 0)
 		return;
+	if ((im = kgfx_find(wp->id, id)) == NULL) {
+		gc->fg = colour_join_rgb(0, 0, 0);
+		return;
+	}
 	gc->fg = colour_join_rgb(im->gid >> 16, im->gid >> 8, im->gid);
 	p = kgfx_colour_id(gc->us);
 	if (p == 0)
@@ -865,6 +1071,8 @@ kgfx_placeholder(struct window_pane *wp, struct grid_cell *gc)
 			return;
 		}
 	}
+	gc->us = colour_join_rgb(KGFX_NOPLACEMENT >> 16,
+	    (KGFX_NOPLACEMENT >> 8) & 0xff, KGFX_NOPLACEMENT & 0xff);
 }
 
 /* Remove a placement: its cells go and terminals delete it. */
@@ -874,14 +1082,13 @@ kgfx_delete_placement(struct window_pane *wp, struct kgfx_image *im,
 {
 	char	*s;
 
-	if (wp != NULL && !pl->virtual) {
-		kgfx_clear_cells(wp, im->gid, pl->gpid, 0,
-		    wp->base.grid->hsize + wp->base.grid->sy - 1);
-	}
+	if (wp != NULL && !pl->virtual)
+		kgfx_clear_cells(wp, im->gid, pl->gpid);
 	xasprintf(&s, "\033_Ga=d,d=i,q=2,i=%u,p=%u\033\\", im->gid, pl->gpid);
 	kgfx_send(NULL, s);
 	free(s);
 	TAILQ_REMOVE(&im->placements, pl, entry);
+	kgfx_nplacements--;
 	free(pl->keys);
 	free(pl);
 }
@@ -920,12 +1127,8 @@ kgfx_pane_free(struct window_pane *wp)
 			kgfx_delete_image(NULL, im, 1);
 	}
 	TAILQ_FOREACH_SAFE(pd, &kgfx_pendings, entry, pd1) {
-		if (pd->pane != wp->id)
-			continue;
-		TAILQ_REMOVE(&kgfx_pendings, pd, entry);
-		kgfx_free_cmd(pd->first);
-		evbuffer_free(pd->data);
-		free(pd);
+		if (pd->pane == wp->id)
+			kgfx_free_pending(pd);
 	}
 }
 
@@ -1008,9 +1211,12 @@ kgfx_display(struct window_pane *wp, struct screen_write_ctx *ctx,
 	pl->gpid = kgfx_new_gpid();
 	pl->virtual = (kgfx_number(cmd, 'U', 0) == 1);
 	pl->z = kgfx_signed(cmd, 'z', 0);
+	pl->order = ++kgfx_order;
 	xasprintf(&pl->keys, ",c=%u,r=%u%s", columns, rows, keys);
 	free(keys);
 	TAILQ_INSERT_TAIL(&im->placements, pl, entry);
+	kgfx_nplacements++;
+	kgfx_limits();
 	kgfx_send_placement(NULL, im, pl);
 	kgfx_reply(bev, cmd, im->id, im->number, p, "OK");
 	if (pl->virtual)
@@ -1107,6 +1313,8 @@ kgfx_delete(struct window_pane *wp, struct screen *s, struct kgfx_cmd *cmd)
 				if (pl->id == p)
 					kgfx_delete_placement(wp, im, pl);
 			}
+			if (data && TAILQ_EMPTY(&im->placements))
+				kgfx_delete_image(wp, im, 1);
 		} else
 			kgfx_delete_image(wp, im, data);
 		return;
@@ -1192,7 +1400,7 @@ kgfx_query(struct window_pane *wp, struct bufferevent *bev,
 		}
 	} else
 		data = xstrdup(t == 'd' ? cmd->payload : "");
-	error = kgfx_check(cmd, data);
+	error = kgfx_check(cmd, data, 0, 0);
 	free(data);
 	if (error != NULL) {
 		kgfx_reply(bev, cmd, id, 0, 0, error);
@@ -1205,15 +1413,20 @@ kgfx_query(struct window_pane *wp, struct bufferevent *bev,
 	kgfx_reply(bev, cmd, id, 0, 0, "OK");
 }
 
-/* An animation command: to terminals, with tmux's id. */
+/*
+ * An animation command: to terminals, with tmux's id. A frame's data is read
+ * and checked as an image's is, and sent in chunks.
+ */
 static void
 kgfx_animation(struct window_pane *wp, struct bufferevent *bev,
     struct kgfx_cmd *cmd, char a)
 {
 	struct kgfx_image	*im;
-	char			*keys, *s;
+	char			*keys, *s, *data = NULL;
+	char			 t = kgfx_char(cmd, 't', 'd');
 	u_int			 id = kgfx_number(cmd, 'i', 0);
 	u_int			 number = kgfx_number(cmd, 'I', 0);
+	const char		*error;
 
 	im = (id != 0) ? kgfx_find(wp->id, id) : kgfx_find_number(wp->id,
 	    number);
@@ -1221,13 +1434,34 @@ kgfx_animation(struct window_pane *wp, struct bufferevent *bev,
 		kgfx_reply(bev, cmd, id, number, 0, "ENOENT:no such image");
 		return;
 	}
-	keys = kgfx_keys(cmd, "xywhXYcrszvC");
-	if (a == 'f' && *cmd->payload != '\0') {
-		xasprintf(&s, "\033_Ga=f,q=2,i=%u%s;%s\033\\", im->gid, keys,
-		    cmd->payload);
-	} else
-		xasprintf(&s, "\033_Ga=%c,q=2,i=%u%s\033\\", a, im->gid, keys);
-	kgfx_send(NULL, s);
+	if (a == 'f' && (*cmd->payload != '\0' || t != 'd')) {
+		if (t == 'f' || t == 't' || t == 's') {
+			data = kgfx_read_medium(t, cmd->payload, cmd, &error);
+			if (data == NULL) {
+				kgfx_reply(bev, cmd, im->id, im->number, 0,
+				    error);
+				return;
+			}
+		} else
+			data = xstrdup(cmd->payload);
+		error = kgfx_check(cmd, data, im->width, im->height);
+		if (error != NULL) {
+			kgfx_reply(bev, cmd, im->id, im->number, 0, error);
+			free(data);
+			return;
+		}
+	}
+	if (data != NULL) {
+		keys = kgfx_keys(cmd, "xywhXYcrszvCfo");
+		xasprintf(&s, "a=f,q=2,i=%u%s", im->gid, keys);
+		kgfx_send_data(NULL, s, "a=f,", data, strlen(data));
+		free(data);
+	} else {
+		keys = kgfx_keys(cmd, "xywhXYcrszvC");
+		xasprintf(&s, "\033_Ga=%c,q=2,i=%u%s\033\\", a, im->gid,
+		    keys);
+		kgfx_send(NULL, s);
+	}
 	free(s);
 	free(keys);
 	kgfx_reply(bev, cmd, im->id, im->number, 0, "OK");
@@ -1282,6 +1516,60 @@ kgfx_run(struct window_pane *wp, struct screen_write_ctx *ctx,
 }
 
 /*
+ * Whether data is base64: its characters, with padding (which may be left out)
+ * only at the end.
+ */
+static int
+kgfx_base64(const char *data)
+{
+	size_t	len = strlen(data), n;
+
+	n = strspn(data, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	    "0123456789+/");
+	if (n % 4 == 1)
+		return (0);
+	if (n == len)
+		return (1);
+	if (n % 4 == 0 || strspn(data + n, "=") != len - n)
+		return (0);
+	return (n % 4 + (len - n) == 4);
+}
+
+/* Free a transmission being put together. */
+static void
+kgfx_free_pending(struct kgfx_pending *pd)
+{
+	TAILQ_REMOVE(&kgfx_pendings, pd, entry);
+	kgfx_pending_size -= pd->size;
+	kgfx_free_cmd(pd->first);
+	evbuffer_free(pd->data);
+	free(pd);
+}
+
+/*
+ * Add a chunk to a transmission being put together, unless there would be
+ * too much data: then it fails.
+ */
+static void
+kgfx_add_chunk(struct kgfx_pending *pd, const char *payload)
+{
+	size_t	n = strlen(payload);
+
+	if (pd->failed)
+		return;
+	if (!kgfx_fits(pd->size, n) || !kgfx_fits(kgfx_pending_size, n)) {
+		kgfx_pending_size -= pd->size;
+		pd->size = 0;
+		evbuffer_drain(pd->data, EVBUFFER_LENGTH(pd->data));
+		pd->failed = 1;
+		return;
+	}
+	evbuffer_add(pd->data, payload, n);
+	pd->size += n;
+	kgfx_pending_size += n;
+}
+
+/*
  * A kitty graphics command from a pane (the APC string, G...). Terminals that
  * show the pane must have the protocol, or tmux does not have it either.
  */
@@ -1298,36 +1586,55 @@ kgfx_command(struct window_pane *wp, struct screen_write_ctx *ctx,
 	if ((cmd = kgfx_parse(buf, len)) == NULL)
 		return;
 
+	/* Data that is not base64 is an error in the command: it is ignored. */
+	if (!kgfx_base64(cmd->payload)) {
+		kgfx_free_cmd(cmd);
+		return;
+	}
+
 	/* The grid has everything before the command (placeholder cells). */
 	screen_write_flush(ctx);
 
-	/* The next chunk of a transmission: m and the data, maybe q. */
+	/*
+	 * The next chunk of a transmission: m and the data, maybe q. A delete
+	 * instead stops the transmission.
+	 */
 	TAILQ_FOREACH(pd, &kgfx_pendings, entry) {
 		if (pd->pane == wp->id)
 			break;
 	}
+	if (pd != NULL && kgfx_char(cmd, 'a', 0) == 'd') {
+		kgfx_free_pending(pd);
+		pd = NULL;
+	}
 	if (pd != NULL) {
-		evbuffer_add(pd->data, cmd->payload, strlen(cmd->payload));
+		kgfx_add_chunk(pd, cmd->payload);
 		if (kgfx_number(cmd, 'm', 0) == 1) {
 			kgfx_free_cmd(cmd);
 			return;
 		}
 		kgfx_free_cmd(cmd);
-		TAILQ_REMOVE(&kgfx_pendings, pd, entry);
 		cmd = pd->first;
+		pd->first = NULL;
+		if (pd->failed) {
+			kgfx_reply(bev, cmd, kgfx_number(cmd, 'i', 0),
+			    kgfx_number(cmd, 'I', 0), 0, KGFX_SIZE_ERROR);
+			kgfx_free_pending(pd);
+			kgfx_free_cmd(cmd);
+			return;
+		}
 		free(cmd->payload);
 		evbuffer_add(pd->data, "", 1);
 		cmd->payload = xstrdup(EVBUFFER_DATA(pd->data));
-		evbuffer_free(pd->data);
-		free(pd);
+		kgfx_free_pending(pd);
 	} else if (kgfx_number(cmd, 'm', 0) == 1) {
 		pd = xcalloc(1, sizeof *pd);
 		pd->pane = wp->id;
 		pd->first = cmd;
 		if ((pd->data = evbuffer_new()) == NULL)
 			fatalx("out of memory");
-		evbuffer_add(pd->data, cmd->payload, strlen(cmd->payload));
 		TAILQ_INSERT_TAIL(&kgfx_pendings, pd, entry);
+		kgfx_add_chunk(pd, cmd->payload);
 		return;
 	}
 
