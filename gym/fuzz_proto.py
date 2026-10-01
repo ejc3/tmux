@@ -35,6 +35,7 @@ import random
 import re
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -716,7 +717,7 @@ class Harness:
         # A fixed place, so a saved step names the same files again.
         self.files = Files("/tmp/gymfz-%d" % seed, str(seed))
         self.files.cleanup()
-        os.makedirs(self.files.dir)
+        os.makedirs(self.files.dir, exist_ok=True)
         self.reader = os.path.join(workdir, "reader.py")
         with open(self.reader, "w") as f:
             f.write(READER)
@@ -756,6 +757,9 @@ class Harness:
         if os.environ.get("FUZZ_VERBOSE"):
             # Logs (tmux-server-PID.log) in the current directory.
             self.base.insert(1, "-vv")
+        # The server's log (-v, in the work directory), for a server that
+        # ends with fatal(), which says why only there.
+        self.log = bool(os.environ.get("FUZZ_LOG"))
         self.answer = answer
         self.slow = slow
         self.terms = []
@@ -791,19 +795,27 @@ class Harness:
         # writes when built with ASan too) and exit status are ours.
         self.errfile = os.path.join(self.sandir, "..", "server.stderr")
         self.server = subprocess.Popen(
-            self.base + ["-D"], env=self.env, stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=open(self.errfile, "wb"))
+            self.base + (["-v"] if self.log else []) + ["-D"], env=self.env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=open(self.errfile, "wb"), cwd=self.dir)
         self.pid = self.server.pid
+        # Only once its socket is there: a client before then would start
+        # a second server.
+        sock = os.path.join(self.sockdir, "tmux-%d" % os.getuid(), "fz")
         end = time.time() + 30
         while True:
             try:
-                self.run("new-session", "-d", "-s", "fz", "-x", "80", "-y",
-                         "24", self.reader_cmd(), check=True)
+                with socket.socket(socket.AF_UNIX) as so:
+                    so.connect(sock)
                 break
-            except Failure:
-                if time.time() > end or self.server.poll() is not None:
-                    raise
-                time.sleep(0.02)
+            except OSError:
+                pass
+            if time.time() > end or self.server.poll() is not None:
+                self.check()
+                raise Failure("start", "no server on %s" % sock)
+            time.sleep(0.01)
+        self.run("new-session", "-d", "-s", "fz", "-x", "80", "-y", "24",
+                 self.reader_cmd(), check=True)
         self.pane = self.run("display", "-p", "-t", "fz", "#{pane_id}").strip()
         self.attach()
         self.sync()
@@ -839,6 +851,16 @@ class Harness:
                       "exit status %d" % rc)
         return False
 
+    def log_tail(self):
+        path = os.path.join(self.dir, "tmux-server-%d.log" % self.pid)
+        try:
+            with open(path, errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            return ""
+        fatal = [x for x in lines if "fatal" in x]
+        return "\n" + "".join(fatal + lines[-15:])
+
     def sanitizer(self):
         reports = sorted(glob.glob(os.path.join(self.sandir, "*")))
         text = ""
@@ -862,8 +884,8 @@ class Harness:
         if san:
             raise Failure("sanitizer", san)
         if not self.server_alive():
-            raise Failure("crash", "server %d exited (%s)" %
-                          (self.pid, self.ended))
+            raise Failure("crash", "server %d exited (%s)%s" %
+                          (self.pid, self.ended, self.log_tail()))
 
     def pane_write(self, data):
         try:
@@ -1109,7 +1131,8 @@ def options_for(seed):
 
 def execute(tmux, seed, steps, opts, keep=None, quiet=True):
     """Run steps in a fresh server. Returns (failure or None, steps run)."""
-    workdir = tempfile.mkdtemp(prefix="fz%d-" % seed)
+    workdir = tempfile.mkdtemp(prefix="fz%d-" % seed,
+                               dir=os.environ.get("FUZZ_TMP"))
     h = Harness(tmux, seed, workdir, opts["preconfigure"], opts["answer"],
                 opts["slow"], opts.get("clear_on_attach", False))
     done = []
@@ -1135,7 +1158,10 @@ def execute(tmux, seed, steps, opts, keep=None, quiet=True):
         if keep and failure:
             for p in glob.glob(os.path.join(h.sandir, "*")):
                 shutil.copy(p, keep + "." + os.path.basename(p))
-        shutil.rmtree(workdir, ignore_errors=True)
+        if not (failure and os.environ.get("FUZZ_KEEP")):
+            shutil.rmtree(workdir, ignore_errors=True)
+        elif failure:
+            failure.detail += "\n(kept %s)" % workdir
     return failure, done
 
 
