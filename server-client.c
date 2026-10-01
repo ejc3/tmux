@@ -2729,6 +2729,62 @@ server_client_notify_rewrite(struct window_pane *wp, const char *s)
 }
 
 /*
+ * Undo server_client_notify_rewrite for an identifier the terminal sent back:
+ * the pane it names, and the program's own identifier (NULL for one without).
+ * Returns -1 if it names no pane.
+ */
+static int
+server_client_notify_own(const char *id, size_t len, u_int *pane,
+    const char **own, size_t *ownlen)
+{
+	const char	*end = id + len, *p;
+
+	if (len < 3 || *id != 't')
+		return (-1);
+	*pane = 0;
+	for (p = id + 1; p < end && *p >= '0' && *p <= '9'; p++)
+		*pane = *pane * 10 + (*p - '0');
+	if (p == id + 1 || p == end)
+		return (-1);
+	if (*p == '_') {
+		*own = p + 1;
+		*ownlen = end - *own;
+	} else if (*p == '.') {
+		*own = NULL;
+		*ownlen = 0;
+	} else
+		return (-1);
+	return (0);
+}
+
+/*
+ * The list of notifications still open in an answer to p=alive, for a pane:
+ * its own, with its own identifiers. (Those without one are not listed.)
+ */
+static void
+server_client_notify_alive(struct evbuffer *evb, struct window_pane *wp,
+    const char *list)
+{
+	const char	*own;
+	size_t		 len, ownlen;
+	u_int		 pane;
+	int		 first = 1;
+
+	for (;;) {
+		len = strcspn(list, ",");
+		if (server_client_notify_own(list, len, &pane, &own,
+		    &ownlen) == 0 && pane == wp->id && own != NULL) {
+			evbuffer_add_printf(evb, "%s%.*s", first ? "" : ",",
+			    (int)ownlen, own);
+			first = 0;
+		}
+		if (list[len] == '\0')
+			break;
+		list += len + 1;
+	}
+}
+
+/*
  * A terminal sent an OSC 99 notification message (without ESC ] and the
  * terminator, which is end): if its identifier names a pane, give it to that
  * pane with the program's own identifier (0 for none). Returns 1 if it did.
@@ -2738,37 +2794,49 @@ server_client_notify_reply(struct client *c, const char *s, size_t n,
     const char *end)
 {
 	struct window_pane	*wp;
-	char			*copy, *reply, *rest;
-	const char		*id;
-	size_t			 start, len, idlen;
+	struct evbuffer		*evb;
+	char			*copy, *meta;
+	const char		*own;
+	size_t			 start, len, ownlen, pstart, plen;
 	u_int			 pane;
 
 	copy = xstrndup(s, n);
 	if (server_client_notify_key(copy, 'i', &start, &len) != 0 ||
-	    copy[start] != 't') {
-		free(copy);
-		return (0);
-	}
-	pane = strtoul(copy + start + 1, &rest, 10);
-	if ((*rest != '_' && *rest != '.') ||
+	    server_client_notify_own(copy + start, len, &pane, &own,
+	    &ownlen) != 0 ||
 	    (wp = window_pane_find_by_id(pane)) == NULL || wp->event == NULL) {
 		free(copy);
 		return (0);
 	}
-	if (*rest == '_') {
-		id = rest + 1;
-		idlen = copy + start + len - id;
-	} else {
-		id = "0";
-		idlen = 1;
+	if (own == NULL) {
+		own = "0";
+		ownlen = 1;
 	}
-	xasprintf(&reply, "\033]%.*s%.*s%s%s", (int)start, copy, (int)idlen, id,
-	    copy + start + len, end);
+	meta = copy + 3 + strcspn(copy + 3, ";");
+
+	evb = evbuffer_new();
+	if (evb == NULL)
+		fatalx("out of memory");
+	evbuffer_add_printf(evb, "\033]%.*s%.*s%.*s", (int)start, copy,
+	    (int)ownlen, own, (int)(meta - (copy + start + len)),
+	    copy + start + len);
+	if (*meta == ';') {
+		evbuffer_add(evb, ";", 1);
+		if (server_client_notify_key(copy, 'p', &pstart, &plen) == 0 &&
+		    plen == 5 && strncmp(copy + pstart, "alive", 5) == 0)
+			server_client_notify_alive(evb, wp, meta + 1);
+		else
+			evbuffer_add(evb, meta + 1, strlen(meta + 1));
+	}
+	evbuffer_add(evb, end, strlen(end));
+	evbuffer_add(evb, "", 1);
+
 	if (server_client_notify_is_query(copy))
-		input_request_reply(c, INPUT_REQUEST_NOTIFY, reply);
+		input_request_reply(c, INPUT_REQUEST_NOTIFY, EVBUFFER_DATA(evb));
 	else
-		bufferevent_write(wp->event, reply, strlen(reply));
-	free(reply);
+		bufferevent_write(wp->event, EVBUFFER_DATA(evb),
+		    EVBUFFER_LENGTH(evb) - 1);
+	evbuffer_free(evb);
 	free(copy);
 	return (1);
 }

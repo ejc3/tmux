@@ -1,9 +1,9 @@
 #!/bin/sh
 
 # What a terminal sends back for an OSC 99 notification (an answer to a query
-# for what is supported, an activation report, a close event) reaches the
-# pane that sent it: tmux gives the terminal an identifier naming the pane
-# and gives the pane back its own. An outer tmux stands in for the terminal;
+# for what is supported or for those still open, an activation report, a
+# close event) reaches the pane that sent it: tmux gives the terminal an
+# identifier naming the pane and gives the pane back its own. An outer tmux stands in for the terminal;
 # its answers are written into it as the terminal would send them.
 
 PATH=/bin:/usr/bin
@@ -101,6 +101,14 @@ terminal_sends "\\033]99;${Q}:p=?;p=title\\033\\\\"
 wait_is "$INNER capturep -p | grep -o '99;i=0:p=?;p=title'" '99;i=0:p=?;p=title'
 terminal_sends "\\033]99;${A};\\007"
 wait_is "$INNER capturep -p | grep -o '99;i=0;^G'" '99;i=0;^G'
+
+# The answer to p=alive (the notifications still open) lists only the
+# pane's own, with its own identifiers; those without one are not listed.
+O=$((PANE + 1))
+terminal_sends "\\033]99;i=t${PANE}_al:p=alive;t${PANE}_n1,t${O}_x,t${PANE}.3,t${PANE}_n2\\033\\\\"
+wait_is "$INNER capturep -p | grep -o '99;i=al:p=alive;[^^]*'" '99;i=al:p=alive;n1,n2'
+terminal_sends "\\033]99;i=t${PANE}_a2:p=alive;t${O}_x\\033\\\\"
+wait_is "$INNER capturep -p | grep -o '99;i=a2:p=alive;[^^]*'" '99;i=a2:p=alive;'
 
 # A notification with p=? in its payload goes to every terminal, as a query
 # would go to one.
