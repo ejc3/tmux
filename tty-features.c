@@ -464,27 +464,31 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_cstyle,
 	&tty_feature_extkeys,
 	&tty_feature_focus,
-	&tty_feature_graphemes,
-	&tty_feature_kittygraphics,
-	&tty_feature_kittykeys,
 	&tty_feature_ignorefkeys,
 	&tty_feature_margins,
 	&tty_feature_mouse,
-	&tty_feature_mousepixels,
-	&tty_feature_notify,
 	&tty_feature_osc7,
 	&tty_feature_overline,
-	&tty_feature_pointer,
 	&tty_feature_progressbar,
 	&tty_feature_rectfill,
 	&tty_feature_rgb,
 	&tty_feature_sixel,
 	&tty_feature_strikethrough,
 	&tty_feature_sync,
-	&tty_feature_textsize,
 	&tty_feature_title,
 	&tty_feature_usstyle,
-	&tty_feature_utf8
+	&tty_feature_utf8,
+	/*
+	 * Added in this fork, after the others: tmux -T sends features as a
+	 * mask of their places here, so the others keep their bits.
+	 */
+	&tty_feature_graphemes,
+	&tty_feature_kittygraphics,
+	&tty_feature_kittykeys,
+	&tty_feature_mousepixels,
+	&tty_feature_notify,
+	&tty_feature_pointer,
+	&tty_feature_textsize
 };
 
 /* Parse features for client. */
