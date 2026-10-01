@@ -51,6 +51,13 @@ $TMUX new -d -x40 -y10 \
 	exit 1
 $TMUX set -g window-size manual || exit 1
 $TMUX set -g mouse on || exit 1
+# Copy mode needs every line the pane prints in its history first.
+_i=0
+until $TMUX capture-pane -p | grep -q 'line 79'; do
+	_i=$((_i + 1))
+	[ $_i -ge 400 ] && fail "the pane did not print its lines"
+	sleep 0.05
+done
 
 $TMUX copy-mode || exit 1
 $TMUX send-keys -X history-top || exit 1
