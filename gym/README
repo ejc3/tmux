@@ -60,6 +60,19 @@ Files
                  mode, in kitty and in tmux in kitty (refs/kitty_keys.py
                  types X key events with xdotool); fails on a difference
                  not in its list of known ones
+  fuzz_proto.py  the protocols the branch adds (kitty keyboard and graphics,
+                 OSC 66, 22, 99, 9, 777, the modes they touch), fuzzed from
+                 the pane and from a fake terminal attached as a client, with
+                 lifecycle commands between; the server must answer, keep the
+                 cursor in the pane and give no sanitizer report. Seeded;
+                 --replay and --shrink a saved failure, --base tells new
+                 failures from old. Build tmux with
+                 -fsanitize=address,undefined (and LIBS=-lresolv) for it.
+  diff_kitty.py  random OSC 66/22 and kitty keyboard streams in kitty and in
+                 tmux in kitty; screenshots and cursors must match
+  coverage.sh, coverage_map.py   a --coverage build run through regress and
+                 fuzz_proto.py; lists the lines a commit range added that
+                 never ran, by file and function
   ghostty/gvt.c, refs/lvt.c, refs/avt/   engine drivers; refs/build.sh builds
                  them (libghostty-vt needs Zig 0.16, libvterm-dev, cargo)
 
