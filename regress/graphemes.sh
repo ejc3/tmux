@@ -82,7 +82,7 @@ start 'set -g status off\nset -s clear-on-attach off\nset -as terminal-features 
 # (Forwarding starts with output after tmux has drawn the pane: the program
 # writes A, waits for it to be drawn, then the rest.)
 $INNER respawn-pane -k \
-    "printf =A=; while [ ! -e $DIR/go2 ]; do sleep 0.05; done; printf '\\033[?2027l\\033[?7l\\033[?7h=B=\\033]7;done\\007'; exec sleep 1000" ||
+    "printf '=A='; while [ ! -e $DIR/go2 ]; do sleep 0.05; done; printf '\\033[?2027l\\033[?7l\\033[?7h=B=\\033]7;done\\007'; exec sleep 1000" ||
     exit 1
 wait_is "grep -acF =A= $DIR/out" 1
 $INNER display -p x >/dev/null

@@ -29,7 +29,7 @@ wait_for() {
 $OUTER new -d -s keep \; set -g default-terminal xterm-256color \; \
     set -g status off \; set -g history-limit 1000 || exit 1
 $INNER new -d -s inner -x 80 -y 24 \
-    "while [ ! -e $DIR/go ]; do sleep 0.05; done; printf =END=; exec sleep 100000" \; \
+    "while [ ! -e $DIR/go ]; do sleep 0.05; done; printf '=END='; exec sleep 100000" \; \
     set -g status off \; set -s clear-on-attach off \; \
     set -gw scroll-replay 100 || exit 1
 $INNER linkw -d -s inner:0 -t inner:5 || exit 1
