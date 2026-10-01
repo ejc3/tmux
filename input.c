@@ -3403,13 +3403,15 @@ input_sized_data(const char *text, u_int w, struct utf8_data *ud)
 
 /*
  * Handle the OSC 22 sequence for the mouse pointer shape, as kitty: =name (or
- * name) sets it, empty resets it, >name pushes and < pops, and ?a,b asks for
- * the shape set (__current__, 0 if none) or whether shapes are known.
+ * name) sets it, empty resets it, >a,b pushes each and < pops, and ?a,b asks
+ * for the shape set (__current__, 0 if none) or whether shapes are known. The
+ * main and alternate screens have a stack each.
  */
 static void
 input_osc_22(struct input_ctx *ictx, const char *p)
 {
 	struct window_pane	*wp = ictx->wp;
+	struct screen		*s = ictx->ctx.s;
 	static const char *const known[] = {
 		"alias", "all-scroll", "cell", "col-resize", "context-menu",
 		"copy", "crosshair", "default", "e-resize", "ew-resize",
@@ -3434,7 +3436,7 @@ input_osc_22(struct input_ctx *ictx, const char *p)
 		copy = next = xstrdup(p + 1);
 		while ((name = strsep(&next, ",")) != NULL) {
 			if (strcmp(name, "__current__") == 0) {
-				answer = window_pane_pointer(wp);
+				answer = screen_pointer(s);
 				if (answer == NULL)
 					answer = "0";
 			} else {
@@ -3453,32 +3455,21 @@ input_osc_22(struct input_ctx *ictx, const char *p)
 		evbuffer_free(reply);
 		return;
 	case '>':
-		if (wp->npointer == WINDOW_PANE_POINTERS) {
-			free(wp->pointer[0]);
-			memmove(wp->pointer, wp->pointer + 1,
-			    (WINDOW_PANE_POINTERS - 1) * sizeof *wp->pointer);
-			wp->npointer--;
-		}
-		wp->pointer[wp->npointer++] = xstrdup(p + 1);
+		screen_pointer_push(s, p + 1);
 		return;
 	case '<':
-		if (wp->npointer != 0)
-			free(wp->pointer[--wp->npointer]);
+		screen_pointer_pop(s);
 		return;
 	case '=':
 		p++;
 		break;
 	}
 	if (*p == '\0') {
-		while (wp->npointer != 0)
-			free(wp->pointer[--wp->npointer]);
+		while (screen_pointer(s) != NULL)
+			screen_pointer_pop(s);
 		return;
 	}
-	if (wp->npointer == 0)
-		wp->npointer = 1;
-	else
-		free(wp->pointer[wp->npointer - 1]);
-	wp->pointer[wp->npointer - 1] = xstrdup(p);
+	screen_pointer_set(s, p);
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */

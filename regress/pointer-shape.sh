@@ -1,7 +1,9 @@
 #!/bin/sh
 
-# The mouse pointer shape (OSC 22), as kitty: a pane sets, pushes, pops and
-# resets its shape and asks for it; the terminal (with the pointer feature)
+# The mouse pointer shape (OSC 22), as kitty: a pane sets, pushes (a list),
+# pops and resets its shape and asks for it, with a stack of at least 16 for
+# each of the main and alternate screens, emptied by RIS; the terminal (with
+# the pointer feature)
 # is given the active pane's shape, once, forwarding or not.
 
 PATH=/bin:/usr/bin
@@ -49,6 +51,16 @@ answer '\033]22;wait\033\\\\\033]22;\033\\\\' __current__ 0
 answer '\033]22;>text\033\\\\' __current__ text
 answer '\033]22;=wait\033\\\\\033]22;>text\033\\\\\033]22;<\033\\\\' __current__ wait
 answer '' pointer,nonsense,left_ptr 1,0,0
+answer '\033]22;>crosshair,wait\033\\\\\033]22;<\033\\\\' __current__ crosshair
+# Pushing 15 onto one leaves 16, all kept.
+PUSH='\033]22;>text\033\\\\'
+POP='\033]22;<\033\\\\'
+PUSH5=$PUSH$PUSH$PUSH$PUSH$PUSH
+POP5=$POP$POP$POP$POP$POP
+answer "\\033]22;=wait\\033\\\\\\\\$PUSH5$PUSH5$PUSH5$POP5$POP5$POP5" __current__ wait
+answer '\033]22;crosshair\033\\\\\033[?1049h' __current__ 0
+answer '\033]22;crosshair\033\\\\\033[?1049h\033]22;wait\033\\\\\033[?1049l' __current__ crosshair
+answer '\033]22;crosshair\033\\\\\033c' __current__ 0
 
 # How many OSC 22 the terminal has been given.
 shapes() {

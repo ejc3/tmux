@@ -628,9 +628,9 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 const char *
 window_pane_pointer(struct window_pane *wp)
 {
-	if (wp == NULL || wp->npointer == 0)
+	if (wp == NULL)
 		return (NULL);
-	return (wp->pointer[wp->npointer - 1]);
+	return (screen_pointer(&wp->base));
 }
 
 /*
@@ -1643,8 +1643,6 @@ window_pane_free(struct window_pane *wp)
 	log_debug("pane %%%u freed (%d references)", wp->id, wp->references);
 
 	free(wp->searchstr);
-	while (wp->npointer != 0)
-		free(wp->pointer[--wp->npointer]);
 	screen_free(&wp->status_screen);
 	screen_free(&wp->base);
 	free(wp->r.ranges);

@@ -1132,6 +1132,13 @@ struct screen_kkeys {
 	u_int				 n;
 };
 
+/* A stack of mouse pointer shapes (OSC 22). */
+#define SCREEN_POINTERS 16
+struct screen_pointers {
+	char				*shape[SCREEN_POINTERS];
+	u_int				 n;
+};
+
 struct screen {
 	char				*title;
 	char				*path;
@@ -1176,6 +1183,7 @@ struct screen {
 	struct progress_bar		 progress_bar;
 
 	struct screen_kkeys		 kkeys[2]; /* main, alternate screen */
+	struct screen_pointers		 pointers[2]; /* main, alternate */
 };
 
 /* Screen write context. */
@@ -1376,10 +1384,6 @@ struct window_pane {
 	u_int		 id;
 	int		 references;
 	u_int		 active_point;
-
-#define WINDOW_PANE_POINTERS 8
-	char		*pointer[WINDOW_PANE_POINTERS]; /* OSC 22 shapes */
-	u_int		 npointer;
 
 	struct window	*window;
 	struct options	*options;
@@ -3824,6 +3828,11 @@ u_int	 screen_kkeys_flags(struct screen *);
 void	 screen_kkeys_push(struct screen *, u_int);
 void	 screen_kkeys_pop(struct screen *, u_int);
 void	 screen_kkeys_set(struct screen *, u_int, u_int);
+const char *screen_pointer(struct screen *);
+void	 screen_pointer_set(struct screen *, const char *);
+void	 screen_pointer_push(struct screen *, const char *);
+void	 screen_pointer_pop(struct screen *);
+void	 screen_pointer_reset(struct screen *);
 void	 screen_kkeys_reset(struct screen *);
 void	 screen_resize(struct screen *, u_int, u_int, int);
 void	 screen_resize_cursor(struct screen *, u_int, u_int, int, int, int);
