@@ -96,6 +96,24 @@ wait_is "$INNER capturep -pt0 | head -1 | sed 's/ *\$//'" 12345678xy
 [ "$(row)" = '12345678^[]66;w=3;xy^[\' ] || fail "after reflow the row is $(row)"
 $INNER resize-window -x 30 || exit 1
 
+# Characters after it are written as usual, not given its width.
+run "\\033]66;w=1;b${S}cd"
+[ "$(row)" = '^[]66;w=1;b^[\cd' ] || fail "after w=1 the row is $(row)"
+
+# Only whole, valid characters are kept: an incomplete one at the end (after
+# a longer sequence left other bytes behind it) or a lead byte without its
+# continuation bytes is dropped.
+run "\\033]7;QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ${S}\\033]66;w=2;a\\360${S}"
+[ "$(row)" = '^[]66;w=2;a^[\' ] || fail "with a cut character the row is $(row)"
+run "\\033]66;w=2;\\303Ab${S}"
+[ "$(row)" = '^[]66;w=2;Ab^[\' ] || fail "with a bad character the row is $(row)"
+
+# capture-pane -C writes it with its escapes as text.
+run "a\\033]66;w=2;\\\\${S}c"
+[ "$($INNER capturep -epCt0 | head -1 | sed 's/ *$//')" = \
+    'a\033]66;w=2;\\\033\\c' ] ||
+    fail "with -C the row is $($INNER capturep -epCt0 | head -1)"
+
 # A terminal without the protocol gets the text in its cells, padded.
 run "a\\033]66;w=2;b${S}c\\033]66;w=3;xy${S}d"
 wait_is "$OUTER capturep -pt0 | head -1 | sed 's/ *\$//'" 'ab cxy d'

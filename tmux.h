@@ -3583,6 +3583,8 @@ void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
 void	 input_kgfx_request(struct input_ctx *, struct client *, const char *);
 void	 input_cancel_requests(struct client *);
+const char *input_sized_parse(const char *, u_int *);
+int	 input_sized_data(const char *, u_int, struct utf8_data *);
 
 /* input-key.c */
 void	 input_key_build(void);
@@ -4272,6 +4274,7 @@ void		 utf8_set(struct utf8_data *, u_char);
 void		 utf8_copy(struct utf8_data *, const struct utf8_data *);
 enum utf8_state	 utf8_open(struct utf8_data *, u_char);
 enum utf8_state	 utf8_append(struct utf8_data *, u_char);
+int		 utf8_next(const char **, struct utf8_data *);
 int		 utf8_isvalid(const char *);
 size_t		 utf8_strvis(char *, const char *, size_t, int);
 size_t		 utf8_stravis(char **, const char *, int);

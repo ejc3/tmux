@@ -2990,7 +2990,7 @@ screen_write_collect_add(struct screen_write_ctx *ctx,
 		collect = 0;
 	else if (gc->flags & GRID_FLAG_TAB)
 		collect = 0;
-	else if (gc->attr & GRID_ATTR_CHARSET)
+	else if (gc->attr & GRID_ATTR_CONTENT)	/* charset, OSC 66 width */
 		collect = 0;
 	else if (~s->mode & MODE_WRAP)
 		collect = 0;

@@ -1251,6 +1251,30 @@ grid_string_cells_code(const struct grid_cell *lastgc,
 	}
 }
 
+/* A character given a width (OSC 66) as the sequence the program wrote. */
+static void
+grid_string_cells_sized(const struct grid_cell *gc, char *buf, size_t len,
+    int flags)
+{
+	const struct utf8_data	*ud = &gc->data;
+	size_t			 off;
+	u_int			 i;
+
+	if (~flags & GRID_STRING_ESCAPE_SEQUENCES) {
+		xsnprintf(buf, len, "\033]66;w=%u;%.*s\033\\", ud->width,
+		    (int)ud->size, ud->data);
+		return;
+	}
+	off = xsnprintf(buf, len, "\\033]66;w=%u;", ud->width);
+	for (i = 0; i < ud->size && off + 2 < len; i++) {
+		if (ud->data[i] == '\\')
+			buf[off++] = '\\';
+		buf[off++] = ud->data[i];
+	}
+	buf[off] = '\0';
+	strlcat(buf, "\\033\\\\", len);
+}
+
 /* Convert cells into a string. */
 char *
 grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
@@ -1259,7 +1283,7 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 	struct grid_cell	 gc;
 	static struct grid_cell	 lastgc1;
 	const char		*data;
-	char			*buf, code[8192], sized[UTF8_SIZE + 32];
+	char			*buf, code[8192], sized[2 * UTF8_SIZE + 32];
 	size_t			 len, off, size, codelen;
 	u_int			 xx, end;
 	int			 has_link = 0;
@@ -1304,8 +1328,8 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 		} else if ((gc.attr & GRID_ATTR_SIZED) &&
 		    (flags & GRID_STRING_WITH_SEQUENCES)) {
 			/* A character given a width: as the program wrote it. */
-			xsnprintf(sized, sizeof sized, "\033]66;w=%u;%.*s\033\\",
-			    gc.data.width, (int)gc.data.size, gc.data.data);
+			grid_string_cells_sized(&gc, sized, sizeof sized,
+			    flags);
 			data = sized;
 			size = strlen(sized);
 		} else {
