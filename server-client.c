@@ -2705,10 +2705,26 @@ server_client_notify(struct window_pane *wp, const char *s)
 }
 
 /*
+ * A random part for the identifiers given to notifications without one, so
+ * this server does not reuse one given by another tmux (or by this one before
+ * a restart) that the terminal may still show: it would update that one.
+ */
+static const char *
+server_client_notify_nonce(void)
+{
+	static char	nonce[9];
+
+	if (*nonce == '\0')
+		xsnprintf(nonce, sizeof nonce, "%08x", arc4random());
+	return (nonce);
+}
+
+/*
  * A notification with its OSC 99 identifier made one naming the pane: t, the
  * pane, _ and the program's identifier. One without an identifier is given
- * t, the pane, . and a number, the same for each of its chunks (until d=0
- * is not given), and the terminal's i=0 goes back for it.
+ * t, the pane, ., this server's random part, . and a number, the same for
+ * each of its chunks (until d=0 is not given), and the terminal's i=0 goes
+ * back for it.
  */
 char *
 server_client_notify_rewrite(struct window_pane *wp, const char *s)
@@ -2726,7 +2742,8 @@ server_client_notify_rewrite(struct window_pane *wp, const char *s)
 	}
 	done = (server_client_notify_key(s, 'd', &start, &len) != 0 ||
 	    len != 1 || s[start] != '0');
-	xasprintf(&copy, "99;i=t%u.%u%s%s", wp->id, wp->notify_anon,
+	xasprintf(&copy, "99;i=t%u.%s.%u%s%s", wp->id,
+	    server_client_notify_nonce(), wp->notify_anon,
 	    s[3] == ';' ? "" : ":", s + 3);
 	if (done)
 		wp->notify_anon++;
@@ -2735,14 +2752,15 @@ server_client_notify_rewrite(struct window_pane *wp, const char *s)
 
 /*
  * Undo server_client_notify_rewrite for an identifier the terminal sent back:
- * the pane it names, and the program's own identifier (NULL for one without).
- * Returns -1 if it names no pane.
+ * the pane it names, and the program's own identifier (NULL for one without,
+ * given by this server). Returns -1 if it names no pane.
  */
 static int
 server_client_notify_own(const char *id, size_t len, u_int *pane,
     const char **own, size_t *ownlen)
 {
-	const char	*end = id + len, *p;
+	const char	*end = id + len, *p, *nonce;
+	size_t		 n;
 
 	if (len < 3 || *id != 't')
 		return (-1);
@@ -2755,6 +2773,11 @@ server_client_notify_own(const char *id, size_t len, u_int *pane,
 		*own = p + 1;
 		*ownlen = end - *own;
 	} else if (*p == '.') {
+		nonce = server_client_notify_nonce();
+		n = strlen(nonce);
+		if ((size_t)(end - p) < n + 2 || strncmp(p + 1, nonce, n) != 0 ||
+		    p[1 + n] != '.')
+			return (-1);
 		*own = NULL;
 		*ownlen = 0;
 	} else
