@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run tmux under valgrind memcheck: TEST_TMUX=gym/valgrind/vg-tmux.
+#
+#   VG_TMUX   the tmux binary (an -O0 -g build gives the best stacks)
+#   VG_LOGS   directory for one log a process (vg.<pid>)
+#
+# The client forks the server (no exec), so the server runs under valgrind
+# too; panes exec their programs, which run natively. Leaks are checked in
+# every process; only the server's matter (clients exit at once).
+here=$(dirname "$(readlink -f "$0")")
+: "${VG_TMUX:?set VG_TMUX to the tmux binary}"
+: "${VG_LOGS:?set VG_LOGS to a log directory}"
+exec /usr/bin/valgrind --quiet --tool=memcheck --track-origins=yes \
+    --error-exitcode=99 --leak-check=full --show-leak-kinds=definite,indirect \
+    --errors-for-leak-kinds=definite,indirect \
+    --suppressions="$here/tmux.supp" \
+    --log-file="$VG_LOGS/vg.%p" "$VG_TMUX" "$@"

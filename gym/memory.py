@@ -64,8 +64,17 @@ class Fail(Exception):
     pass
 
 
+# The tmux attached clients run, if not the server's (--valgrind: a client
+# under valgrind does not stop on SIGTSTP, so suspend runs a native client).
+ATTACH_TMUX = None
+
+# Waits are this many times longer (--wait-scale, for slow tmux builds such
+# as one run under valgrind).
+WAIT_SCALE = 1
+
+
 def wait(cond, what, timeout=20):
-    end = time.time() + timeout
+    end = time.time() + timeout * WAIT_SCALE
     while time.time() < end:
         if cond():
             return
@@ -118,7 +127,8 @@ class Server:
 
     def cmd(self, *args, check=True, timeout=20):
         p = subprocess.run([self.tmux, '-L' + self.label, '-f' + self.conf]
-                           + list(args), env=self.env, timeout=timeout,
+                           + list(args), env=self.env,
+                           timeout=timeout * WAIT_SCALE,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if check and p.returncode != 0:
             raise Fail('tmux %s: %s' % (' '.join(args),
@@ -238,7 +248,7 @@ class Terminal:
         self.pid = None
         self.size(rows, cols, xpixel, ypixel)
         self.proc = subprocess.Popen(
-            [sys.executable, '-c', JOBCONTROL, server.tmux,
+            [sys.executable, '-c', JOBCONTROL, ATTACH_TMUX or server.tmux,
              '-L' + server.label, '-f' + server.conf, 'attach'],
             stdin=slave, stdout=slave, stderr=slave, env=server.env,
             start_new_session=True, preexec_fn=lambda: fcntl.ioctl(
@@ -983,7 +993,47 @@ def run_asan(args, name, setup, step, mode):
     return 'clean', []
 
 
+# --- valgrind (gym/valgrind/vg-tmux as --valgrind) -------------------------
+#
+# Every scenario a few rounds with every tmux process under valgrind
+# memcheck; the server is then killed and its log (and the clients') must
+# be empty: no invalid reads or writes, no use of uninitialised values, no
+# memory definitely or indirectly lost.
+
+def run_valgrind(args, name, setup, step, mode):
+    global ATTACH_TMUX
+    ATTACH_TMUX = args.tmux if name == 'lifecycle-suspend' else None
+    vgdir = tempfile.mkdtemp(prefix='vg-', dir=args.keep)
+    os.environ['VG_LOGS'] = vgdir
+    os.environ.setdefault('VG_TMUX', args.tmux)
+    err = None
+    try:
+        g = Gym(args.valgrind, mode, None, False, args.keep)
+    except Fail as e:
+        return 'ERROR %s' % e
+    try:
+        if setup:
+            setup(g)
+        for i in range(args.asan_iterations):
+            step(g, i)
+    except Fail as e:
+        err = str(e)
+    finally:
+        g.close()
+    logs = [f for f in sorted(os.listdir(vgdir))
+            if os.path.getsize(os.path.join(vgdir, f)) > 0]
+    if logs:
+        text = open(os.path.join(vgdir, logs[0]), errors='replace').read()
+        kind = re.search(r'==\d+== (\S[^\n]*)', text)
+        return 'REPORT %s (%s)' % (kind.group(1) if kind else 'see log',
+                                   os.path.join(vgdir, logs[0]))
+    if err:
+        return 'ERROR %s' % err
+    return 'clean'
+
+
 def main():
+    global WAIT_SCALE
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--tmux', required=True)
     ap.add_argument('--asan-tmux')
@@ -998,7 +1048,12 @@ def main():
                     help='growth allowed over the iterations, in bytes')
     ap.add_argument('--no-bounds', action='store_true')
     ap.add_argument('--keep', help='directory for logs (kept)')
+    ap.add_argument('--valgrind', help='gym/valgrind/vg-tmux: run every '
+                    'scenario under valgrind (VG_TMUX defaults to --tmux)')
+    ap.add_argument('--no-growth', action='store_true')
+    ap.add_argument('--wait-scale', type=float, default=1)
     args = ap.parse_args()
+    WAIT_SCALE = args.wait_scale
     args.tmux = os.path.abspath(args.tmux)
     if args.asan_tmux:
         args.asan_tmux = os.path.abspath(args.asan_tmux)
@@ -1014,7 +1069,7 @@ def main():
     print('| check | scenario | mode | result |')
     print('|---|---|---|---|')
     for name, setup, step in SCENARIOS:
-        if not wanted(name):
+        if not wanted(name) or args.no_growth:
             continue
         for mode in modes:
             verdict, _ = run_growth(args, heapcount, name, setup, step, mode)
@@ -1037,6 +1092,15 @@ def main():
             for mode in modes:
                 verdict, _ = run_asan(args, name, setup, step, mode)
                 print('| asan | %s | %s | %s |' % (name, mode, verdict),
+                      flush=True)
+                failed |= verdict != 'clean'
+    if args.valgrind:
+        for name, setup, step in SCENARIOS:
+            if not wanted(name):
+                continue
+            for mode in modes:
+                verdict = run_valgrind(args, name, setup, step, mode)
+                print('| valgrind | %s | %s | %s |' % (name, mode, verdict),
                       flush=True)
                 failed |= verdict != 'clean'
     shutil.rmtree(work, ignore_errors=True)
