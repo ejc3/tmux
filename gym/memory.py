@@ -812,6 +812,100 @@ def lifecycle_truncate(g, i):
         th.join()
 
 
+# --- Upstream leaks ---------------------------------------------------------
+#
+# Leaks in tmux's own code (not the fork's protocols) found by valgrind
+# (gym/valgrind): each round triggers one, so the heap grows a block or more a
+# round without the fix.
+
+def leak_term_remove_setup(g):
+    # A string capability removed with @ was not freed on attach.
+    g.server.cmd('set', '-as', 'terminal-overrides', ',*:setrgbf@')
+
+
+def leak_term_remove(g, i):
+    t = Terminal(g.server, rows=20, cols=60)
+    g.terms.append(t)
+    g.settle()
+    g.terms.remove(t)
+    t.close()
+    wait(lambda: len(g.server.cmd('list-clients').splitlines()) == 1,
+         'second client to go')
+
+
+def leak_run_wait_killed(g, i):
+    # A client killed while run -d waited was never freed: its queue was
+    # not run again when the job finished.
+    flag = os.path.join(g.tmp, 'ran%d' % i)
+    p = subprocess.Popen(
+        [g.server.tmux, '-L' + g.server.label, '-f' + g.server.conf,
+         'wait-for', '-S', 'gymq%d' % i, ';', 'run', '-d', '0.05',
+         'echo $$ >%s.tmp; mv %s.tmp %s' % (flag, flag, flag)],
+        env=g.server.env, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    g.server.cmd('wait-for', 'gymq%d' % i)
+    p.kill()
+    p.wait()
+    wait(lambda: os.path.exists(flag), 'delayed run %d' % i)
+    pid = int(open(flag).read())
+
+    def gone():
+        try:
+            os.kill(pid, 0)
+            return False
+        except ProcessLookupError:
+            return True
+    wait(gone, 'delayed run %d to exit' % i)
+    os.unlink(flag)
+
+
+def leak_hook_setup(g):
+    g.server.cmd('set-hook', '-g', '@gym-hook', 'set -g @gym_hook 1')
+
+
+def leak_hook(g, i):
+    # A user hook's parsed command list was never freed.
+    g.server.cmd('set-hook', '-E', '@gym-hook')
+
+
+def leak_empty_pane(g, i):
+    # An empty pane (-E) has an event but no fd; it was not freed.
+    g.server.cmd('new-window', '-d', '-E', '-t', ':9')
+    g.server.cmd('kill-window', '-t', ':9')
+
+
+def leak_customize_setup(g):
+    # A pane option over a window option over the global one: drawing the
+    # pane's shows the window's and the global value too.
+    g.server.cmd('set', '-g', 'window-style', 'fg=red')
+    g.server.cmd('setw', 'window-style', 'fg=green')
+    g.server.cmd('set', '-p', 'window-style', 'fg=blue')
+    g.server.cmd('customize-mode', '-f', '#{==:#{option_name},window-style}')
+    for key in ('j', 'j', 'Right', 'j'):
+        g.server.cmd('send-keys', key)
+
+
+def leak_customize(g, i):
+    # Each value drawn over the last was not freed.
+    g.server.cmd('send-keys', 'k')
+    g.server.cmd('send-keys', 'j')
+
+
+def leak_parse_error(g, i):
+    # A syntax error left what the parser had built: what was on the stack,
+    # an %if still open, and the commands of a file complete before a stray
+    # brace.
+    g.server.cmd('set', '-g', 'alert-bell[0]', 'if -x { foo "bar',
+                 check=False)
+    g.server.cmd('set', '-g', 'default-client-command', 'a { b ; c',
+                 check=False)
+    for n, text in enumerate(('%if 1\ndisplay x\n', '""\n{')):
+        path = os.path.join(g.tmp, 'bad%d.conf' % n)
+        with open(path, 'w') as f:
+            f.write(text)
+        g.server.cmd('source-file', '-q', path, check=False)
+
+
 SCENARIOS = [
     ('keys-legacy', keys_setup, keys_legacy),
     ('keys-kitty', keys_setup, keys_kitty),
@@ -836,6 +930,13 @@ SCENARIOS = [
     ('lifecycle-panes', None, lifecycle_panes),
     ('lifecycle-respawn', None, lifecycle_respawn),
     ('lifecycle-truncate', None, lifecycle_truncate),
+    # Upstream leaks.
+    ('leak-term-remove', leak_term_remove_setup, leak_term_remove),
+    ('leak-run-wait-killed', None, leak_run_wait_killed),
+    ('leak-hook', leak_hook_setup, leak_hook),
+    ('leak-empty-pane', None, leak_empty_pane),
+    ('leak-customize', leak_customize_setup, leak_customize),
+    ('leak-parse-error', None, leak_parse_error),
 ]
 
 
