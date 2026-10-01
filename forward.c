@@ -207,6 +207,47 @@ forward_sgr(struct tty *tty, const u_char *s, size_t n, struct evbuffer *out)
 	evbuffer_add(out, "m", 1);
 }
 
+/*
+ * OSC 66 for a terminal without it: the text, or for a width the text in
+ * that many cells, as tmux draws it.
+ */
+static void
+forward_sized(struct tty *tty, const u_char *s, size_t n, struct evbuffer *out)
+{
+	struct grid_cell	 gc;
+	struct utf8_data	 ud;
+	char			*copy, buf[TTY_SIZED_SIZE];
+	const char		*text;
+	u_int			 w;
+
+	if (n != 0 && s[n - 1] == '\007')
+		n--;
+	else if (n >= 2 && s[n - 2] == '\033' && s[n - 1] == '\\')
+		n -= 2;
+	if (n < 5 || s[4] != ';')
+		return;
+	copy = xstrndup((const char *)s + 5, n - 5);
+	if ((text = input_sized_parse(copy, &w)) == NULL || w > tty->sx)
+		goto out;
+	if (w == 0) {
+		while (*text != '\0') {
+			if (utf8_next(&text, &ud))
+				evbuffer_add(out, ud.data, ud.size);
+		}
+		goto out;
+	}
+	memcpy(&gc, &grid_default_cell, sizeof gc);
+	if (input_sized_data(text, w, &gc.data)) {
+		gc.attr |= GRID_ATTR_SIZED;
+		evbuffer_add(out, buf, tty_sized_cell(tty, &gc, buf,
+		    sizeof buf));
+		if (w > UTF8_MAXWIDTH)
+			evbuffer_add(out, " ", 1);
+	}
+out:
+	free(copy);
+}
+
 static void
 forward_sequence(struct tty *tty, const u_char *s, size_t n,
     struct evbuffer *out)
@@ -253,6 +294,12 @@ forward_sequence(struct tty *tty, const u_char *s, size_t n,
 		case 99:
 		case 777:
 			return;			/* tmux passes them on */
+		case 66:				/* text sizing */
+			if (~tty->term->flags & TERM_TEXTSIZE) {
+				forward_sized(tty, s, n, out);
+				return;
+			}
+			break;
 		}
 		goto write;
 	case '_':					/* APC */
