@@ -252,10 +252,9 @@ static void
 forward_sequence(struct tty *tty, const u_char *s, size_t n,
     struct evbuffer *out)
 {
-	const u_char	*p;
+	const u_char	*p, *start = NULL;
 	u_char		 final, lead;
-	char		 keep[512];
-	size_t		 kept;
+	struct evbuffer	*keep;
 	int		 v, have, all = 1;
 
 	if (n < 2 || s[0] != '\033')
@@ -355,31 +354,47 @@ forward_sequence(struct tty *tty, const u_char *s, size_t n,
 		goto write;
 	}
 
-	/* DECSET or DECRST: keep the modes tmux does not set itself. */
-	kept = 0;
+	/*
+	 * DECSET or DECRST: keep the modes tmux does not set itself, each as
+	 * the program wrote it. The number is only compared, so it stops
+	 * growing past any mode there is.
+	 */
+	keep = evbuffer_new();
+	if (keep == NULL)
+		fatalx("out of memory");
 	v = 0;
 	have = 0;
 	for (p = s + 3; p < s + n; p++) {
 		if (*p >= '0' && *p <= '9') {
-			v = v * 10 + (*p - '0');
+			if (!have)
+				start = p;
+			if (v < 100000)
+				v = v * 10 + (*p - '0');
 			have = 1;
 			continue;
 		}
-		if (*p != ';' && p != s + n - 1)
+		if (*p != ';' && p != s + n - 1) {
+			evbuffer_free(keep);
 			goto write;			/* not understood */
+		}
 		if (have && !forward_managed_mode(v) &&
 		    (v != 2026 || tty_term_has(tty->term, TTYC_SYNC))) {
-			kept += xsnprintf(keep + kept, sizeof keep - kept,
-			    "%s%d", kept == 0 ? "" : ";", v);
+			if (EVBUFFER_LENGTH(keep) != 0)
+				evbuffer_add(keep, ";", 1);
+			evbuffer_add(keep, start, p - start);
 		} else if (have)
 			all = 0;
 		v = 0;
 		have = 0;
 	}
+	if (!all && EVBUFFER_LENGTH(keep) != 0) {
+		evbuffer_add(out, "\033[?", 3);
+		evbuffer_add_buffer(out, keep);
+		evbuffer_add(out, &final, 1);
+	}
+	evbuffer_free(keep);
 	if (all)
 		goto write;
-	if (kept != 0)
-		evbuffer_add_printf(out, "\033[?%s%c", keep, final);
 	return;
 
 write:
