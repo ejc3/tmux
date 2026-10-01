@@ -2664,7 +2664,10 @@ server_client_notify_key(const char *s, char key, size_t *start, size_t *len)
 	return (-1);
 }
 
-/* Whether an OSC 99 notification is a query for what is supported (p=?). */
+/*
+ * Whether an OSC 99 notification is a query, which one terminal answers: for
+ * what is supported (p=?) or for the notifications still open (p=alive).
+ */
 int
 server_client_notify_is_query(const char *s)
 {
@@ -2672,7 +2675,9 @@ server_client_notify_is_query(const char *s)
 
 	if (server_client_notify_key(s, 'p', &start, &len) != 0)
 		return (0);
-	return (len == 1 && s[start] == '?');
+	if (len == 1 && s[start] == '?')
+		return (1);
+	return (len == 5 && strncmp(s + start, "alive", 5) == 0);
 }
 
 /*

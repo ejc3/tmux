@@ -105,6 +105,10 @@ wait_is "$INNER capturep -p | grep -o '99;i=0;^G'" '99;i=0;^G'
 # The answer to p=alive (the notifications still open) lists only the
 # pane's own, with its own identifiers; those without one are not listed.
 O=$((PANE + 1))
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=al:p=alive;\\033\\\\\\033]99;i=a2:p=alive;\\033\\\\'; \
+    exec cat -v" || exit 1
+wait_is "grep -ac 't${PANE}_a2:p=alive' $DIR/out" 1
 terminal_sends "\\033]99;i=t${PANE}_al:p=alive;t${PANE}_n1,t${O}_x,t${PANE}.3,t${PANE}_n2\\033\\\\"
 wait_is "$INNER capturep -p | grep -o '99;i=al:p=alive;[^^]*'" '99;i=al:p=alive;n1,n2'
 terminal_sends "\\033]99;i=t${PANE}_a2:p=alive;t${O}_x\\033\\\\"
@@ -122,5 +126,16 @@ $INNER respawn-pane -k \
     "printf '\\033]99;i=n;ask p=? here\\033\\\\'; exec sleep 1000" || exit 1
 wait_is "grep -ac 'ask p=? here' $DIR/out" 1
 wait_is "grep -ac 'ask p=? here' $DIR/out2" 1
+
+# A query for the notifications still open goes to one terminal, so the pane
+# gets one answer.
+$INNER respawn-pane -k \
+    "stty raw -echo; printf '\\033]99;i=q3:p=alive;\\033\\\\'; exec cat -v" ||
+    exit 1
+wait_is "cat $DIR/out $DIR/out2 | grep -ac 't${PANE}_q3:p=alive'" 1
+if grep -aq "t${PANE}_q3:p=alive" $DIR/out; then T=:0; else T=:1; fi
+$OUTER send-keys -H -t$T \
+    $(printf "\\033]99;i=t${PANE}_q3:p=alive;\\033\\\\" | od -An -tx1) || exit 1
+wait_is "$INNER capturep -p | grep -c '99;i=q3:p=alive;'" 1
 
 exit $exit_status

@@ -2984,8 +2984,9 @@ input_exit_osc(struct input_ctx *ictx)
 		break;
 	case 99:
 		/*
-		 * A query for what is supported goes to one terminal, and
-		 * answers after it wait for its answer.
+		 * A query (for what is supported, or for the notifications
+		 * still open) goes to one terminal, and answers after it wait
+		 * for its answer.
 		 */
 		if (wp != NULL && server_client_notify_is_query(ictx->input_buf))
 			input_add_request(ictx, INPUT_REQUEST_NOTIFY, 0);
