@@ -83,6 +83,17 @@ jobs:
         run: sh gym2/gym/refs/setup-judges.sh
       - name: build
         run: sh autogen.sh && ./configure --enable-sixel && make -j"$(nproc)"
+      - name: build with sanitizers
+        run: |
+          mkdir ../asan
+          git archive HEAD | tar -x -C ../asan
+          cd ../asan
+          sh autogen.sh
+          # configure finds b64_ntop without -lresolv under these flags.
+          ./configure --enable-sixel LIBS=-lresolv \
+            CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined" \
+            LDFLAGS="-fsanitize=address,undefined"
+          make -j"$(nproc)"
       - name: render-parity
         run: |
           cd regress
@@ -112,6 +123,13 @@ jobs:
         run: |
           cd gym2
           python3 -u gym/refs/kitty_gfx.py --tmux ../tmux | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: memory (leaks, growth, bounds, sanitizers)
+        if: always()
+        run: |
+          cd gym2
+          python3 -u gym/memory.py --tmux ../tmux \
+            --asan-tmux "$GITHUB_WORKSPACE/../asan/tmux" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
       - name: results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
