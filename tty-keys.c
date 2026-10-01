@@ -245,6 +245,7 @@ static const struct tty_default_key_xterm tty_default_xterm_keys[] = {
 	{ "\033O1;_R", KEYC_F3 },
 	{ "\033O_R", KEYC_F3 },
 	{ "\033[1;_S", KEYC_F4 },
+	{ "\033[13;_~", KEYC_F3 },	/* kitty keyboard protocol */
 	{ "\033O1;_S", KEYC_F4 },
 	{ "\033O_S", KEYC_F4 },
 	{ "\033[15;_~", KEYC_F5 },
@@ -1285,8 +1286,15 @@ tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
 	else
 		nkey = number;
 
-	/* Keys from the Private Use Area (kitty keyboard protocol). */
-	if (number >= 57344 && number <= 63743) {
+	/*
+	 * Keys from the Private Use Area (kitty keyboard protocol). F13 to F35
+	 * are as from terminfo: F13 to F24 are S-F1 to S-F12, and F25 on are
+	 * C-F1 on.
+	 */
+	if (number >= 57376 && number <= 57398) {
+		i = number - 57376;
+		nkey = (KEYC_F1 + i % 12)|(i < 12 ? KEYC_SHIFT : KEYC_CTRL);
+	} else if (number >= 57344 && number <= 63743) {
 		for (i = 0; i < nitems(tty_keys_kitty_table); i++) {
 			if (tty_keys_kitty_table[i].number == number)
 				break;

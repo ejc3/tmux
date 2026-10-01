@@ -33,7 +33,8 @@ wait_is() {
 }
 
 # The key $1 pressed in the terminal must reach the inner tmux as $2: a
-# prompt that takes one key prints its name.
+# prompt that takes one key prints its name. With $3, the terminal sends $3
+# (printf format) instead, for keys tmux does not have.
 n=0
 check_key() {
 	n=$((n + 1))
@@ -45,7 +46,22 @@ check_key() {
 		[ $_i -lt 400 ] || { fail "no prompt for $1"; kill $pid; return; }
 		sleep 0.05
 	done
-	$OUTER send-keys "$1" || exit 1
+	if [ -n "$3" ]; then
+		$OUTER send-keys -H $(printf "$3" | od -An -tx1) || exit 1
+	else
+		$OUTER send-keys "$1" || exit 1
+	fi
+	_i=0
+	while kill -0 $pid 2>/dev/null; do
+		_i=$((_i + 1))
+		if [ $_i -ge 400 ]; then
+			fail "$1: no key reached the inner tmux"
+			$OUTER send-keys Escape
+			wait $pid
+			return
+		fi
+		sleep 0.05
+	done
 	wait $pid
 	got=$(cat $TMP)
 	[ "$got" = "$2" ] || fail "$1: inner tmux got '$got', not '$2'"
@@ -83,6 +99,13 @@ check_key BSpace BSpace
 check_key C-BSpace C-BSpace
 check_key F1 F1
 check_key F3 F3
+check_key S-F3 S-F3
+check_key C-F3 C-F3
+check_key F13 S-F1 '\033[57376u'
+check_key F24 S-F12 '\033[57387u'
+check_key F25 C-F1 '\033[57388u'
+check_key C-F35 C-F11 '\033[57398;5u'
+check_key M-F13 M-S-F1 '\033[57376;3u'
 check_key S-F1 S-F1
 check_key Up Up
 check_key C-Up C-Up
