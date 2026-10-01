@@ -502,10 +502,18 @@ tty_stop_tty(struct tty *tty)
 {
 	struct client	*c = tty->client;
 	struct winsize	 ws;
+	int		 forwarding;
 
 	if (!(tty->flags & TTY_STARTED))
 		return;
 	tty->flags &= ~TTY_STARTED;
+
+	/*
+	 * A stopped terminal is not forwarded to: stop now, so nothing writes
+	 * to it (or to its buffer, which tty_close frees) on its behalf.
+	 */
+	forwarding = (c->forward_pane != UINT_MAX);
+	c->forward_pane = UINT_MAX;
 
 	evtimer_del(&tty->start_timer);
 	evtimer_del(&tty->clipboard_timer);
@@ -526,6 +534,8 @@ tty_stop_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tty->tio) == -1)
 		return;
 
+	if (forwarding)
+		tty_raw(tty, FORWARD_RESET);
 	if (tty->flags & TTY_OWESCROLL) {
 		tty->flags &= ~TTY_OWESCROLL;
 		tty_raw(tty, "\r\n");

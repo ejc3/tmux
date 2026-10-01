@@ -648,8 +648,10 @@ forward_stop(struct client *c)
 	log_debug("%s: %s stops forwarding %%%u", __func__, c->name,
 	    c->forward_pane);
 	c->forward_pane = UINT_MAX;
-	/* What the program may have left set on the terminal. */
-	tty_puts(&c->tty, "\033[?7h\033[?6l\033[4l\033(B\017");
+	/* tty_stop_tty stops forwarding first; never write to a stopped tty. */
+	if (~c->tty.flags & TTY_STARTED)
+		return;
+	tty_puts(&c->tty, FORWARD_RESET);
 	tty_invalidate(&c->tty);
 	server_redraw_client(c);
 }

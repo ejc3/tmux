@@ -3136,6 +3136,8 @@ void	tty_cmd_syncstart(struct tty *, const struct tty_ctx *);
 void	tty_default_colours(struct grid_cell *, struct window_pane *, u_int *);
 
 /* forward.c */
+/* What a forwarded program may have left set on the terminal. */
+#define FORWARD_RESET "\033[?7h\033[?6l\033[4l\033(B\017"
 int	 forward_eligible(struct client *, struct window_pane *);
 void	 forward_pane_output(struct window_pane *, const u_char *, size_t);
 void	 forward_pane_parsed(struct window_pane *);
