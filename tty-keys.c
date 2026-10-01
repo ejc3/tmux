@@ -1874,14 +1874,18 @@ tty_keys_kgfx(struct tty *tty, const char *buf, size_t len, size_t *size)
 	log_debug("%s: received kitty graphics %.*s", c->name, (int)*size,
 	    buf);
 
-	if ((~tty->flags & TTY_HAVEKGFX) && *size >= (sizeof query) - 1 &&
-	    memcmp(buf, query, (sizeof query) - 1) == 0) {
+	/* An OK after tmux stopped waiting (after DA1, say) still counts. */
+	if (*size < (sizeof query) - 1 ||
+	    memcmp(buf, query, (sizeof query) - 1) != 0)
+		return (0);
+	if (memcmp(buf + (sizeof query) - 1, "OK", 2) == 0 &&
+	    (~tty->term->flags & TERM_KGFX)) {
+		tty_parse_client_features(c, "kittygraphics", ",");
+		tty_update_features(tty);
+		kgfx_replay(c);
+	}
+	if (~tty->flags & TTY_HAVEKGFX) {
 		tty->flags |= TTY_HAVEKGFX;
-		if (memcmp(buf + (sizeof query) - 1, "OK", 2) == 0) {
-			tty_parse_client_features(c, "kittygraphics", ",");
-			tty_update_features(tty);
-			kgfx_replay(c);
-		}
 		kgfx_known(c);
 	}
 	return (0);

@@ -315,9 +315,7 @@ kgfx_supported(struct window_pane *wp)
 void
 kgfx_known(struct client *c)
 {
-	int	yes = kgfx_client(c);
-
-	input_request_reply(c, INPUT_REQUEST_KGFX, &yes);
+	input_kgfx_known(c, kgfx_client(c));
 }
 
 /* Send a string to one terminal, or every terminal that takes images. */

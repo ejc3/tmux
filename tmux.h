@@ -3595,6 +3595,7 @@ void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
 void	 input_kgfx_request(struct input_ctx *, struct client *, const char *);
+void	 input_kgfx_known(struct client *, int);
 void	 input_cancel_requests(struct client *);
 const char *input_sized_parse(const char *, u_int *);
 int	 input_sized_data(const char *, u_int, struct utf8_data *);

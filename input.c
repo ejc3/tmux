@@ -3984,6 +3984,13 @@ input_request_timer_callback(__unused int fd, __unused short events, void *arg)
 	uint64_t		 t = get_timer();
 
 	TAILQ_FOREACH_SAFE(ir, &ictx->requests, entry, ir1) {
+		/*
+		 * A kitty graphics answer waits until the terminal has said
+		 * whether it has the protocol (at most until the terminal's
+		 * start timer), and answers after it wait behind it.
+		 */
+		if (ir->type == INPUT_REQUEST_KGFX)
+			break;
 		if (ir->t >= t - INPUT_REQUEST_TIMEOUT)
 			continue;
 		if (ir->type == INPUT_REQUEST_QUEUE)
@@ -4112,6 +4119,38 @@ input_kgfx_request(struct input_ctx *ictx, struct client *c,
 	TAILQ_INSERT_TAIL(&c->input_requests, ir, centry);
 }
 
+/*
+ * The client's terminal has said whether it has the kitty graphics protocol
+ * (yes): every answer held for it goes if it has, and answers waiting behind
+ * them go too.
+ */
+void
+input_kgfx_known(struct client *c, int yes)
+{
+	struct input_request	*ir, *ir1, *next;
+	struct input_ctx	*ictx;
+
+	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
+		if (ir->type != INPUT_REQUEST_KGFX)
+			continue;
+		ictx = ir->ictx;
+		if (!yes)
+			input_free_request(ir);
+		else {
+			TAILQ_REMOVE(&c->input_requests, ir, centry);
+			ir->c = NULL;
+			ir->type = INPUT_REQUEST_QUEUE;
+		}
+
+		/* Answers at the front of the pane's queue can go now. */
+		while ((next = TAILQ_FIRST(&ictx->requests)) != NULL &&
+		    next->type == INPUT_REQUEST_QUEUE) {
+			input_send_reply(ictx, next->data);
+			input_free_request(next);
+		}
+	}
+}
+
 /* Handle a palette reply. */
 static void
 input_request_palette_reply(struct input_request *ir, void *data)
@@ -4155,6 +4194,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 	int					 complete = 0;
 
 	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
+		if (ir->type == INPUT_REQUEST_KGFX)
+			continue;
 		if (ir->type != type) {
 			input_free_request(ir);
 			continue;
@@ -4168,7 +4209,6 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 			break;
 		}
 		if (type == INPUT_REQUEST_CLIPBOARD ||
-		    type == INPUT_REQUEST_KGFX ||
 		    type == INPUT_REQUEST_NOTIFY) {
 			found = ir;
 			break;
@@ -4187,9 +4227,6 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 				input_request_palette_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_CLIPBOARD)
 				input_request_clipboard_reply(ir, data);
-			else if (ir->type == INPUT_REQUEST_KGFX &&
-			    *(int *)data)
-				input_send_reply(ir->ictx, ir->data);
 			else if (ir->type == INPUT_REQUEST_NOTIFY)
 				input_send_reply(ir->ictx, data);
 			complete = 1;

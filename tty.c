@@ -314,6 +314,20 @@ tty_open(struct tty *tty, char **cause)
 	return (0);
 }
 
+/*
+ * No more answers to tmux's requests are waited for. Answers to programs held
+ * until the terminal said whether it has kitty graphics go.
+ */
+static void
+tty_all_requests(struct tty *tty)
+{
+	int	kgfx = (tty->flags & TTY_HAVEKGFX);
+
+	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	if (!kgfx)
+		kgfx_known(tty->client);
+}
+
 static void
 tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 {
@@ -324,7 +338,7 @@ tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if ((tty->flags & (TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA)) == 0)
 		tty_update_features(tty);
-	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	tty_all_requests(tty);
 
 	tty->flags &= ~(TTY_WAITBG|TTY_WAITFG);
 }
@@ -449,7 +463,7 @@ tty_send_requests(struct tty *tty)
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
-		tty->flags |= TTY_ALL_REQUEST_FLAGS;
+		tty_all_requests(tty);
 	tty->last_requests = time(NULL);
 }
 
