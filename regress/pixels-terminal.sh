@@ -1,14 +1,15 @@
 #!/bin/sh
 
-# Mouse in pixels (mode 1016) against a terminal tmux can only learn about
-# from its answers and its size. The test is the terminal: it answers tmux's
-# queries as kitty or xterm would, sets the size tmux reads (in cells and
-# pixels) and writes mouse reports.
+# Mouse in pixels (mode 1016) and in-band resize (mode 2048) against a
+# terminal tmux can only learn about from its answers and its size. The test
+# is the terminal: it answers tmux's queries as kitty or xterm would, sets the
+# size tmux reads (in cells and pixels) and writes mouse reports.
 #
 # - kitty and ghostty send pixels from 0, xterm (and foot and WezTerm) from 1:
 #   a pane in tmux gets them from 0 either way, as kitty sends them.
 # - With the cell size unknown, a pane that asked for pixels gets the cell's
 #   top left in the cell size tmux gave it, not the cell number.
+# - A change in pixels alone is a resize: the pane gets its new size.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -129,6 +130,18 @@ term.close()
 # 2,1) is at 2*16,1*32 in tmux's default cell size, which the pane was given.
 term = Terminal(b"XTerm(400)", 0, 0)
 check_mouse(term, b"\033[<0;3;2M", "^[[<0;32;32M", False)
+
+# A change in pixels alone is a resize: with 2048, the pane is told.
+run("respawnp", "-k",
+    "stty raw -echo; printf '\\033[?2048h'; exec cat -v")
+want = "^[[48;10;80;320;1280t"
+if not term.pump(lambda: capture() == want):
+    fail("2048 report is %r, not %r" % (capture(), want))
+set_size(term.fd, 10, 80, 9, 18)
+os.kill(term.pid, signal.SIGWINCH)
+want = "^[[48;10;80;320;1280t^[[48;10;80;180;720t"
+if not term.pump(lambda: capture() == want):
+    fail("after a pixel resize the pane has %r, not %r" % (capture(), want))
 term.close()
 
 run("kill-server")

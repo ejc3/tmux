@@ -572,6 +572,9 @@ window_set_name(struct window *w, const char *new_name, int untrusted)
 void
 window_resize(struct window *w, u_int sx, u_int sy, int xpixel, int ypixel)
 {
+	struct window_pane	*wp;
+	u_int			 oxpixel = w->xpixel, oypixel = w->ypixel;
+
 	if (xpixel == 0)
 		xpixel = DEFAULT_XPIXEL;
 	if (ypixel == 0)
@@ -591,6 +594,17 @@ window_resize(struct window *w, u_int sx, u_int sy, int xpixel, int ypixel)
 	if (ypixel != -1)
 		w->ypixel = ypixel;
 	redraw_invalidate_scene(w);
+
+	/*
+	 * A new cell size is a resize too: tell the panes whose size in cells
+	 * has not changed (the others are told when their resize is done).
+	 */
+	if (w->xpixel != oxpixel || w->ypixel != oypixel) {
+		TAILQ_FOREACH(wp, &w->panes, entry) {
+			if (TAILQ_EMPTY(&wp->resize_queue))
+				window_pane_send_resize(wp, wp->sx, wp->sy);
+		}
+	}
 }
 
 void
