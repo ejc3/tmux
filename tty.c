@@ -518,6 +518,14 @@ tty_stop_tty(struct tty *tty)
 	evtimer_del(&tty->start_timer);
 	evtimer_del(&tty->clipboard_timer);
 
+	/*
+	 * Answers held until the terminal says whether it has kitty graphics
+	 * go now, as far as is known; the question is asked again when the
+	 * terminal starts.
+	 */
+	if (~tty->flags & TTY_HAVEKGFX)
+		kgfx_known(c);
+
 	event_del(&tty->timer);
 	tty->flags &= ~TTY_BLOCK;
 

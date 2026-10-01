@@ -145,6 +145,9 @@ struct input_ctx {
 	int				kgfx_us;
 	u_int				kgfx_high;
 
+	/* Replies go here, not to the pane, if not NULL. */
+	struct evbuffer		       *capture;
+
 	const struct input_state       *state;
 	int				flags;
 #define INPUT_DISCARD 0x1
@@ -1251,6 +1254,10 @@ input_get(struct input_ctx *ictx, u_int validx, int minval, int defval)
 static void
 input_send_reply(struct input_ctx *ictx, const char *reply)
 {
+	if (ictx->capture != NULL) {
+		evbuffer_add(ictx->capture, reply, strlen(reply));
+		return;
+	}
 	if (ictx->event != NULL) {
 		log_debug("%s: %s", __func__, reply);
 		bufferevent_write(ictx->event, reply, strlen(reply));
@@ -4008,33 +4015,42 @@ input_osc_104(struct input_ctx *ictx, const char *p)
 	free(copy);
 }
 
+/* A clipboard reply, or NULL. */
+static char *
+input_clipboard_string(const char *buf, size_t len, const char *end, char clip)
+{
+	char	*out = NULL, *s;
+	int	 outlen = 0;
+
+	if (buf != NULL && len != 0) {
+		if (len >= ((size_t)INT_MAX * 3 / 4) - 1)
+			return (NULL);
+		outlen = 4 * ((len + 2) / 3) + 1;
+		out = xmalloc(outlen);
+		if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
+			free(out);
+			return (NULL);
+		}
+	}
+	if (clip != 0)
+		xasprintf(&s, "\033]52;%c;%s%s", clip, out == NULL ? "" : out, end);
+	else
+		xasprintf(&s, "\033]52;;%s%s", out == NULL ? "" : out, end);
+	free(out);
+	return (s);
+}
+
 /* Send a clipboard reply. */
 void
 input_reply_clipboard(struct bufferevent *bev, const char *buf, size_t len,
     const char *end, char clip)
 {
-	char	*out = NULL;
-	int	 outlen = 0;
+	char	*s;
 
-	if (buf != NULL && len != 0) {
-		if (len >= ((size_t)INT_MAX * 3 / 4) - 1)
-			return;
-		outlen = 4 * ((len + 2) / 3) + 1;
-		out = xmalloc(outlen);
-		if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
-			free(out);
-			return;
-		}
-	}
-
-	bufferevent_write(bev, "\033]52;", 5);
-	if (clip != 0)
-		bufferevent_write(bev, &clip, 1);
-	bufferevent_write(bev, ";", 1);
-	if (outlen != 0)
-		bufferevent_write(bev, out, outlen);
-	bufferevent_write(bev, end, strlen(end));
-	free(out);
+	if ((s = input_clipboard_string(buf, len, end, clip)) == NULL)
+		return;
+	bufferevent_write(bev, s, strlen(s));
+	free(s);
 }
 
 /* Set input buffer size. */
@@ -4235,10 +4251,9 @@ static void
 input_request_clipboard_reply(struct input_request *ir, void *data)
 {
 	struct input_ctx			*ictx = ir->ictx;
-	struct bufferevent			*ev = ictx->event;
 	struct input_request_clipboard_data	*cd = data;
 	int					 state;
-	char					*copy;
+	char					*copy, *s;
 
 	state = options_get_number(global_options, "get-clipboard");
 	if (state == 0 || state == 1)
@@ -4250,9 +4265,31 @@ input_request_clipboard_reply(struct input_request *ir, void *data)
 	}
 
 	if (ir->idx == INPUT_END_BEL)
-		input_reply_clipboard(ev, cd->buf, cd->len, "\007", cd->clip);
+		s = input_clipboard_string(cd->buf, cd->len, "\007", cd->clip);
 	else
-		input_reply_clipboard(ev, cd->buf, cd->len, "\033\\", cd->clip);
+		s = input_clipboard_string(cd->buf, cd->len, "\033\\", cd->clip);
+	if (s != NULL) {
+		input_send_reply(ictx, s);
+		free(s);
+	}
+}
+
+/*
+ * A reply captured while answers wait behind a held one: it waits in the
+ * request's place.
+ */
+static void
+input_queue_capture(struct input_ctx *ictx, struct input_request *before)
+{
+	struct input_request	*ir;
+	size_t			 len = EVBUFFER_LENGTH(ictx->capture);
+
+	if (len == 0)
+		return;
+	ir = input_make_request(ictx, INPUT_REQUEST_QUEUE);
+	ir->data = xstrndup(EVBUFFER_DATA(ictx->capture), len);
+	TAILQ_REMOVE(&ictx->requests, ir, entry);
+	TAILQ_INSERT_BEFORE(before, ir, entry);
 }
 
 /* Handle a reply to a request. */
@@ -4261,7 +4298,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 {
 	struct input_request			*ir, *ir1, *found = NULL;
 	struct input_request_palette_data	*pd = data;
-	int					 complete = 0;
+	struct input_ctx			*ictx;
+	int					 complete = 0, held = 0;
 
 	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
 		if (ir->type == INPUT_REQUEST_KGFX)
@@ -4287,18 +4325,37 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 	if (found == NULL)
 		return;
 
-	TAILQ_FOREACH_SAFE(ir, &found->ictx->requests, entry, ir1) {
+	/*
+	 * Answers go in order: earlier requests not answered are given up, but
+	 * a kitty graphics answer held until the terminal says whether it has
+	 * the protocol is kept, and the answers after it wait behind it.
+	 */
+	ictx = found->ictx;
+	TAILQ_FOREACH_SAFE(ir, &ictx->requests, entry, ir1) {
 		if (complete && ir->type != INPUT_REQUEST_QUEUE)
 			break;
-		if (ir->type == INPUT_REQUEST_QUEUE)
-			input_send_reply(ir->ictx, ir->data);
-		else if (ir == found) {
+		if (ir->type == INPUT_REQUEST_KGFX) {
+			held = 1;
+			continue;
+		}
+		if (ir->type == INPUT_REQUEST_QUEUE) {
+			if (held)
+				continue;
+			input_send_reply(ictx, ir->data);
+		} else if (ir == found) {
+			if (held && (ictx->capture = evbuffer_new()) == NULL)
+				fatalx("out of memory");
 			if (ir->type == INPUT_REQUEST_PALETTE)
 				input_request_palette_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_CLIPBOARD)
 				input_request_clipboard_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_NOTIFY)
-				input_send_reply(ir->ictx, data);
+				input_send_reply(ictx, data);
+			if (held) {
+				input_queue_capture(ictx, ir);
+				evbuffer_free(ictx->capture);
+				ictx->capture = NULL;
+			}
 			complete = 1;
 		}
 		input_free_request(ir);

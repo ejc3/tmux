@@ -2,9 +2,10 @@
 
 # Answers to kitty graphics queries wait until the terminal has said whether
 # it has the protocol: all of them then go (however long it took), answers
-# after them wait behind them, an OK after DA1 still counts and a terminal
-# that answers nothing is given up on when tmux stops waiting for it. A
-# program stands in for the terminal.
+# after them wait behind them (also when a later request is answered first),
+# an OK after DA1 still counts, and a terminal that answers nothing is given
+# up on when tmux stops waiting for it or the client is suspended. A program
+# stands in for the terminal.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -96,6 +97,20 @@ def result(fd, name, i):
     with open(path, "rb") as f:
         return f.read()
 
+# More than a second passes: a pane asks for a colour no one answers, then
+# for DSR, whose answer comes when tmux gives up on the colour (after half a
+# second); twice.
+def probe(fd):
+    out = "%s/probe" % tmp
+    cmd = ("stty raw -echo min 0 time 100; for i in 1 2; do "
+        "printf '\\033]4;1;?\\033\\\\\\033[5n'; "
+        "dd bs=1 count=4 2>/dev/null >>%s.tmp; done; mv %s.tmp %s; "
+        "exec sleep 60" % (out, out, out))
+    run("new-window", "-d", "-n", "probe", "-t", "requests", cmd)
+    wait(fd, lambda d: os.path.exists(out), "a second")
+    os.unlink(out)
+    run("kill-window", "-t", "requests:probe")
+
 def q(i):
     return "\\033_Ga=q,i=%d,s=1,v=1,f=24;AAAA\\033\\\\" % i
 
@@ -110,8 +125,7 @@ try:
     wait(fd, lambda d: QUERY in d and attached(), "attach")
     open("%s/a" % tmp, "w").close()
     wait(fd, lambda d: parsed("a", 2), "queries")
-    end = time.time() + 0.7
-    wait(fd, lambda d: time.time() >= end, "0.7 seconds")
+    probe(fd)
     os.write(fd, OK)
     for i, want in enumerate([b"^[_Gi=41;OK^[\\", b"^[_Gi=42;OK^[\\"]):
         got = result(fd, "a", i)
@@ -126,6 +140,38 @@ try:
     os.write(fd, b"\033[?62;22c" + OK)
     wait(fd, lambda d: "kittygraphics" in run("list-clients", "-F",
         "#{client_termfeatures}"), "kittygraphics")
+    detach(pid, fd)
+    pid = None
+
+    # A request after a held answer is answered first: its answer waits
+    # behind the held one, which is kept.
+    panes("b", [q(45) + "\\033]4;1;?\\033\\\\"], 38)
+    pid, fd = attach()
+    wait(fd, lambda d: QUERY in d and attached(), "attach")
+    open("%s/b" % tmp, "w").close()
+    wait(fd, lambda d: b"\033]4;1;?" in d and parsed("b", 1), "colour")
+    os.write(fd, b"\033]4;1;rgb:0101/0202/0303\033\\")
+    probe(fd)
+    os.write(fd, OK)
+    got = result(fd, "b", 0)
+    want = b"^[_Gi=45;OK^[\\^[]4;1;rgb:0101/0202/0303^[\\"
+    if got != want:
+        raise AssertionError("after a colour: %r, not %r" % (got, want))
+    detach(pid, fd)
+    pid = None
+
+    # A client suspended before its terminal answers: the held answer goes
+    # (as not known to have the protocol) and the answer after it.
+    panes("d", [q(46) + "\\033[5n"], 4)
+    pid, fd = attach()
+    wait(fd, lambda d: QUERY in d and attached(), "attach")
+    open("%s/d" % tmp, "w").close()
+    wait(fd, lambda d: parsed("d", 1), "query")
+    run("suspend-client")
+    got = result(fd, "d", 0)
+    if got != b"^[[0n":
+        raise AssertionError("suspended: %r" % got)
+    os.kill(pid, signal.SIGCONT)
     detach(pid, fd)
     pid = None
 
