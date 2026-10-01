@@ -2362,6 +2362,8 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 {
 	const struct grid_cell	*gcp;
 	u_int			 ocx;
+	char			 buf[UTF8_SIZE + 32];
+	size_t			 len;
 
 	/* Skip last character if terminal is stupid. */
 	if ((tty->term->flags & TERM_NOAM) &&
@@ -2376,6 +2378,13 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 	/* Check the output codeset and apply attributes. */
 	gcp = tty_check_codeset(tty, gc);
 	tty_attributes(tty, gcp, style_ctx);
+
+	/* A character the program gave a width (OSC 66). */
+	if (gcp->attr & GRID_ATTR_SIZED) {
+		len = tty_sized_cell(tty, gcp, buf, sizeof buf);
+		tty_putn(tty, buf, len, gcp->data.width);
+		return;
+	}
 
 	/* If it is a single character, write with putc to handle ACS. */
 	if (gcp->data.size == 1) {
@@ -2394,6 +2403,64 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 	if (gcp->data.width > 1 && ocx < tty->sx &&
 	    ocx + gcp->data.width > tty->sx && tty->cx != UINT_MAX)
 		tty->cx = gcp->data.width;
+}
+
+/*
+ * The bytes for a character the program gave a width (OSC 66) in buf: OSC 66
+ * if the terminal has it, otherwise as much of the text as fits in the width
+ * and spaces after it, so it takes exactly that many cells either way.
+ */
+size_t
+tty_sized_cell(struct tty *tty, const struct grid_cell *gc, char *buf,
+    size_t size)
+{
+	const struct utf8_data	*ud = &gc->data;
+	struct utf8_data	 one;
+	size_t			 len = 0, i = 0, n, j;
+	u_int			 used = 0;
+	int			 w;
+	enum utf8_state		 state = UTF8_ERROR;
+
+	if (tty->term->flags & TERM_TEXTSIZE) {
+		len = xsnprintf(buf, size, "\033]66;w=%u;%.*s\033\\",
+		    ud->width, (int)ud->size, ud->data);
+		return (len < size ? len : size - 1);
+	}
+	while (i < ud->size) {
+		n = 1;
+		if (ud->data[i] >= 0xf0)
+			n = 4;
+		else if (ud->data[i] >= 0xe0)
+			n = 3;
+		else if (ud->data[i] >= 0xc0)
+			n = 2;
+		if (i + n > ud->size)
+			break;
+		if (n == 1)
+			w = (ud->data[i] >= 0x20 && ud->data[i] != 0x7f);
+		else {
+			w = 0;
+			if (utf8_open(&one, ud->data[i]) == UTF8_MORE) {
+				for (j = 1; j < n; j++) {
+					state = utf8_append(&one,
+					    ud->data[i + j]);
+				}
+				if (state == UTF8_DONE)
+					w = one.width;
+			}
+		}
+		if (used + w > ud->width || len + n >= size)
+			break;
+		memcpy(buf + len, ud->data + i, n);
+		len += n;
+		used += w;
+		i += n;
+	}
+	while (used < ud->width && len + 1 < size) {
+		buf[len++] = ' ';
+		used++;
+	}
+	return (len);
 }
 
 void
@@ -3454,6 +3521,7 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 
 	/* Copy cell and update default colours. */
 	memcpy(&gc2, gc, sizeof gc2);
+	gc2.attr &= ~GRID_ATTR_SIZED;	/* not an attribute the terminal has */
 	if (~gc->flags & GRID_FLAG_NOPALETTE) {
 		if (gc2.fg == 8)
 			gc2.fg = style_ctx->defaults->fg;

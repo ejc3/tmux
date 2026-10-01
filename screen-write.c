@@ -3252,11 +3252,15 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	log_debug("%s: character %.*s at %u,%u (width %u)", __func__,
 	    (int)ud->size, ud->data, cx, cy, ud->width);
 
-	/* Find the cell to combine with. */
+	/*
+	 * Find the cell to combine with, before any padding (a character
+	 * given a width by the program, OSC 66, can be wider than 2).
+	 */
 	n = 1;
 	grid_view_get_cell(gd, cx - n, cy, &last);
-	if (cx != 1 && (last.flags & GRID_FLAG_PADDING)) {
-		n = 2;
+	while (n < cx && n < UTF8_MAXWIDTH &&
+	    (last.flags & GRID_FLAG_PADDING)) {
+		n++;
 		grid_view_get_cell(gd, cx - n, cy, &last);
 	}
 	if (n != last.data.width || (last.flags & GRID_FLAG_PADDING))
@@ -3304,8 +3308,12 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	memcpy(last.data.data + last.data.size, ud->data, ud->size);
 	last.data.size += ud->size;
 
-	/* Force the width to 2 for modifiers and variation selector. */
-	if (last.data.width == 1 && force_wide) {
+	/*
+	 * Force the width to 2 for modifiers and variation selector, unless
+	 * the program gave the width.
+	 */
+	if (last.data.width == 1 && force_wide &&
+	    (~last.attr & GRID_ATTR_SIZED)) {
 		last.data.width = 2;
 		n = 2;
 		cx++;

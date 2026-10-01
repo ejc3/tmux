@@ -734,7 +734,7 @@ screen_select_cell(struct screen *s, struct grid_cell *dst,
 	dst->flags = src->flags;
 
 	if (dst->attr & GRID_ATTR_NOATTR)
-		dst->attr |= (src->attr & GRID_ATTR_CHARSET);
+		dst->attr |= (src->attr & GRID_ATTR_CONTENT);
 	else
 		dst->attr |= src->attr;
 	return (1);

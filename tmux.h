@@ -721,6 +721,9 @@ typedef u_int utf8_char;
  * characters are stored.
  */
 #define UTF8_SIZE 32
+
+/* The widest a character can be (one given a width with OSC 66). */
+#define UTF8_MAXWIDTH 6
 struct utf8_data {
 	u_char	data[UTF8_SIZE];
 
@@ -791,6 +794,10 @@ struct colour_palette {
 #define GRID_ATTR_UNDERSCORE_5 0x1000
 #define GRID_ATTR_OVERLINE 0x2000
 #define GRID_ATTR_NOATTR 0x4000
+#define GRID_ATTR_SIZED 0x8000	/* width given by the program (OSC 66) */
+
+/* Attributes about what a cell holds, kept when a style replaces the rest. */
+#define GRID_ATTR_CONTENT (GRID_ATTR_CHARSET|GRID_ATTR_SIZED)
 
 /* All underscore attributes. */
 #define GRID_ATTR_ALL_UNDERSCORE \
@@ -1831,6 +1838,7 @@ struct tty_term {
 #define TERM_KKEYS 0x800
 #define TERM_MOUSEPIXELS 0x1000
 #define TERM_KGFX 0x2000
+#define TERM_TEXTSIZE 0x4000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -3044,6 +3052,7 @@ void	tty_putcode_s(struct tty *, enum tty_code_code, const char *);
 void	tty_putcode_ss(struct tty *, enum tty_code_code, const char *,
 	    const char *);
 void	tty_puts(struct tty *, const char *);
+size_t	tty_sized_cell(struct tty *, const struct grid_cell *, char *, size_t);
 void	tty_putc(struct tty *, u_char);
 void	tty_putn(struct tty *, const void *, size_t, u_int);
 void	tty_cell(struct tty *, const struct grid_cell *,

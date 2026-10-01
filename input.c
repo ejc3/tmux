@@ -171,6 +171,7 @@ static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
 static void	input_osc_22(struct input_ctx *, const char *);
+static void	input_osc_66(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
 static void	input_osc_11(struct input_ctx *, const char *);
 static void	input_osc_12(struct input_ctx *, const char *);
@@ -2974,6 +2975,9 @@ input_exit_osc(struct input_ctx *ictx)
 	case 22:
 		input_osc_22(ictx, p);
 		break;
+	case 66:
+		input_osc_66(ictx, p);
+		break;
 	case 99:
 		/*
 		 * A query for what is supported goes to one terminal, and
@@ -3304,6 +3308,90 @@ input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
 	if (ictx->wp != NULL) {
 		server_redraw_window_borders(ictx->wp->window);
 		server_status_window(ictx->wp->window);
+	}
+}
+
+/*
+ * Handle the OSC 66 sequence (kitty's text sizing protocol), metadata;text:
+ * the width part only. With w=0 (the default), the text is written as any
+ * other; with w=1 to 7, all of it is one character that many cells wide
+ * (tmux keeps it in at most 6 and a blank cell). The scale (s) and the
+ * fractional scale (n, d, v, h) are not supported, so a program asking (with
+ * CPR) finds the width part and not the scale part.
+ */
+static void
+input_osc_66(struct input_ctx *ictx, const char *p)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct grid_cell	 gc;
+	struct utf8_data	 ud;
+	const char		*text, *key;
+	u_int			 w = 0, sx = screen_size_x(sctx->s), extra;
+	size_t			 used = 0;
+
+	if ((text = strchr(p, ';')) == NULL)
+		return;
+	for (key = p; key < text; key += strcspn(key, ":;") + 1) {
+		if (key[0] == 'w' && key[1] == '=' && key[2] >= '0' &&
+		    key[2] <= '7' && (key[3] == ':' || key[3] == ';'))
+			w = key[2] - '0';
+		if (key[strcspn(key, ":;")] == ';')
+			break;
+	}
+	text++;
+	if (w > sx)
+		return;		/* too wide for the screen: discarded */
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (w == 0) {
+		/* The text as if written: a character at a time. */
+		while (*text != '\0') {
+			if ((u_char)*text < 0x80) {
+				if ((u_char)*text >= 0x20 && *text != 0x7f) {
+					utf8_set(&gc.data, *text);
+					screen_write_collect_add(sctx, &gc);
+				}
+				text++;
+				continue;
+			}
+			if (utf8_open(&ud, *text++) != UTF8_MORE)
+				continue;
+			while (*text != '\0' &&
+			    utf8_append(&ud, *text++) == UTF8_MORE)
+				/* nothing */;
+			if (ud.have == ud.size && ud.width != 0xff) {
+				utf8_copy(&gc.data, &ud);
+				screen_write_collect_add(sctx, &gc);
+			}
+		}
+		return;
+	}
+
+	/* All of the text, as much as a cell holds, as one character. */
+	memset(&gc.data, 0, sizeof gc.data);
+	while (text[used] != '\0') {
+		extra = 1;
+		if ((u_char)text[used] >= 0xf0)
+			extra = 4;
+		else if ((u_char)text[used] >= 0xe0)
+			extra = 3;
+		else if ((u_char)text[used] >= 0xc0)
+			extra = 2;
+		if (used + extra > sizeof gc.data.data)
+			break;
+		used += extra;
+	}
+	if (used == 0)
+		return;
+	memcpy(gc.data.data, text, used);
+	gc.data.size = gc.data.have = used;
+	gc.data.width = (w > UTF8_MAXWIDTH) ? UTF8_MAXWIDTH : w;
+	gc.attr |= GRID_ATTR_SIZED;
+	screen_write_collect_add(sctx, &gc);
+	if (w > UTF8_MAXWIDTH) {
+		memcpy(&gc, &ictx->cell.cell, sizeof gc);
+		utf8_set(&gc.data, ' ');
+		screen_write_collect_add(sctx, &gc);
 	}
 }
 

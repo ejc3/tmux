@@ -5147,7 +5147,7 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 	}
 
 	if (data->showmark && fy == data->my) {
-		gc->attr = mkgc->attr;
+		gc->attr = mkgc->attr|(gc->attr & GRID_ATTR_CONTENT);
 		if (fx == data->mx)
 			inv = 1;
 		if (inv) {
@@ -5183,7 +5183,8 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 		if (found) {
 			window_copy_match_start_end(data, cursor, &start, &end);
 			if (current >= start && current <= end) {
-				gc->attr = cgc->attr;
+				gc->attr = cgc->attr|
+				    (gc->attr & GRID_ATTR_CONTENT);
 				if (inv) {
 					gc->fg = cgc->bg;
 					gc->bg = cgc->fg;
@@ -5197,7 +5198,7 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 		}
 	}
 
-	gc->attr = mgc->attr;
+	gc->attr = mgc->attr|(gc->attr & GRID_ATTR_CONTENT);
 	if (inv) {
 		gc->fg = mgc->bg;
 		gc->bg = mgc->fg;

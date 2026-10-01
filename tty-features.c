@@ -294,6 +294,16 @@ static const struct tty_feature tty_feature_kittygraphics = {
 };
 
 /*
+ * Terminal has the width part of the text sizing protocol (OSC 66 w=): tmux
+ * gives it characters programs gave a width.
+ */
+static const struct tty_feature tty_feature_textsize = {
+	"textsize",
+	NULL,
+	TERM_TEXTSIZE
+};
+
+/*
  * Terminal reports the mouse in pixels (SGR-Pixels, mode 1016), found by
  * asking it with DECRQM.
  */
@@ -458,6 +468,7 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_sixel,
 	&tty_feature_strikethrough,
 	&tty_feature_sync,
+	&tty_feature_textsize,
 	&tty_feature_title,
 	&tty_feature_usstyle,
 	&tty_feature_utf8
@@ -721,6 +732,7 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "overline,"
 			      "pointer,"
 			      "sync,"
+			      "textsize,"
 			      "usstyle"
 		},
 		{ .name = "Rio",

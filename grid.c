@@ -1259,7 +1259,7 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 	struct grid_cell	 gc;
 	static struct grid_cell	 lastgc1;
 	const char		*data;
-	char			*buf, code[8192];
+	char			*buf, code[8192], sized[UTF8_SIZE + 32];
 	size_t			 len, off, size, codelen;
 	u_int			 xx, end;
 	int			 has_link = 0;
@@ -1301,6 +1301,13 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 		if (gc.flags & GRID_FLAG_TAB) {
 			data = "\t";
 			size = 1;
+		} else if ((gc.attr & GRID_ATTR_SIZED) &&
+		    (flags & GRID_STRING_WITH_SEQUENCES)) {
+			/* A character given a width: as the program wrote it. */
+			xsnprintf(sized, sizeof sized, "\033]66;w=%u;%.*s\033\\",
+			    gc.data.width, (int)gc.data.size, gc.data.data);
+			data = sized;
+			size = strlen(sized);
 		} else {
 			data = gc.data.data;
 			size = gc.data.size;
