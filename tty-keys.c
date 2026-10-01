@@ -1468,10 +1468,18 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
 
 		/*
 		 * Check and return the mouse input. In pixels (asked for with
-		 * 1016), the position is from 0 and the cell is found from the
-		 * cell size.
+		 * 1016), the position is made from 0 and the cell is found
+		 * from the cell size.
 		 */
 		if (tty->flags & TTY_MOUSEPIXELS) {
+			if (tty->xpixel == 0 || tty->ypixel == 0)
+				return (-2);
+			if (~tty->flags & TTY_PIXELSFROM0) {
+				if (x > 0)
+					x--;
+				if (y > 0)
+					y--;
+			}
 			px = x;
 			py = y;
 			pixels = 1;
@@ -2063,6 +2071,15 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
 	else if (strncmp(tmp, "kitty(", 6) == 0)
 		tty_default_features(c, "kitty", 0);
 	log_debug("%s: received extended DA %.*s", c->name, (int)*size, buf);
+
+	/*
+	 * Mouse positions in pixels (1016) are from 0 in kitty, ghostty and
+	 * tmux, from 1 in xterm (and foot and WezTerm).
+	 */
+	if (strncmp(tmp, "kitty(", 6) == 0 ||
+	    strncmp(tmp, "ghostty ", 8) == 0 ||
+	    strncmp(tmp, "tmux ", 5) == 0)
+		tty->flags |= TTY_PIXELSFROM0;
 
 	free(c->term_type);
 	c->term_type = xstrdup(tmp);

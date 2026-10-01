@@ -1941,6 +1941,7 @@ struct tty {
 #define TTY_HAVEKGFX 0x2000000
 #define TTY_HAVEGRAPHEMES 0x4000000
 #define TTY_GRAPHEMES 0x8000000
+#define TTY_PIXELSFROM0 0x10000000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
 	 TTY_HAVEPIXELS|TTY_HAVEKGFX|TTY_HAVEGRAPHEMES)
@@ -3603,7 +3604,7 @@ void	 input_key_build(void);
 int	 input_key_pane(struct window_pane *, key_code, struct mouse_event *);
 int	 input_key(struct screen *, struct bufferevent *, key_code);
 int	 input_key_get_mouse(struct screen *, struct mouse_event *, u_int,
-	     u_int, const char **, size_t *);
+	     u_int, u_int, u_int, const char **, size_t *);
 
 /* colour.c */
 int	 colour_find_rgb(u_char, u_char, u_char);
