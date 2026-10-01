@@ -87,6 +87,11 @@ SCENARIOS = {
     'tp-nocr': ['\x1b[2;3H', G('a=t,q=2,i=5,f=24,s=2,v=2', RED), G('a=p,q=2,i=5'), 'Y'],
     'tp-T-then-p': ['\x1b[2;3H', G('a=T,q=2,i=5,f=24,s=2,v=2,c=2,r=1', RED), '\x1b[6;3H', G('a=p,q=2,i=5,c=6,r=3'), 'Y'],
     'two-T': ['\x1b[3;5H', G('a=T,q=2,i=3,f=24,s=2,v=2,c=4,r=2', RED), '\x1b[3;20H', G('a=T,q=2,i=4,f=24,s=2,v=2,c=4,r=2', RED), 'D'],
+    # Text sizing, the width part (OSC 66 w=).
+    'text-width': ['\x1b[3;5Ha\x1b]66;w=2;b\x07c\x1b]66;w=3;xy\x07d'],
+    'emoji-width': ['\x1b[3;5H\x1b]66;w=2;\U0001F44D\U0001F3FD\x07X'],
+    'cjk-narrow': ['\x1b[3;5H\x1b]66;w=1;\u4e2d\x07X'],
+    'text-wrap': ['\x1b[3;79H\x1b]66;w=3;xy\x07Z'],
     'placeholders': [G('a=T,q=2,U=1,i=7,f=24,s=2,v=2,c=4,r=2', RED),
                      '\x1b[4;6H\x1b[38;5;7m',
                      '\U0010EEEE̅̅\U0010EEEE̅̍'
