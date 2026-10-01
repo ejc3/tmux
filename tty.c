@@ -2726,15 +2726,11 @@ tty_rewrap(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy,
 	    tty->cy == ctx->yoff + cy - ctx->woy)
 		return (1);	/* the terminal wrapped into it already */
 
-	x = screen_size_x(s) - 1;
-	grid_view_get_cell(gd, x, cy - 1, &gc);
-	if (gc.flags & GRID_FLAG_PADDING) {
-		if (x == 0)
-			return (0);
-		grid_view_get_cell(gd, --x, cy - 1, &gc);
-		if (gc.data.width != 2)
-			return (0);
-	}
+	/* The last character, if it ends in the last column. */
+	x = grid_view_get_char(gd, screen_size_x(s) - 1, cy - 1, &gc);
+	if ((gc.flags & GRID_FLAG_PADDING) ||
+	    x + gc.data.width != screen_size_x(s))
+		return (0);
 	/*
 	 * The terminal's scroll region may be left from earlier output: at its
 	 * bottom the wrap would scroll it instead of moving down.

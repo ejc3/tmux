@@ -3697,6 +3697,7 @@ void	 grid_reader_cursor_back_to_indentation(struct grid_reader *);
 
 /* grid-view.c */
 void	 grid_view_get_cell(struct grid *, u_int, u_int, struct grid_cell *);
+u_int	 grid_view_get_char(struct grid *, u_int, u_int, struct grid_cell *);
 void	 grid_view_set_cell(struct grid *, u_int, u_int,
 	     const struct grid_cell *);
 void	 grid_view_set_padding(struct grid *, u_int, u_int, int);

@@ -37,6 +37,23 @@ grid_view_get_cell(struct grid *gd, u_int px, u_int py, struct grid_cell *gc)
 	grid_get_cell(gd, grid_view_x(gd, px), grid_view_y(gd, py), gc);
 }
 
+/*
+ * Get the character a cell is part of: the cell itself, or the character
+ * before it if it is padding (as far back as the widest character). Returns
+ * its x, or the x of padding found without one.
+ */
+u_int
+grid_view_get_char(struct grid *gd, u_int px, u_int py, struct grid_cell *gc)
+{
+	u_int	x = px;
+
+	grid_view_get_cell(gd, x, py, gc);
+	while ((gc->flags & GRID_FLAG_PADDING) && x != 0 &&
+	    px - x < UTF8_MAXWIDTH - 1)
+		grid_view_get_cell(gd, --x, py, gc);
+	return (x);
+}
+
 /* Set cell. */
 void
 grid_view_set_cell(struct grid *gd, u_int px, u_int py,

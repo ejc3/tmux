@@ -3257,13 +3257,7 @@ screen_write_combine(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	 * Find the cell to combine with, before any padding (a character
 	 * given a width by the program, OSC 66, can be wider than 2).
 	 */
-	n = 1;
-	grid_view_get_cell(gd, cx - n, cy, &last);
-	while (n < cx && n < UTF8_MAXWIDTH &&
-	    (last.flags & GRID_FLAG_PADDING)) {
-		n++;
-		grid_view_get_cell(gd, cx - n, cy, &last);
-	}
+	n = cx - grid_view_get_char(gd, cx - 1, cy, &last);
 	if (n != last.data.width || (last.flags & GRID_FLAG_PADDING))
 		return (zero_width);
 

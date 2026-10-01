@@ -362,10 +362,7 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 	    (tty->cx < tty->sx || tty->cy != aty)) {
 		gl = grid_get_line(gd, gd->hsize + py);
 		if (gl->flags & GRID_LINE_WRAPPED) {
-			i = nx - 1;
-			grid_view_get_cell(gd, px + i, py, &gc);
-			while ((gc.flags & GRID_FLAG_PADDING) && i != 0)
-				grid_view_get_cell(gd, px + --i, py, &gc);
+			i = grid_view_get_char(gd, px + nx - 1, py, &gc) - px;
 			if (~gc.flags & GRID_FLAG_PADDING) {
 				tty_cursor(tty, atx + i, aty);
 				tty_cell(tty, &gc, style_ctx);
