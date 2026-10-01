@@ -216,13 +216,21 @@ def out_notify(r):
 
 def out_modes(r):
     m = r.choice([b'1016', b'2048', b'2027', b'1000', b'1003', b'1006',
-                  b'1049', b'2026', b'7', b'4', b'1004'])
+                  b'1049', b'2026', b'7', b'1004'])
     return b'\033[?' + m + r.choice([b'h', b'l'])
+
+
+# Insert mode (IRM) with OSC 66 wider than two cells near the right edge
+# overruns the line (grid_view_insert_cells), and a pane killed while a
+# mouse menu shows it is read after it is freed (menu_reapply_styles):
+# --skip-known leaves out insert mode and the mouse option.
+INSERT = True
 
 
 def out_reset(r):
     return r.choice([b'\033[!p', b'\033c', b'\033[5;10r', b'\033[r',
-                     b'\033[4h', b'\033[4l', b'\033(0', b'\033(B'])
+                     b'\033[4h' if INSERT else b'\033[4l', b'\033[4l',
+                     b'\033(0', b'\033(B'])
 
 
 PANE_OUTPUT = [
@@ -306,10 +314,20 @@ class Chaos:
     def start(self):
         # An anchor session nothing kills, so the server always has one.
         self.server.start('exec sleep 100000')
+        # Only the server is traced: clients exit 1 when a command fails.
+        env = self.server.env
+        env.pop('CRASHTRACE_DIR', None)
+        if env.get('LD_PRELOAD'):
+            env['LD_PRELOAD'] = ':'.join(
+                x for x in env['LD_PRELOAD'].split(':')
+                if 'crashtrace' not in x)
+            if not env['LD_PRELOAD']:
+                del env['LD_PRELOAD']
         self.server.cmd('rename-session', 'anchor')
         # Kills can leave no session at all: the server must stay.
         self.server.cmd('set', '-s', 'exit-empty', 'off')
-        self.server.cmd('set', '-g', 'history-limit', '2000')
+        self.server.cmd('set', '-g', 'history-limit',
+                        str(self.args.history))
         self.server.cmd('set', '-g', 'remain-on-exit', 'off')
         for n in range(4):
             self.new_session()
@@ -395,7 +413,8 @@ class Chaos:
                 {'args': ['set', '-g', 'window-size',
                           r.choice(['latest', 'largest', 'smallest'])]},
                 {'args': ['set', '-g', 'status', r.choice(['on', 'off'])]},
-                {'args': ['set', '-g', 'mouse', r.choice(['on', 'off'])]}])),
+                {'args': ['set', '-g', 'mouse',
+                          r.choice(['on', 'off']) if INSERT else 'off']}])),
         ]
         if terms:
             choices += [
@@ -712,6 +731,10 @@ def main():
                     help='minutes before heap samples count for the trend')
     ap.add_argument('--out', default=None)
     ap.add_argument('--replay')
+    ap.add_argument('--skip-known', action='store_true',
+                    help='leave out what triggers crashes already found')
+    ap.add_argument('--history', type=int, default=100,
+                    help='history-limit for panes')
     ap.add_argument('--zero-pixels', action='store_true',
                     help='resize terminals to sizes without pixels too')
     ap.add_argument('--shrink', help='an actions.jsonl that fails: find a '
@@ -722,6 +745,9 @@ def main():
     args.tmux = os.path.abspath(args.tmux)
     if args.shrink:
         sys.exit(shrink(args))
+    if args.skip_known:
+        global INSERT
+        INSERT = False
     out = args.out or tempfile.mkdtemp(prefix='chaos-', dir='/mnt/fcvm-btrfs')
     os.makedirs(out, exist_ok=True)
     args.heapcount_so = (memory.build_heapcount(out) if args.heapcount
@@ -828,6 +854,8 @@ def main():
                         broken = True
                 except Fail as e:
                     entry['error'] = repr(e)
+                except ProcessLookupError:
+                    pass    # the server went: the next check records it
             if broken:
                 failures += 1
                 break
