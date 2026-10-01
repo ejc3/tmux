@@ -53,6 +53,8 @@ GLIBC_TUNABLES=glibc.malloc.perturb=165 MALLOC_PERTURB_=165 \
 attach() {
 	rm -f $DIR/go $DIR/out $DIR/drawn
 	$OUTER kill-server 2>/dev/null
+	# A dying server's socket can still take a client: wait until it is gone.
+	wait_is "$OUTER ls 2>&1 | grep -cE 'no server running|No such file'" 1
 	$OUTER new -d -x 40 -y 5 \
 	    "while [ ! -e $DIR/go ]; do sleep 0.05; done; unset TMUX; exec $INNER attach" \
 	    \; set remain-on-exit on || exit 1

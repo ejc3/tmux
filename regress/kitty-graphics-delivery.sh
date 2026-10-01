@@ -22,6 +22,10 @@ import time
 
 tmux = sys.argv[1]
 tmp = tempfile.mkdtemp()
+# The server's size is measured: under AddressSanitizer, keep no freed memory
+# back (its quarantine), which would count. Nothing otherwise.
+os.environ["ASAN_OPTIONS"] = (os.environ.get("ASAN_OPTIONS", "") +
+    ":quarantine_size_mb=0:thread_local_quarantine_size_kb=0").lstrip(":")
 OK = b"\033_Gi=4294967295;OK\033\\"
 
 class Server:
@@ -147,10 +151,19 @@ try:
 
     # A client whose output was dropped (it fell behind while a pane wrote
     # a lot) is given an image made then once it catches up.
+    # It reads a little at a time, less if the server is slow (as under
+    # ASan): reading nothing would stop tmux reading the pane instead.
     s.run("split-window", "-d", "-t", "d:0.0", "exec yes xxxxxxxxxxxxxxxx")
-    a.n = 4096
-    pump([a, b], lambda: int(s.run("display", "-p", "-c", a.name(),
-        "#{client_discarded}").strip()) > 0, "dropped")
+    for n in (4096, 1024, 256, 64):
+        a.n = n
+        try:
+            pump([a, b], lambda: int(s.run("display", "-p", "-c",
+                a.name(), "#{client_discarded}").strip()) > 0, "dropped",
+                timeout=10)
+            break
+        except AssertionError:
+            if n == 64:
+                raise
     s.pane([a, b], image(3, "//8A"), "d")
     s.run("kill-pane", "-t", "d:0.1")
     a.n = None
