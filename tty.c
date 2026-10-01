@@ -43,6 +43,7 @@ static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
 static void	tty_set_italics(struct tty *);
 static void	tty_extended_keys(struct tty *);
+static void	tty_graphemes(struct tty *);
 static int	tty_try_colour(struct tty *, int, const char *);
 static void	tty_force_cursor_colour(struct tty *, int);
 static void	tty_cursor_pane(struct tty *, const struct tty_ctx *, u_int,
@@ -399,6 +400,7 @@ tty_start_tty(struct tty *tty)
 	if ((tty->term->flags & TERM_KKEYS) &&
 	    options_get_number(global_options, "extended-keys"))
 		tty_extended_keys(tty);
+	tty_graphemes(tty);
 
 	tty_start_start_timer(tty);
 
@@ -441,6 +443,8 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[?u");
 		if (~tty->flags & TTY_HAVEPIXELS)
 			tty_puts(tty, "\033[?1016$p");
+		if (~tty->flags & TTY_HAVEGRAPHEMES)
+			tty_puts(tty, "\033[?2027$p");
 
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
@@ -545,6 +549,10 @@ tty_stop_tty(struct tty *tty)
 		tty_raw(tty, "\033[?1016l");
 		tty->flags &= ~TTY_MOUSEPIXELS;
 	}
+	if (tty->flags & TTY_GRAPHEMES) {
+		tty_raw(tty, "\033[?2027l");
+		tty->flags &= ~TTY_GRAPHEMES;
+	}
 
 	if (tty_use_margin(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_DSMG));
@@ -614,6 +622,17 @@ tty_extended_keys(struct tty *tty)
 	tty->flags |= TTY_KKEYS;
 }
 
+/* Turn grapheme cluster mode on if the terminal has it, once. */
+static void
+tty_graphemes(struct tty *tty)
+{
+	if ((tty->term->flags & TERM_GRAPHEMES) &&
+	    (~tty->flags & TTY_GRAPHEMES)) {
+		tty_puts(tty, "\033[?2027h");
+		tty->flags |= TTY_GRAPHEMES;
+	}
+}
+
 void
 tty_update_features(struct tty *tty)
 {
@@ -628,6 +647,7 @@ tty_update_features(struct tty *tty)
 		tty_extended_keys(tty);
 	if (options_get_number(global_options, "focus-events"))
 		tty_puts(tty, tty_term_string(tty->term, TTYC_ENFCS));
+	tty_graphemes(tty);
 	tty_puts(tty, tty_term_string(tty->term, TTYC_ENESC));
 
 	/*

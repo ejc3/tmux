@@ -294,6 +294,18 @@ static const struct tty_feature tty_feature_kittygraphics = {
 };
 
 /*
+ * Terminal has grapheme cluster mode (2027) and can turn it on: tmux turns it
+ * on, so the terminal counts a cluster's cells as tmux does (an emoji with a
+ * skin tone, a ZWJ sequence, a flag, a variation selector). Found by asking
+ * the terminal (DECRQM answers reset).
+ */
+static const struct tty_feature tty_feature_graphemes = {
+	"graphemes",
+	NULL,
+	TERM_GRAPHEMES
+};
+
+/*
  * Terminal has the width part of the text sizing protocol (OSC 66 w=): tmux
  * gives it characters programs gave a width.
  */
@@ -452,6 +464,7 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_cstyle,
 	&tty_feature_extkeys,
 	&tty_feature_focus,
+	&tty_feature_graphemes,
 	&tty_feature_kittygraphics,
 	&tty_feature_kittykeys,
 	&tty_feature_ignorefkeys,

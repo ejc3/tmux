@@ -1725,7 +1725,7 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 
 /*
  * Handle a DECRPM response for a mode tmux asks about: 2026 (synchronized
- * output) or 1016 (mouse in pixels). Returns 0 for success, -1 for failure,
+ * output), 1016 (mouse in pixels) or 2027 (grapheme clusters). Returns 0 for success, -1 for failure,
  * 1 for partial.
  */
 static int
@@ -1749,7 +1749,8 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 		mode = mode * 10 + (buf[i] - '0');
 	if (i == len)
 		return (1);
-	if (buf[i++] != ';' || (mode != 2026 && mode != 1016))
+	if (buf[i++] != ';' ||
+	    (mode != 2026 && mode != 1016 && mode != 2027))
 		return (-1);
 	if (i == len)
 		return (1);
@@ -1771,6 +1772,14 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 		tty->flags |= TTY_HAVESYNC;
 		if (status == 1 || status == 2 || status == 3) {
 			tty_parse_client_features(c, "sync", ",");
+			tty_update_features(tty);
+		}
+	}
+	/* Grapheme clusters: reset means the terminal has them, but off. */
+	if (mode == 2027 && (~tty->flags & TTY_HAVEGRAPHEMES)) {
+		tty->flags |= TTY_HAVEGRAPHEMES;
+		if (status == 2) {
+			tty_parse_client_features(c, "graphemes", ",");
 			tty_update_features(tty);
 		}
 	}

@@ -62,6 +62,7 @@ forward_managed_mode(int v)
 	case 1036:	/* meta and alt keys */
 	case 1039:
 	case 2004:	/* bracketed paste */
+	case 2027:	/* grapheme clusters */
 	case 2031:	/* colour scheme reports */
 	case 2048:	/* size reports */
 		return (1);
