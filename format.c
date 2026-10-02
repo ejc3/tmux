@@ -5830,7 +5830,9 @@ format_loop_clients(struct format_expand_state *es, const char *fmt)
 static int
 format_truncate_integer(double *v)
 {
-	if (isnan(*v) || fabs(*v) >= 9.2e18)
+	/* A long long holds -2^63 up to (not including) 2^63. */
+	if (isnan(*v) || *v >= 9223372036854775808.0 ||
+	    *v < -9223372036854775808.0)
 		return (-1);
 	*v = (long long)*v;
 	return (0);
