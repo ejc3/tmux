@@ -820,6 +820,19 @@ def lifecycle_exit_resize(g, i):
          'client to go')
 
 
+def alt_stale_cursor(g, i):
+    # The cursor 1049h saved, restored by 1049l after 47l, a resize and 47h
+    # have changed the screen under it (it was past the grid it reflowed).
+    g.server.cmd('resize-window', '-x', '80', '-y', '24')
+    g.pane(b''.join(b'line %d\r\n' % n for n in range(55)))
+    g.pane(b'\033[?1049h')
+    g.pane(b'\033[?47l')
+    g.server.cmd('resize-window', '-x', '120', '-y', '8')
+    g.pane(b'\033[?47h')
+    g.server.cmd('resize-window', '-x', '55', '-y', '17')
+    g.pane(b'\033[?1049l')
+
+
 def lifecycle_truncate(g, i):
     # The file shrinks while tmux reads it.
     path = tmpimage(g.tmp, os.urandom(3 * 256 * 256), 'trunc')
@@ -960,6 +973,7 @@ SCENARIOS = [
     ('lifecycle-truncate', None, lifecycle_truncate),
     ('lifecycle-menu-pane', None, lifecycle_menu_pane),
     ('lifecycle-exit-resize', None, lifecycle_exit_resize),
+    ('alt-stale-cursor', None, alt_stale_cursor),
     # Upstream leaks.
     ('leak-term-remove', leak_term_remove_setup, leak_term_remove),
     ('leak-run-wait-killed', None, leak_run_wait_killed),
