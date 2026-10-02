@@ -415,35 +415,6 @@ cmdq_insert_hook(__unused struct session *s, struct cmdq_item *item,
 	free(name);
 }
 
-/* Run a lost client's queue (see cmdq_continue). */
-static void
-cmdq_continue_lost(__unused int fd, __unused short events, void *arg)
-{
-	struct client	*c = arg;
-
-	cmdq_next(c);
-	server_client_unref(c);
-}
-
-/* Continue processing command queue. */
-void
-cmdq_continue(struct cmdq_item *item)
-{
-	struct client	*c = item->client;
-
-	item->flags &= ~CMDQ_WAITING;
-
-	/*
-	 * The server loop no longer runs the queue of a client that has been
-	 * lost, so run it once the caller has finished with the item;
-	 * otherwise the item and its reference keep the client forever.
-	 */
-	if (c != NULL && item->queue == c->queue && (c->flags & CLIENT_DEAD)) {
-		c->references++;
-		event_once(-1, EV_TIMEOUT, cmdq_continue_lost, c, NULL);
-	}
-}
-
 /* Remove an item. */
 static void
 cmdq_remove(struct cmdq_item *item)
@@ -458,6 +429,43 @@ cmdq_remove(struct cmdq_item *item)
 
 	free(item->name);
 	free(item);
+}
+
+/*
+ * Discard a lost client's queue (see cmdq_continue): nothing in it may run,
+ * since server_client_lost has freed what its commands and callbacks use;
+ * removing the items drops what they hold, the client included.
+ */
+static void
+cmdq_continue_lost(__unused int fd, __unused short events, void *arg)
+{
+	struct client		*c = arg;
+	struct cmdq_item	*item, *item1;
+
+	TAILQ_FOREACH_SAFE(item, &c->queue->list, entry, item1) {
+		if (~item->flags & CMDQ_WAITING)
+			cmdq_remove(item);
+	}
+	server_client_unref(c);
+}
+
+/* Continue processing command queue. */
+void
+cmdq_continue(struct cmdq_item *item)
+{
+	struct client	*c = item->client;
+
+	item->flags &= ~CMDQ_WAITING;
+
+	/*
+	 * The server loop no longer runs the queue of a client that has been
+	 * lost, so discard it once the caller has finished with the item;
+	 * otherwise the item and its reference keep the client forever.
+	 */
+	if (c != NULL && item->queue == c->queue && (c->flags & CLIENT_DEAD)) {
+		c->references++;
+		event_once(-1, EV_TIMEOUT, cmdq_continue_lost, c, NULL);
+	}
 }
 
 /* Remove all subsequent items that match this item's group. */
