@@ -79,9 +79,9 @@ static void	window_copy_scroll_to(struct window_mode_entry *, u_int, u_int,
 static int	window_copy_search_compare(struct grid *, u_int, u_int,
 		    struct grid *, u_int, int);
 static int	window_copy_search_lr(struct grid *, struct grid *, u_int *,
-		    u_int, u_int, u_int, int);
+		    u_int *, u_int, u_int, u_int, int);
 static int	window_copy_search_rl(struct grid *, struct grid *, u_int *,
-		    u_int, u_int, u_int, int);
+		    u_int *, u_int, u_int, u_int, int);
 static int	window_copy_last_regex(struct grid *, u_int, u_int, u_int,
 		    u_int, u_int *, u_int *, const char *, const regex_t *,
 		    int);
@@ -4064,8 +4064,8 @@ window_copy_search_overhang(struct grid *gd, const struct grid_cell *gc,
 }
 
 static int
-window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
-    u_int first, u_int last, int cis)
+window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx,
+    u_int *psx, u_int py, u_int first, u_int last, int cis)
 {
 	u_int			 ax, bx, px, pywrap, endline, padding;
 	u_int			 skip;
@@ -4103,6 +4103,8 @@ window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
 		}
 		if (bx == sgd->sx) {
 			*ppx = ax;
+			if (psx != NULL)
+				*psx = sgd->sx - skip;
 			return (1);
 		}
 	}
@@ -4110,8 +4112,8 @@ window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
 }
 
 static int
-window_copy_search_rl(struct grid *gd,
-    struct grid *sgd, u_int *ppx, u_int py, u_int first, u_int last, int cis)
+window_copy_search_rl(struct grid *gd, struct grid *sgd, u_int *ppx,
+    u_int *psx, u_int py, u_int first, u_int last, int cis)
 {
 	u_int			 ax, bx, px, pywrap, endline, padding;
 	u_int			 skip;
@@ -4149,6 +4151,8 @@ window_copy_search_rl(struct grid *gd,
 		}
 		if (bx == sgd->sx) {
 			*ppx = ax - 1;
+			if (psx != NULL)
+				*psx = sgd->sx - skip;
 			return (1);
 		}
 	}
@@ -4629,7 +4633,7 @@ window_copy_search_jump(struct window_mode_entry *wme, struct grid *gd,
 				    &px, &sx, i, fx, gd->sx, &reg);
 			} else {
 				found = window_copy_search_lr(gd, sgd,
-				    &px, i, fx, gd->sx, cis);
+				    &px, NULL, i, fx, gd->sx, cis);
 			}
 			if (found)
 				break;
@@ -4646,7 +4650,7 @@ window_copy_search_jump(struct window_mode_entry *wme, struct grid *gd,
 				}
 			} else {
 				found = window_copy_search_rl(gd, sgd,
-				    &px, i - 1, 0, fx + 1, cis);
+				    &px, NULL, i - 1, 0, fx + 1, cis);
 			}
 			if (found) {
 				i--;
@@ -4981,7 +4985,7 @@ again:
 					break;
 			} else {
 				found = window_copy_search_lr(gd, ssp->grid,
-				    &px, py, px, sx, cis);
+				    &px, &width, py, px, sx, cis);
 				if (!found)
 					break;
 			}

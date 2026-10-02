@@ -80,6 +80,26 @@ for s in search-forward search-forward-text search-backward \
 	[ "$(found "x${CJK}ab" $s)" = 1 ] || fail "1 column: $s for the line"
 done
 
+# A match across it is marked as far as its last cell, not the cells after:
+# searching from the top for the whole line, the match is that line, and the
+# cursor is on its start (vi) or just after it (emacs), not a row further.
+run 1 'x\344\275\240ab\r\nz\r\nq'
+for keys in vi emacs; do
+	$TMUX set -g mode-keys $keys || exit 1
+	for s in search-forward search-forward-text; do
+		$TMUX copy-mode \; send -X history-top \; \
+		    send -X $s "x${CJK}ab" || exit 1
+		m=$($TMUX display -p '#{search_match}')
+		l=$($TMUX display -p '#{copy_cursor_line}')
+		$TMUX send -X cancel
+		[ "$m" = "x${CJK}ab" ] || fail "$keys, $s: the match is '$m'"
+		want=x
+		[ $keys = emacs ] && want=z
+		[ "$l" = $want ] ||
+			fail "$keys, $s: the cursor is on '$l', not '$want'"
+	done
+done
+
 # A character given width 6 in a pane 4 columns wide.
 run 4 'ab\033]66;w=6;Y\007cd\r\nz'
 for s in search-backward search-backward-text; do
