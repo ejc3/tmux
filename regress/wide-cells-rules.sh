@@ -214,4 +214,50 @@ out=$($OUTER capturep -t t -p -S - | sed 's/ *$//' | head -3 | tr '\n' '|')
 [ "$out" = 'ab||cdef|' ] || fail "replayed history: '$out'"
 $OUTER kill-server
 
+# A character written over one overhanging a row removes all of it, also
+# its padding past the edge, so the line is whole again when wider.
+$TMUX kill-server 2>/dev/null
+N=$((N + 1))
+TMUX="$TEST_TMUX -Ltest$$-$N -f/dev/null"
+DIR=$(mktemp -d)
+$TMUX new -d -x 10 -y 12 "printf '\\033[7Hab\\033]66;w=6;Y\\007cdefgh'; \
+    while [ ! -s $DIR/row ]; do sleep 0.01; done; \
+    printf \"\\\\033[\$(cat $DIR/row);1HQ\\\\033]7;done\\\\007\"; exec cat" \; \
+    set -g status off || exit 1
+wait_is "$TMUX capturep -p | grep -c gh" 1
+$TMUX resize-window -x 4 || exit 1
+$TMUX capturep -p | grep -n '^Y' | cut -d: -f1 >$DIR/row
+wait_is "$TMUX display -p '#{pane_path}'" done
+$TMUX resize-window -x 10 || exit 1
+[ "$($TMUX capturep -pJ | grep Q)" = 'abQ   cdefgh' ] ||
+	fail "written over: '$($TMUX capturep -pJ | grep Q)'"
+rm -rf $DIR
+
+# Drawing a row a character (here a tab to a far tab stop) overhangs never
+# writes more than the row to the terminal: the last-column redraw of a
+# wrapped row does not write the character again. An outer tmux, without
+# the text sizing feature, records what is written.
+$TMUX kill-server 2>/dev/null
+N=$((N + 1))
+TMUX="$TEST_TMUX -Ltest$$-$N -f/dev/null"
+OUTER="$TEST_TMUX -Ltest$$-o$N -f/dev/null"
+DIR=$(mktemp -d)
+$TMUX new -d -x 30 -y 6 \
+    "printf '\\033[3g\\033[1;20H\\033H\\033[3;1H\\tyy\\033[5;1Hz\\033]7;done\\007'; exec cat" \; \
+    set -g status off \; set -g window-size manual || exit 1
+wait_is "$TMUX display -p '#{pane_path}'" done
+$TMUX resize-window -x 12 || exit 1
+$OUTER new -d -x 12 -y 6 "unset TMUX; exec $TMUX attach" \; \
+    set -g status off || exit 1
+$OUTER pipe-pane -o "cat >$DIR/out" || exit 1
+wait_is "[ -n \"\$($TMUX lsc -F '#{client_termtype}')\" ] && echo yes" yes
+$TMUX refresh-client || exit 1
+wait_is "$OUTER capturep -p | grep -c z" 1
+$TMUX display -p x >/dev/null
+run=$(tr -c ' ' '\n' <$DIR/out |
+    awk '{ if (length > m) m = length } END { print m + 0 }')
+[ "$run" -le 12 ] || fail "a run of $run blanks written to a 12 column terminal"
+$OUTER kill-server
+rm -rf $DIR
+
 exit $exit_status
