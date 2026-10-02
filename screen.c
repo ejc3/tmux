@@ -929,10 +929,11 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 	 * may be before a resize (1049h, 47l, resize, 47h): keep it inside the
 	 * screen it is restored to, which the resize back reflows with it. One
 	 * past the last column is where a full line leaves it (the next
-	 * character wraps), so that stays.
+	 * character wraps), so that stays; further out is a column from a wider
+	 * screen, which goes to the last one.
 	 */
 	if (s->cx > screen_size_x(s))
-		s->cx = screen_size_x(s);
+		s->cx = screen_size_x(s) - 1;
 	if (s->cy > screen_size_y(s) - 1)
 		s->cy = screen_size_y(s) - 1;
 
