@@ -608,6 +608,35 @@ def notify(g, i):
     g.pane(b'\033]99;i=' + n + b':p=close;' + ST)
 
 
+def notify_unanswered(g, i):
+    # Notifications that ask for reports, each with a new identifier, that no
+    # terminal ever reports on: tmux remembers only the last few for a pane.
+    g.pane(b''.join(b'\033]99;i=u%d:a=report:c=1;waiting' % (i * 20 + n) + ST
+                    for n in range(20))
+           + b'\033]99;a=report:c=1;anonymous' + ST)
+    g.settle()
+    del g.term.notify_ids[:]
+
+
+def notify_two_terminals(g, i):
+    # A second terminal shows the notification too: both report, the pane is
+    # told once, and the second terminal goes with reports still to come.
+    t = Terminal(g.server, rows=20, cols=60)
+    g.terms.append(t)
+    g.pane(b'\033]99;i=two%d:a=report:c=1;on both' % (i % 7) + ST)
+    g.settle()
+    pane = g.server.cmd('display', '-p', '#{pane_id}').strip().lstrip('%')
+    wire = b't%s_two%d' % (pane.encode(), i % 7)
+    t.send(b'\033]99;i=' + wire + b';' + ST)
+    g.keys(b'\033]99;i=' + wire + b';' + ST
+           + b'\033]99;i=' + wire + b':p=close;' + ST)
+    del g.term.notify_ids[:]
+    g.terms.remove(t)
+    t.close()
+    wait(lambda: len(g.server.cmd('list-clients').splitlines()) == 1,
+         'second client to go')
+
+
 def decstr(g, i):
     g.pane(b'\033[>5u\033]22;>text' + ST + b'\033[?2048h\033[?1016h'
            b'\033[?1000h\033[4h\033[?7l\033[5;10r\033[!p\033[r\033[?7h'
@@ -983,6 +1012,8 @@ SCENARIOS = [
     ('text-sizing', None, text_sizing),
     ('pointer', None, pointer),
     ('notify', None, notify),
+    ('notify-unanswered', None, notify_unanswered),
+    ('notify-two-terminals', None, notify_two_terminals),
     ('decstr', None, decstr),
     ('capture', capture_setup, capture),
     ('gfx-direct', None, gfx_direct),
