@@ -432,9 +432,10 @@ cmdq_remove(struct cmdq_item *item)
 }
 
 /*
- * Discard a lost client's queue (see cmdq_continue): nothing in it may run,
- * since server_client_lost has freed what its commands and callbacks use;
- * removing the items drops what they hold, the client included.
+ * Remove what has stopped waiting in a lost client's queue, once the waiters
+ * have finished with it. Only waiting items are left there after
+ * cmdq_flush_lost, so none of these owns anything a callback would free;
+ * an item already removed (by server_client_lost's own run) is not there.
  */
 static void
 cmdq_continue_lost(__unused int fd, __unused short events, void *arg)
@@ -459,8 +460,9 @@ cmdq_continue(struct cmdq_item *item)
 
 	/*
 	 * The server loop no longer runs the queue of a client that has been
-	 * lost, so discard it once the caller has finished with the item;
-	 * otherwise the item and its reference keep the client forever.
+	 * lost (cmdq_flush_lost has handled what was behind this item), so
+	 * remove the item once the caller has finished with it; otherwise it
+	 * and its reference keep the client forever.
 	 */
 	if (c != NULL && item->queue == c->queue && (c->flags & CLIENT_DEAD)) {
 		c->references++;
@@ -729,6 +731,35 @@ static enum cmd_retval
 cmdq_fire_callback(struct cmdq_item *item)
 {
 	return (item->cb(item, item->data));
+}
+
+/*
+ * A lost client's queue stops at an item that waits (run -d, a prompt), and
+ * the server loop never runs it again. Handle what is behind that item now,
+ * while the client is as server_client_lost runs its queue: callbacks run,
+ * as they would have (they free what they own), and commands are dropped, as
+ * they would not run for a dead client. The waiting item goes when it ends.
+ */
+void
+cmdq_flush_lost(struct client *c)
+{
+	struct cmdq_item	*first, *item, *item1;
+
+	first = TAILQ_FIRST(&c->queue->list);
+	if (first == NULL)
+		return;
+	TAILQ_FOREACH_SAFE(item, &c->queue->list, entry, item1) {
+		if (item == first || (item->flags & CMDQ_WAITING))
+			continue;
+		if (item->type == CMDQ_CALLBACK && (~item->flags & CMDQ_FIRED)) {
+			item->flags |= CMDQ_FIRED;
+			if (cmdq_fire_callback(item) == CMD_RETURN_WAIT) {
+				item->flags |= CMDQ_WAITING;
+				continue;
+			}
+		}
+		cmdq_remove(item);
+	}
 }
 
 /* Process next item on command queue. */
