@@ -1793,6 +1793,8 @@ grid_wrap_position(struct grid *gd, u_int px, u_int py, u_int *wx, u_int *wy)
 {
 	u_int	ax = 0, ay = 0, yy;
 
+	if (py > gd->hsize + gd->sy - 1)
+		py = gd->hsize + gd->sy - 1;
 	for (yy = 0; yy < py; yy++) {
 		if (gd->linedata[yy].flags & GRID_LINE_WRAPPED)
 			ax += gd->linedata[yy].cellused;
