@@ -26,6 +26,7 @@ check '#{e|%:,}' ''
 check '#{e|%:7,0}' ''
 check '#{e|/:1,0}' ''
 check '#{e|+:nan,0}' ''
+check '#{e|-:1e30,1e30}' ''
 check '#{e|*:1e30,1}' ''
 check '#{e|+:-inf,1}' ''
 check '#{e|*:3,4}' 12
