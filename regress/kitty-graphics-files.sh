@@ -59,15 +59,17 @@ wait_is() {
 # wait until the pane has parsed it (it ends with OSC 7 "done"). The inner
 # tmux must keep answering.
 run() {
+	# respawn-pane keeps the last path: a new marker each run.
+	DONE=$((DONE + 1))
 	timeout -s KILL 5 $INNER respawn-pane -k -t0 \
-	    "stty raw -echo; printf '$1\\033]7;done\\007'; exec cat -v" || exit 1
+	    "stty raw -echo; printf '$1\\033]7;done$DONE\\007'; exec cat -v" || exit 1
 	_i=0
 	while :; do
 		_p=$(timeout -s KILL 5 $INNER display -pt0 '#{pane_path}') || {
 			fail "the inner tmux does not answer"
 			exit 1
 		}
-		[ "$_p" = done ] && break
+		[ "$_p" = done$DONE ] && break
 		_i=$((_i + 1))
 		if [ $_i -ge 400 ]; then
 			fail "the pane did not finish"

@@ -37,9 +37,11 @@ wait_is() {
 
 # Write $1 (printf format) in the inner pane; wait until it is parsed.
 run() {
+	# respawn-pane keeps the last path: a new marker each run.
+	DONE=$((DONE + 1))
 	$INNER respawn-pane -k -t0 \
-	    "stty raw -echo; printf '$1\\033]7;done\\007'; exec cat -v" || exit 1
-	wait_is "$INNER display -pt0 '#{pane_path}'" done
+	    "stty raw -echo; printf '$1\\033]7;done$DONE\\007'; exec cat -v" || exit 1
+	wait_is "$INNER display -pt0 '#{pane_path}'" done$DONE
 }
 
 # What the inner pane holds on the first row, with OSC 66, and its cursor.

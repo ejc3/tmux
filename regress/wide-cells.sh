@@ -73,9 +73,11 @@ check() {
 # Run $2 (printf format) in the pane and do the checks, also after a reflow
 # to 4 columns and back, with a selection copied.
 run() {
-	$TMUX respawn-pane -k "printf '$2\\033]7;done\\007'; exec cat" ||
+	# respawn-pane keeps the last path: a new marker each run.
+	DONE=$((DONE + 1))
+	$TMUX respawn-pane -k "printf '$2\\033]7;done$DONE\\007'; exec cat" ||
 	    exit 1
-	wait_is "$TMUX display -p '#{pane_path}'" done || exit 1
+	wait_is "$TMUX display -p '#{pane_path}'" done$DONE || exit 1
 	check "$1" "capturep -pC ; capturep -pJ"
 	check "$1 at 4" "resize-window -x 4"
 	check "$1 back" "resize-window -x $SX"
