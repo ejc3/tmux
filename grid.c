@@ -1888,6 +1888,34 @@ grid_trim_overhang(struct grid *gd, u_int py)
 		grid_clear_cell(gd, x, py, 8, 0);
 }
 
+/*
+ * Whether a line's cells past the grid's edge are only the padding of a
+ * character a reflow left overhanging it (grid_reflow_breaks). A reader
+ * that takes a row as its first sx cells then has all of the line: the
+ * character is in the row, and the row wraps on as any other.
+ */
+int
+grid_line_overhangs(struct grid *gd, u_int py)
+{
+	struct grid_line	*gl = &gd->linedata[py];
+	struct grid_cell	 gc;
+	u_int			 x;
+
+	if (gl->cellsize <= gd->sx)
+		return (0);
+	for (x = gd->sx; x < gl->cellused; x++) {
+		grid_get_cell(gd, x, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			return (0);
+	}
+	for (x = gd->sx; x > 0; x--) {
+		grid_get_cell(gd, x - 1, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			return (x - 1 + gc.data.width > gd->sx);
+	}
+	return (0);
+}
+
 /* Get length of line. */
 u_int
 grid_line_length(struct grid *gd, u_int py)

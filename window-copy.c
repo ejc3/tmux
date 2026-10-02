@@ -2084,7 +2084,8 @@ window_copy_cmd_next_matching_bracket(struct window_copy_cmd_state *cs)
 				gl = grid_get_line(s->grid, py);
 				if (~gl->flags & GRID_LINE_WRAPPED)
 					continue;
-				if (gl->cellsize > s->grid->sx)
+				if (gl->cellsize > s->grid->sx &&
+				    !grid_line_overhangs(s->grid, py))
 					continue;
 				px = 0;
 				py++;
@@ -4038,20 +4039,39 @@ window_copy_search_compare(struct grid *gd, u_int px, u_int py,
 	return (memcmp(ud->data, sud->data, ud->size) == 0);
 }
 
+/*
+ * A character matched at px overhangs its row (a reflow narrower than it):
+ * the row has only some of its padding and the next row follows. Skip the
+ * rest of its padding in the search grid, and go on at the next row.
+ */
+static void
+window_copy_search_overhang(struct grid *gd, const struct grid_cell *gc,
+    u_int px, u_int *bx, u_int *skip)
+{
+	u_int	w = gc->data.width;
+
+	if ((gc->flags & (GRID_FLAG_PADDING|GRID_FLAG_TAB)) ||
+	    px + w <= gd->sx)
+		return;
+	*bx += w - 1;
+	*skip += px + w - gd->sx;	/* the next row starts sooner */
+}
+
 static int
 window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
     u_int first, u_int last, int cis)
 {
 	u_int			 ax, bx, px, pywrap, endline, padding;
+	u_int			 skip;
 	int			 matched;
 	struct grid_line	*gl;
 	struct grid_cell	 gc;
 
 	endline = gd->hsize + gd->sy - 1;
 	for (ax = first; ax < last; ax++) {
-		padding = 0;
+		padding = skip = 0;
 		for (bx = 0; bx < sgd->sx; bx++) {
-			px = ax + bx + padding;
+			px = ax + bx + padding - skip;
 			pywrap = py;
 			/* Wrap line. */
 			while (px >= gd->sx && pywrap < endline) {
@@ -4073,6 +4093,7 @@ window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
 			    sgd, bx, cis);
 			if (!matched)
 				break;
+			window_copy_search_overhang(gd, &gc, px, &bx, &skip);
 		}
 		if (bx == sgd->sx) {
 			*ppx = ax;
@@ -4087,15 +4108,16 @@ window_copy_search_rl(struct grid *gd,
     struct grid *sgd, u_int *ppx, u_int py, u_int first, u_int last, int cis)
 {
 	u_int			 ax, bx, px, pywrap, endline, padding;
+	u_int			 skip;
 	int			 matched;
 	struct grid_line	*gl;
 	struct grid_cell	 gc;
 
 	endline = gd->hsize + gd->sy - 1;
 	for (ax = last; ax > first; ax--) {
-		padding = 0;
+		padding = skip = 0;
 		for (bx = 0; bx < sgd->sx; bx++) {
-			px = ax - 1 + bx + padding;
+			px = ax - 1 + bx + padding - skip;
 			pywrap = py;
 			/* Wrap line. */
 			while (px >= gd->sx && pywrap < endline) {
@@ -4117,6 +4139,7 @@ window_copy_search_rl(struct grid *gd,
 			    sgd, bx, cis);
 			if (!matched)
 				break;
+			window_copy_search_overhang(gd, &gc, px, &bx, &skip);
 		}
 		if (bx == sgd->sx) {
 			*ppx = ax - 1;
@@ -6235,12 +6258,13 @@ window_copy_copy_line(struct window_mode_entry *wme, char **buf, size_t *off,
 	 * on screen.
 	 */
 	gl = grid_get_line(gd, sy);
-	if (gl->flags & GRID_LINE_WRAPPED && gl->cellsize <= gd->sx)
+	if ((gl->flags & GRID_LINE_WRAPPED) &&
+	    (gl->cellsize <= gd->sx || grid_line_overhangs(gd, sy)))
 		wrapped = 1;
 
 	/* If the line was wrapped, don't strip spaces (use the full length). */
 	if (wrapped)
-		xx = gl->cellsize;
+		xx = (gl->cellsize > gd->sx) ? gd->sx : gl->cellsize;
 	else
 		xx = window_copy_find_length(wme, sy);
 	if (ex > xx)
