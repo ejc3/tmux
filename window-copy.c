@@ -4460,6 +4460,11 @@ window_copy_cstrtocellpos(struct grid *gd, u_int ncells, u_int *ppx, u_int *ppy,
 			}
 			d = cells[ccell].d;
 			dlen = cells[ccell].dlen;
+			if (dlen == 0) {
+				/* Padding: no text (and no pointer). */
+				ccell++;
+				continue;
+			}
 			if (dlen == 1) {
 				if (str[pos] != *d) {
 					match = 0;
