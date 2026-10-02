@@ -3992,7 +3992,13 @@ window_copy_scroll_to(struct window_mode_entry *wme, u_int px, u_int py,
 	if (py >= gd->hsize - data->oy && py < gd->hsize - data->oy + gd->sy)
 		data->cy = py - (gd->hsize - data->oy);
 	else {
+		/*
+		 * Put the line gap rows above the bottom: at least one, or a
+		 * screen of fewer than 4 rows put it one past the bottom.
+		 */
 		gap = gd->sy / 4;
+		if (gap == 0)
+			gap = 1;
 		if (py < gd->sy) {
 			offset = 0;
 			data->cy = py;
