@@ -45,15 +45,15 @@ wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
     exit 1
 touch $DIR/go
-wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q =END=" 400 ||
     { echo "output did not arrive"; exit 1; }
 
 # "held 05" went into the scrollback: its row in the terminal is red.
-n=$($OUTER capturep -pt tmux -S- -E- | grep -n '^held 05' | tail -1 | cut -d: -f1)
+n=$($OUTER capturep -pt =tmux: -S- -E- | grep -n '^held 05' | tail -1 | cut -d: -f1)
 [ -n "$n" ] || { echo 'held 05 missing'; exit 1; }
-h=$($OUTER display -pt tmux '#{history_size}')
+h=$($OUTER display -pt =tmux: '#{history_size}')
 row=$((n - 1 - h))
-line=$($OUTER capturep -pet tmux -S $row -E $row)
+line=$($OUTER capturep -pet =tmux: -S $row -E $row)
 case "$line" in
 *'[31mheld 05'*) exit 0 ;;
 esac

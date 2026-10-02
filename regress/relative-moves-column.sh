@@ -48,9 +48,9 @@ wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
     exit 1
 touch $DIR/go
-wait_for "$OUTER capturep -p -t tmux | grep -q =END=" 400 ||
+wait_for "$OUTER capturep -p -t =tmux: | grep -q =END=" 400 ||
     { echo "output did not arrive"; exit 1; }
 
-row=$($OUTER capturep -p -t tmux | sed -n 3p)
+row=$($OUTER capturep -p -t =tmux: | sed -n 3p)
 [ "$row" = "         X" ] || { echo "row 3 '$row', want X in column 10"; exit 1; }
 exit 0

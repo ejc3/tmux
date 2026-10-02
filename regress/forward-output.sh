@@ -56,7 +56,7 @@ run() {
 	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
 	    exit 1
-	$OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
+	$OUTER pipep -O -t =tmux: "cat >$DIR/out" || exit 1
 	touch $DIR/go
 	wait_for "grep -q =END= $DIR/out 2>/dev/null" 400 ||
 	    { echo "output did not arrive"; exit 1; }
@@ -82,7 +82,7 @@ has '\033\\[c' && { echo "device attributes query written"; exit 1; }
 has '\033\\[?7;1000l' && { echo "mouse mode written"; exit 1; }
 # The terminal shows what the program meant: with autowrap off each character
 # past the margin lands on the last column, so the row is XX, 78 o and Y.
-[ "$($OUTER capturep -pt tmux | grep -c '^XXo*Y$')" = 1 ] ||
+[ "$($OUTER capturep -pt =tmux: | grep -c '^XXo*Y$')" = 1 ] ||
     { echo "terminal does not show the row as written"; exit 1; }
 # Without RGB colour, red is the nearest of the 256 colours.
 has '\033\\[38;5;196mred' ||

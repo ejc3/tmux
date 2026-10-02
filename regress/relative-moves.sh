@@ -61,7 +61,7 @@ wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 $INNER neww -t inner:2 "sh $DIR/write.sh $DIR" || exit 1
 wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
     exit 1
-$OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
+$OUTER pipep -O -t =tmux: "cat >$DIR/out" || exit 1
 wait_for "grep -q =END= $DIR/out 2>/dev/null" 400 ||
     { echo "output did not arrive"; exit 1; }
 

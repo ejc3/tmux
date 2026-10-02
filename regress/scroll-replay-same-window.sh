@@ -38,7 +38,7 @@ $OUTER new -d -s tmux -x 80 -y 24 \
 wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
     exit 1
-$OUTER capturep -pt tmux -S- -E- | grep -q PRETMUX || {
+$OUTER capturep -pt =tmux: -S- -E- | grep -q PRETMUX || {
 	echo 'no line before tmux'
 	exit 1
 }
@@ -47,9 +47,9 @@ $INNER selectw -t inner:5 || exit 1
 # The pane prints a marker after the switch: once the terminal has it, it has
 # had whatever the switch sent.
 touch $DIR/go
-wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q =END=" 400 ||
     { echo "marker did not arrive"; exit 1; }
-if ! $OUTER capturep -pt tmux -S- -E- | grep -q PRETMUX; then
+if ! $OUTER capturep -pt =tmux: -S- -E- | grep -q PRETMUX; then
 	echo 'scrollback cleared'
 	exit 1
 fi

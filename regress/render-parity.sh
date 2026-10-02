@@ -393,7 +393,7 @@ wait_quiet() {
 	n=0
 	while [ $same -lt 3 ]; do
 		now=$($OUTER capturep -pet bare -S- -E- 2>/dev/null | cksum)
-		now="$now $($OUTER capturep -pet tmux -S- -E- 2>/dev/null | cksum)"
+		now="$now $($OUTER capturep -pet =tmux: -S- -E- 2>/dev/null | cksum)"
 		if [ "$now" = "$last" ]; then
 			same=$((same + 1))
 		else

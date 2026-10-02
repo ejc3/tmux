@@ -42,7 +42,7 @@ printf 'before\033[2J\033[H\033[JPOPUPCLEARED'
 exec sleep 100000
 EOS
 $INNER display-popup -E -c "$client" -w 30 -h 5 "sh $DIR/popup.sh" &
-wait_for "$OUTER capturep -pt tmux 2>/dev/null | grep -q POPUPCLEARED" 100 || {
+wait_for "$OUTER capturep -pt =tmux: 2>/dev/null | grep -q POPUPCLEARED" 100 || {
 	echo 'popup not drawn'
 	exit 1
 }

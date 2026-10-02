@@ -48,12 +48,12 @@ $INNER neww -d -t inner:2 "sh $DIR/write.sh $DIR" \; \
 wait_for "$INNER capturep -pt inner:2 | grep -q =END=" 400 ||
     { echo "output not read"; exit 1; }
 $INNER selectw -t inner:2 || exit 1
-wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q =END=" 400 ||
     { echo "window not drawn"; exit 1; }
 settle tmux
 
-if $OUTER capturep -pJt tmux -S- -E- | grep -q 'abc *def'; then
-	$OUTER capturep -pJt tmux -S- -E- | grep 'abc'
+if $OUTER capturep -pJt =tmux: -S- -E- | grep -q 'abc *def'; then
+	$OUTER capturep -pJt =tmux: -S- -E- | grep 'abc'
 	exit 1
 fi
 exit 0

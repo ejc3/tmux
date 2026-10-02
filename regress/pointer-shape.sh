@@ -90,7 +90,7 @@ for mode in on off; do
 	wait_for "[ -n \"\$($INNER lsc 2>/dev/null)\" ]" 100 || exit 1
 	wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400 ||
 	    exit 1
-	$OUTER pipep -O -t tmux "cat >$DIR/out" || exit 1
+	$OUTER pipep -O -t =tmux: "cat >$DIR/out" || exit 1
 	touch $DIR/go
 	# Each step gives the terminal one more OSC 22.
 	wait_for "[ \$(shapes) -ge 1 ]" 400 || { echo "no shape set"; exit 1; }

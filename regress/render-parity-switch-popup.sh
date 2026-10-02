@@ -61,7 +61,7 @@ run() {
 	touch $DIR/goA
 	wait_for "$INNER capturep -pt inner:0 | grep -q A22" 400 ||
 	    { echo "A not read"; exit 1; }
-	wait_for "$OUTER capturep -pt tmux | grep -q A22" 400 ||
+	wait_for "$OUTER capturep -pt =tmux: | grep -q A22" 400 ||
 	    { echo "A not drawn"; exit 1; }
 	touch $DIR/goB
 	wait_for "$INNER capturep -pt inner:2 | grep -q B22" 400 ||
@@ -71,18 +71,18 @@ run() {
 	# At the top left, where the history is painted before it scrolls.
 	$INNER display-popup -c "$client" -x 0 -y 10 -w 30 -h 10 \
 	    "echo POPUP; exec sleep 100" &
-	wait_for "$OUTER capturep -pt tmux | grep -q POPUP" 400 ||
+	wait_for "$OUTER capturep -pt =tmux: | grep -q POPUP" 400 ||
 	    { echo "popup not shown"; exit 1; }
 	# Switch under the popup; another command makes the server go round
 	# its loop (and hold the painting back) before the popup goes.
 	$INNER selectw -t inner:2 || exit 1
 	$INNER display -p x >/dev/null || exit 1
 	$INNER display-popup -C -c "$client"
-	wait_for "$OUTER capturep -pt tmux | grep -q B22" 400 ||
+	wait_for "$OUTER capturep -pt =tmux: | grep -q B22" 400 ||
 	    { echo "B not drawn"; exit 1; }
 	settle tmux
 
-	$OUTER capturep -pJt tmux -S- -E- >$DIR/got
+	$OUTER capturep -pJt =tmux: -S- -E- >$DIR/got
 	gone
 	if grep -q 'AB' $DIR/got; then
 		echo "scroll-replay $1: windows joined"

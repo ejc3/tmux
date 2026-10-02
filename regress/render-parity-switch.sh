@@ -51,18 +51,18 @@ wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400
 touch $DIR/goA
 wait_for "$INNER capturep -pt inner:0 | grep -q A22" 400 ||
     { echo "A not read"; exit 1; }
-wait_for "$OUTER capturep -pt tmux | grep -q A22" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q A22" 400 ||
     { echo "A not drawn"; exit 1; }
 touch $DIR/goB
 wait_for "$INNER capturep -pt inner:2 | grep -q B22" 400 ||
     { echo "B not read"; exit 1; }
 $INNER selectw -t inner:2 || exit 1
-wait_for "$OUTER capturep -pt tmux | grep -q B22" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q B22" 400 ||
     { echo "B not drawn"; exit 1; }
 settle tmux
 
-if $OUTER capturep -pJt tmux -S- -E- | grep -q 'AB'; then
-	$OUTER capturep -pJt tmux -S- -E- | grep 'AB' | cut -c1-40
+if $OUTER capturep -pJt =tmux: -S- -E- | grep -q 'AB'; then
+	$OUTER capturep -pJt =tmux: -S- -E- | grep 'AB' | cut -c1-40
 	exit 1
 fi
 exit 0

@@ -65,15 +65,15 @@ run() {
 	    exit 1
 	touch $DIR/go
 	wait_for "[ -e $DIR/held ]" 100 || exit 1
-	$OUTER resizew -t tmux -x $2 || exit 1
+	$OUTER resizew -t =tmux: -x $2 || exit 1
 	wait_for "[ \"\$($INNER display -p '#{client_width}')\" = $2 ]" 400 ||
 	    { echo "client not resized"; exit 1; }
 	touch $DIR/resized
-	wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+	wait_for "$OUTER capturep -pt =tmux: | grep -q =END=" 400 ||
 	    { echo "output did not arrive"; exit 1; }
 
 	# Every line once, whole, in order, from the last marker on.
-	$OUTER capturep -pJt tmux -S- -E- |
+	$OUTER capturep -pJt =tmux: -S- -E- |
 	    awk '/@@render-parity@@/ { n = 0 }
 		/^line [0-9][0-9] / { l[n++] = $0 }
 		END { for (i = 0; i < n; i++) print l[i] }' >$DIR/got

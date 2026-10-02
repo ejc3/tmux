@@ -44,13 +44,13 @@ wait_for "[ -n \"\$($INNER display -p '#{client_termtype}' 2>/dev/null)\" ]" 400
     exit 1
 client=$($INNER lsc -F '#{client_name}' | head -1)
 $INNER display-popup -c "$client" -w 30 -h 5 "echo POPUPTEXT; exec sleep 100" &
-wait_for "$OUTER capturep -pt tmux | grep -q POPUPTEXT" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q POPUPTEXT" 400 ||
     { echo 'popup not shown'; exit 1; }
 touch $DIR/go
-wait_for "$OUTER capturep -pt tmux | grep -q =END=" 400 ||
+wait_for "$OUTER capturep -pt =tmux: | grep -q =END=" 400 ||
     { echo "output did not arrive"; exit 1; }
 
-if ! $OUTER capturep -pt tmux | grep -q POPUPTEXT; then
+if ! $OUTER capturep -pt =tmux: | grep -q POPUPTEXT; then
 	echo 'popup gone'
 	exit 1
 fi
