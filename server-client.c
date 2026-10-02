@@ -1253,7 +1253,8 @@ server_client_update_latest(struct client *c)
 {
 	struct window	*w;
 
-	if (c->session == NULL)
+	/* A client that has gone is never the latest (its queue may still run). */
+	if (c->session == NULL || (c->flags & CLIENT_DEAD))
 		return;
 	w = c->session->curw->window;
 
