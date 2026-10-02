@@ -839,6 +839,26 @@ def leak_bad_command(g, i):
         g.server.cmd(cmd, check=False)
 
 
+def leak_keys_behind_wait(g, i):
+    # A key runs a job that waits; more keys queue behind it; the client
+    # goes before the job ends. The keys queued must be freed, not left.
+    done = os.path.join(g.tmp, 'job%d' % i)
+    g.server.cmd('bind', '-n', 'F5', 'run-shell',
+                 'while [ ! -e %s.go ]; do sleep 0.02; done; touch %s' %
+                 (done, done))
+    t = Terminal(g.server, rows=20, cols=60)
+    g.terms.append(t)
+    g.settle()
+    t.send(b'\033[15~' + b'abcdefgh' * 4)
+    g.settle()
+    g.terms.remove(t)
+    t.close()
+    wait(lambda: len(g.server.cmd('list-clients').splitlines()) == 1,
+         'client to go')
+    open(done + '.go', 'w').close()
+    wait(lambda: os.path.exists(done), 'job to end')
+
+
 def lifecycle_truncate(g, i):
     # The file shrinks while tmux reads it.
     path = tmpimage(g.tmp, os.urandom(3 * 256 * 256), 'trunc')
@@ -981,6 +1001,7 @@ SCENARIOS = [
     ('lifecycle-exit-resize', None, lifecycle_exit_resize),
     ('alt-stale-cursor', None, alt_stale_cursor),
     ('leak-bad-command', None, leak_bad_command),
+    ('leak-keys-behind-wait', None, leak_keys_behind_wait),
     # Upstream leaks.
     ('leak-term-remove', leak_term_remove_setup, leak_term_remove),
     ('leak-run-wait-killed', None, leak_run_wait_killed),
