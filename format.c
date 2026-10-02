@@ -5952,8 +5952,15 @@ format_replace_expression(struct format_modifier *mexp,
 	}
 	if (use_fp)
 		xasprintf(&value, "%.*f", prec, result);
-	else
+	else {
+		/* Not a number (0 % 0) or too big has no integer: it fails. */
+		if (isnan(result) || fabs(result) >= 9.2e18) {
+			format_log(es, "expression result %f is not an integer",
+			    result);
+			goto fail;
+		}
 		xasprintf(&value, "%.*f", prec, (double)(long long)result);
+	}
 	format_log(es, "expression result is %s", value);
 
 	free(right);
