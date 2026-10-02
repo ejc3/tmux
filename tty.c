@@ -2928,7 +2928,7 @@ tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
 	struct grid_cell	 gc, defaults;
 	struct tty_style_ctx	 style_ctx;
 	u_int			 k, row, x;
-	int			 full, cont;
+	int			 full, cont, bg;
 
 	/* The pane's own style, palette and links, as when it is drawn. */
 	tty_default_colours(&defaults, wp, &style_ctx.dim);
@@ -2958,6 +2958,15 @@ tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
 			grid_get_cell(gd, x, k, &gc);
 			if (gc.flags & GRID_FLAG_PADDING)
 				continue;
+			if (x + gc.data.width > gd->sx) {
+				/* Overhanging the row (a reflow): blanks. */
+				bg = gc.bg;
+				memcpy(&gc, &grid_default_cell, sizeof gc);
+				gc.bg = bg;
+				for (; x < gd->sx; x++)
+					tty_cell(tty, &gc, &style_ctx);
+				break;
+			}
 			tty_cell(tty, &gc, &style_ctx);
 		}
 		if (!full) {

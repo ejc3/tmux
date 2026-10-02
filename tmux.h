@@ -3677,6 +3677,7 @@ void	 grid_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_set_cells(struct grid *, u_int, u_int, const struct grid_cell *,
 	     const char *, size_t);
 struct grid_line *grid_get_line(struct grid *, u_int);
+void	 grid_trim_overhang(struct grid *, u_int);
 void	 grid_adjust_lines(struct grid *, u_int);
 void	 grid_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_clear_lines(struct grid *, u_int, u_int, u_int);
@@ -3687,7 +3688,8 @@ char	*grid_string_cells(struct grid *, u_int, u_int, u_int,
 void	 grid_duplicate_lines(struct grid *, u_int, struct grid *, u_int,
 	     u_int);
 void	 grid_reflow(struct grid *, u_int);
-void	 grid_wrap_position(struct grid *, u_int, u_int, u_int *, u_int *);
+void	 grid_wrap_position(struct grid *, u_int, u_int, u_int, u_int *,
+	     u_int *);
 void	 grid_unwrap_position(struct grid *, u_int *, u_int *, u_int, u_int);
 u_int	 grid_line_length(struct grid *, u_int);
 u_int	 grid_line_limit(struct grid *, u_int);

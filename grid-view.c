@@ -117,6 +117,7 @@ grid_view_set_cell(struct grid *gd, u_int px, u_int py,
     const struct grid_cell *gc)
 {
 	grid_set_cell(gd, grid_view_x(gd, px), grid_view_y(gd, py), gc);
+	grid_trim_overhang(gd, grid_view_y(gd, py));
 }
 
 /* Set padding. */
@@ -124,6 +125,7 @@ void
 grid_view_set_padding(struct grid *gd, u_int px, u_int py, int bg)
 {
 	grid_set_padding(gd, grid_view_x(gd, px), grid_view_y(gd, py), bg);
+	grid_trim_overhang(gd, grid_view_y(gd, py));
 }
 
 /* Set cells. */
@@ -133,6 +135,7 @@ grid_view_set_cells(struct grid *gd, u_int px, u_int py,
 {
 	grid_set_cells(gd, grid_view_x(gd, px), grid_view_y(gd, py), gc, s,
 	    slen);
+	grid_trim_overhang(gd, grid_view_y(gd, py));
 }
 
 /* Clear into history, returning how many lines went there. */
@@ -179,10 +182,9 @@ grid_view_clear(struct grid *gd, u_int px, u_int py, u_int nx, u_int ny,
 			broken |= grid_view_break(gd, px + nx, yy, bg);
 	}
 
-	px = grid_view_x(gd, px);
-	py = grid_view_y(gd, py);
-
-	grid_clear(gd, px, py, nx, ny, bg);
+	grid_clear(gd, grid_view_x(gd, px), grid_view_y(gd, py), nx, ny, bg);
+	for (yy = py; yy < py + ny; yy++)
+		grid_trim_overhang(gd, grid_view_y(gd, yy));
 	return (broken);
 }
 
@@ -299,6 +301,7 @@ grid_view_insert_cells(struct grid *gd, u_int px, u_int py, u_int nx, u_int bg)
 	broken |= grid_view_break(gd, sx - nx, py, bg);
 	grid_move_cells(gd, grid_view_x(gd, px + nx), grid_view_x(gd, px),
 	    grid_view_y(gd, py), sx - px - nx, bg);
+	grid_trim_overhang(gd, grid_view_y(gd, py));
 	return (broken);
 }
 
@@ -323,6 +326,7 @@ grid_view_delete_cells(struct grid *gd, u_int px, u_int py, u_int nx, u_int bg)
 	    grid_view_y(gd, py), sx - px - nx, bg);
 	grid_clear(gd, grid_view_x(gd, sx - nx), grid_view_y(gd, py), nx, 1,
 	    bg);
+	grid_trim_overhang(gd, grid_view_y(gd, py));
 	return (broken);
 }
 

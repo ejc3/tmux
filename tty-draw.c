@@ -365,7 +365,8 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 		gl = grid_get_line(gd, gd->hsize + py);
 		if (gl->flags & GRID_LINE_WRAPPED) {
 			i = grid_view_get_char(gd, px + nx - 1, py, &gc) - px;
-			if (~gc.flags & GRID_FLAG_PADDING) {
+			if ((~gc.flags & GRID_FLAG_PADDING) &&
+			    i + gc.data.width <= nx) {
 				tty_cursor(tty, atx + i, aty);
 				tty_cell(tty, &gc, style_ctx);
 			}

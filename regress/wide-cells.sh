@@ -6,7 +6,9 @@
 # a character written over it. After each, and after reflowing narrower than
 # the character and back, a selection copied and captures, the server must be
 # alive (a sanitizer build stops it on an error), the cursor in the pane and
-# no row wider than the pane.
+# no row wider than the pane but for a character a reflow left overhanging
+# one; and the reflow to 4 columns and back gives the same lines (no
+# character is lost), with the cursor, if it is on a character, still on it.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -61,7 +63,10 @@ check() {
 				    " outside the pane"
 			next
 		}
-		seen && length($0) > w {
+		# Wider than the pane only as one character a reflow left
+		# overhanging a row of its own.
+		seen && length($0) > w &&
+		    $0 !~ /^(22|333|4444|55555|666666)$/ {
 			print "FAIL: " step ": a row is " length($0) " columns"
 		}' >$DIR/fail
 	if [ -s $DIR/fail ]; then
@@ -79,8 +84,24 @@ run() {
 	    exit 1
 	wait_is "$TMUX display -p '#{pane_path}'" done$DONE || exit 1
 	check "$1" "capturep -pC ; capturep -pJ"
+	before=$($TMUX capturep -peJ -S -)
+	cb=$($TMUX display -p '#{cursor_x},#{cursor_y}=#{cursor_character}=')
 	check "$1 at 4" "resize-window -x 4"
+	c4=$($TMUX display -p '#{cursor_character}')
+	check "$1 copied at 4" "copy-mode ; send -X history-top ; \
+	    send -X begin-selection ; send -X cursor-down ; \
+	    send -X cursor-right ; send -X copy-selection-and-cancel ; showb"
 	check "$1 back" "resize-window -x $SX"
+	after=$($TMUX capturep -peJ -S -)
+	ca=$($TMUX display -p '#{cursor_x},#{cursor_y}=#{cursor_character}=')
+	[ "$before" = "$after" ] ||
+		fail "$1: not the same after a reflow to 4 and back"
+	# The cursor on a character stays on it.
+	case "$cb" in
+	*==|*=\ =) ;;
+	*)	[ "=$c4=" = "=${cb#*=}" ] && [ "$ca" = "$cb" ] ||
+		    fail "$1: cursor $cb, at 4 on '$c4', back $ca" ;;
+	esac
 	check "$1 copied" "copy-mode ; send -X history-top ; \
 	    send -X begin-selection ; send -X cursor-down ; \
 	    send -X cursor-right ; send -X cursor-right ; \

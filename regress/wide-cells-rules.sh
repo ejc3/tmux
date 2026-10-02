@@ -3,9 +3,11 @@
 # The rule for a character wider than one cell, whatever its width (2 for
 # CJK and emoji, up to 6 given with OSC 66): it is its first cell and padding
 # after it, kept whole. An edit (ICH, DCH, ECH, EL, ED, insert mode) that
-# starts or ends inside one clears all of it; one wider than the pane is
-# discarded, also when a reflow makes the pane narrower; and reflow counts
-# its width once, not its padding as well.
+# starts or ends inside one clears all of it (a tab is not split: an edit
+# inside one acts as before); one written into a pane narrower than it is
+# discarded, but a reflow narrower than one keeps it, overhanging a row of
+# its own and drawn as blanks, and it is whole again when the pane is wider;
+# and reflow counts its width once, not its padding as well.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -94,11 +96,69 @@ wait_is "$TMUX display -p '#{pane_path}'" done2
 $TMUX resize-window -x 10 || exit 1
 [ "$(cursor)" = 2,0 ] && [ "$(row)" = xy ] ||
 	fail "too wide: '$(row)', cursor $(cursor)"
-run 10x3 "ab\\033]66;w=6;Y\\007cd"
+
+# A reflow narrower than a character keeps it, on a row of its own, with the
+# cursor on the same character, and it is whole again when wider. (The
+# lines start low enough that the cursor's line is not pushed into the
+# history, which loses the cursor's place as it did before.)
+run 10x12 "\\033[7Hab\\033]66;w=6;Y\\007cdef\\033[7;9H"
 $TMUX resize-window -x 4 || exit 1
-[ "$($TMUX capturep -pJ | head -1)" = abcd ] ||
-	fail "reflow narrower: $($TMUX capturep -pJ | head -1)"
-[ "$(cursor)" = 4,0 ] || fail "reflow narrower: cursor $(cursor)"
+[ "$($TMUX capturep -p | sed -n 6,8p | tr '\n' '|')" = 'ab|Y|cdef|' ] ||
+	fail "reflow narrower: $($TMUX capturep -p | sed -n 6,8p | tr '\n' '|')"
+[ "$(cursor)" = 0,7 ] && [ "$($TMUX display -p "#{cursor_character}")" = c ] ||
+	fail "reflow narrower: cursor $(cursor)"
+$TMUX resize-window -x 10 || exit 1
+[ "$(row 6)" = 'ab^[]66;w=6;Y^[\cd' ] || fail "wider again: $(row 6)"
+[ "$(cursor)" = 8,6 ] || fail "wider again: cursor $(cursor)"
+$TMUX resize-window -x 4 \; resize-window -x 1 \; resize-window -x 10 ||
+	exit 1
+[ "$(row 6)" = 'ab^[]66;w=6;Y^[\cd' ] || fail "after 1 column: $(row 6)"
+[ "$(cursor)" = 8,6 ] || fail "after 1 column: cursor $(cursor)"
+
+# Wide characters in the history survive a pane 1 column wide.
+run 30x3 'ab\344\275\240\345\245\275cd\r\n\r\n\r\n\r\n\r\nz'
+$TMUX resize-window -x 1 \; resize-window -x 30 || exit 1
+$TMUX capturep -p -S - | grep -q "^$(printf 'ab\344\275\240\345\245\275cd')\$" ||
+	fail "history after 1 column: $($TMUX capturep -p -S - | head -3)"
+
+# A tab survives a reflow narrower than it, and an edit inside it moves
+# its cells as before.
+for x in 5 7 1; do
+	run 30x3 'x\ty'
+	$TMUX resize-window -x $x \; resize-window -x 30 || exit 1
+	[ "$($TMUX capturep -p | head -1 | cat -A)" = 'x^Iy$' ] ||
+		fail "tab after $x columns: $($TMUX capturep -p | head -1 | cat -A)"
+done
+run 20x3 'a\tb\033[1;8H\033[@'
+[ "$($TMUX capturep -p | head -1 | cat -A)" = 'a^I b$' ] ||
+	fail "ICH in a tab: $($TMUX capturep -p | head -1 | cat -A)"
+
+# On a terminal, a character overhanging a row is drawn as blanks inside the
+# pane, with tmux drawing from its grid (clear-on-attach on) and with the
+# terminal keeping its scrollback (off, forwarding off). An outer tmux 4
+# columns wide stands in for the terminal.
+for coa in on off; do
+	$TMUX kill-server 2>/dev/null
+	N=$((N + 1))
+	TMUX="$TEST_TMUX -Ltest$$-$N -f/dev/null"
+	OUTER="$TEST_TMUX -Ltest$$-o$N -f/dev/null"
+	$TMUX new -d -x 10 -y 6 \
+	    "printf '\\033[3Hab\\033]66;w=6;Y\\007cdef\\033]7;done\\007'; exec cat" \; \
+	    set -g status off \; set -s clear-on-attach $coa \; \
+	    set -s forward-output off || exit 1
+	wait_is "$TMUX display -p '#{pane_path}'" done
+	$OUTER new -d -x 10 -y 6 "unset TMUX; exec $TMUX attach" \; \
+	    set -g status off || exit 1
+	wait_is "[ -n \"\$($TMUX lsc -F '#{client_termtype}')\" ] && echo yes" yes
+	$OUTER resize-window -x 4 || exit 1
+	wait_is "$TMUX display -p '#{pane_width}'" 4
+	$TMUX display -p x >/dev/null
+	wait_is "$OUTER capturep -p | grep -c cdef" 1
+	out=$($OUTER capturep -p | sed 's/ *$//' | tr '\n' '|')
+	[ "$out" = '|ab||cdef|||' ] ||
+		fail "clear-on-attach $coa: the terminal has '$out'"
+	$OUTER kill-server
+done
 
 # A skin tone or regional indicator does not make a character in the last
 # column wide: there is no room.
@@ -129,5 +189,29 @@ $TMUX resize-window -x 80 || exit 1
 [ "$(cursor)" = 3,2 ] || fail "join before a wide character: cursor $(cursor)"
 [ "$($TMUX capturep -pJ | sed -n 1p | tr -d 0)" = "$(printf '\344\270\255c')" ] ||
 	fail "join before a wide character: $($TMUX capturep -pJ | head -2)"
+
+# The history written to a terminal keeping its own scrollback (scroll-replay)
+# has blanks for a character overhanging a row, not the character.
+$TMUX kill-server 2>/dev/null
+N=$((N + 1))
+TMUX="$TEST_TMUX -Ltest$$-$N -f/dev/null"
+OUTER="$TEST_TMUX -Ltest$$-o$N -f/dev/null"
+$TMUX new -d -s inner -x 10 -y 4 \
+    "printf 'ab\\033]66;w=6;Y\\007cdef\\r\\n1\\r\\n2\\r\\n3\\r\\n4\\r\\n5\\033]7;done\\007'; exec cat" \; \
+    set -g status off \; set -s clear-on-attach off \; \
+    set -s forward-output off \; set -g window-size manual \; \
+    set -gw scroll-replay 100 || exit 1
+wait_is "$TMUX display -p '#{pane_path}'" done
+$TMUX resize-window -x 4 \; neww -d -t inner:5 'exec cat' || exit 1
+$OUTER new -d -s keep \; set -g default-terminal xterm-256color \; \
+    set -g status off || exit 1
+$OUTER new -d -s t -x 4 -y 4 "unset TMUX; exec $TMUX attach -t inner" ||
+    exit 1
+wait_is "[ -n \"\$($TMUX lsc -F '#{client_termtype}')\" ] && echo yes" yes
+$TMUX selectw -t inner:5 \; selectw -t inner:0 || exit 1
+wait_is "$OUTER capturep -t t -p -S - | grep -c cdef" 1
+out=$($OUTER capturep -t t -p -S - | sed 's/ *$//' | head -3 | tr '\n' '|')
+[ "$out" = 'ab||cdef|' ] || fail "replayed history: '$out'"
+$OUTER kill-server
 
 exit $exit_status

@@ -439,7 +439,8 @@ window_copy_clone_screen(struct screen *src, struct screen *hint, u_int *cx,
 	else
 		reflow = 0;
 	if (reflow)
-		grid_wrap_position(dst->grid, *cx, *cy, &wx, &wy);
+		grid_wrap_position(dst->grid, dst->grid->sx, *cx, *cy, &wx,
+		    &wy);
 	screen_resize_cursor(dst, screen_size_x(hint), screen_size_y(hint), 1,
 	    0, 0);
 	if (reflow)
@@ -1224,7 +1225,7 @@ window_copy_resize(struct window_mode_entry *wme, u_int sx, u_int sy)
 	cy = gd->hsize + data->cy - data->oy;
 	reflow = (gd->sx != sx);
 	if (reflow)
-		grid_wrap_position(gd, cx, cy, &wx, &wy);
+		grid_wrap_position(gd, gd->sx, cx, cy, &wx, &wy);
 	screen_resize_cursor(data->backing, sx, sy, 1, 0, 0);
 	if (reflow)
 		grid_unwrap_position(gd, &cx, &cy, wx, wy);

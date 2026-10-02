@@ -1466,6 +1466,21 @@ grid_cell_width(const struct grid_cell *gc)
 	return (gc->data.width);
 }
 
+/*
+ * Whether a row of width columns ends before this cell. A character starts
+ * a new row if it does not fit, but one wider than a whole row does not
+ * leave an empty one: it keeps a row to itself and overhangs it, so it comes
+ * back whole when the line is wider again. Padding stays with its
+ * character.
+ */
+static int
+grid_reflow_breaks(const struct grid_cell *gc, u_int width, u_int sx)
+{
+	u_int	w = grid_cell_width(gc);
+
+	return (w != 0 && width != 0 && width + w > sx);
+}
+
 /* Join line below onto this one. */
 static void
 grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
@@ -1596,7 +1611,7 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		width = 0;
 		for (i = at; i < used; i++) {
 			grid_get_cell1(gl, i, &gc);
-			if (width + grid_cell_width(&gc) > sx) {
+			if (grid_reflow_breaks(&gc, width, sx)) {
 				lines++;
 				width = 0;
 			}
@@ -1613,7 +1628,7 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 	xx = 0;
 	for (i = at; i < used; i++) {
 		grid_get_cell1(gl, i, &gc);
-		if (width + grid_cell_width(&gc) > sx) {
+		if (grid_reflow_breaks(&gc, width, sx)) {
 			target->linedata[line].flags |= GRID_LINE_WRAPPED;
 
 			line++;
@@ -1643,31 +1658,6 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 	 */
 	if (width < sx && (flags & GRID_LINE_WRAPPED))
 		grid_reflow_join(target, gd, sx, yy, width, 1);
-}
-
-/*
- * Discard the characters wider than the new width, with their padding: no
- * line can hold them, and kitty discards them too.
- */
-static void
-grid_reflow_discard(struct grid_line *gl, u_int sx)
-{
-	struct grid_cell	gc;
-	u_int			i, to = 0;
-	int			discarding = 0;
-
-	for (i = 0; i < gl->cellused; i++) {
-		grid_get_cell1(gl, i, &gc);
-		if (~gc.flags & GRID_FLAG_PADDING)
-			discarding = (gc.data.width > sx);
-		if (discarding)
-			continue;
-		if (to != i)
-			gl->celldata[to] = gl->celldata[i];
-		to++;
-	}
-	if (to != gl->cellused)
-		gl->cellsize = gl->cellused = to;
 }
 
 /* Reflow lines on grid to new width. */
@@ -1706,8 +1696,6 @@ grid_reflow(struct grid *gd, u_int sx)
 		}
 		if (gl->flags & GRID_LINE_DEAD)
 			continue;
-		if (gl->flags & GRID_LINE_EXTENDED)
-			grid_reflow_discard(gl, sx);
 
 		/*
 		 * Work out the width of this line. at is the point at which
@@ -1724,7 +1712,8 @@ grid_reflow(struct grid *gd, u_int sx)
 		} else {
 			for (i = 0; i < gl->cellused; i++) {
 				grid_get_cell1(gl, i, &gc);
-				if (at == 0 && width + grid_cell_width(&gc) > sx)
+				if (at == 0 &&
+				    grid_reflow_breaks(&gc, width, sx))
 					at = i;
 				width += grid_cell_width(&gc);
 			}
@@ -1741,9 +1730,10 @@ grid_reflow(struct grid *gd, u_int sx)
 
 		/*
 		 * If the line is too big, it needs to be split, whether or not
-		 * it was previously wrapped.
+		 * it was previously wrapped - unless all of it is one character
+		 * wider than the line, which keeps the line to itself.
 		 */
-		if (width > sx) {
+		if (width > sx && at != 0) {
 			grid_reflow_split(target, gd, sx, yy, at);
 			continue;
 		}
@@ -1787,9 +1777,13 @@ grid_reflow(struct grid *gd, u_int sx)
 	gd->reflow_gen = gd->scroll_generation;
 }
 
-/* Convert to position based on wrapped lines. */
+/*
+ * Convert to position based on wrapped lines. sx is the width the rows were
+ * made for (the grid's may already be the new one).
+ */
 void
-grid_wrap_position(struct grid *gd, u_int px, u_int py, u_int *wx, u_int *wy)
+grid_wrap_position(struct grid *gd, u_int sx, u_int px, u_int py, u_int *wx,
+    u_int *wy)
 {
 	u_int	ax = 0, ay = 0, yy;
 
@@ -1803,7 +1797,12 @@ grid_wrap_position(struct grid *gd, u_int px, u_int py, u_int *wx, u_int *wy)
 			ay++;
 		}
 	}
-	if (px >= gd->linedata[yy].cellused)
+	/*
+	 * At or past the end of the line (or the edge of a row a character
+	 * overhangs, which is its end).
+	 */
+	if (px >= gd->linedata[yy].cellused ||
+	    (gd->linedata[yy].cellused > sx && px >= sx))
 		ax = UINT_MAX;
 	else
 		ax += px;
@@ -1832,6 +1831,8 @@ grid_unwrap_position(struct grid *gd, u_int *px, u_int *py, u_int wx, u_int wy)
 		while (yy < ey && gd->linedata[yy].flags & GRID_LINE_WRAPPED)
 			yy++;
 		wx = gd->linedata[yy].cellused;
+		if (wx > gd->sx)
+			wx = gd->sx;	/* a character overhangs the row */
 	} else {
 		while (gd->linedata[yy].flags & GRID_LINE_WRAPPED) {
 			if (wx < gd->linedata[yy].cellused)
@@ -1839,9 +1840,52 @@ grid_unwrap_position(struct grid *gd, u_int *px, u_int *py, u_int wx, u_int wy)
 			wx -= gd->linedata[yy].cellused;
 			yy++;
 		}
+		if (wx >= gd->sx && gd->sx != 0)
+			wx = gd->sx - 1; /* inside a character that overhangs */
 	}
 	*px = wx;
 	*py = yy;
+}
+
+/*
+ * A line holds cells past its edge when a reflow left a character wider than
+ * the line overhanging it (grid_reflow_breaks). Once an edit has removed that
+ * character, its padding past the edge goes too.
+ */
+void
+grid_trim_overhang(struct grid *gd, u_int py)
+{
+	struct grid_line	*gl = &gd->linedata[py];
+	struct grid_cell	 gc;
+	u_int			 x, end;
+
+	if (gl->cellsize <= gd->sx)
+		return;
+	grid_get_cell(gd, gd->sx, py, &gc);
+	if (~gc.flags & GRID_FLAG_PADDING)
+		return;
+	for (x = gd->sx; x > 0; x--) {
+		grid_get_cell(gd, x - 1, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING) {
+			if (x - 1 + gc.data.width > gd->sx)
+				return;		/* it still overhangs */
+			break;
+		}
+	}
+
+	for (end = gd->sx; end < gl->cellsize; end++) {
+		grid_get_cell(gd, end, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			break;
+	}
+	if (end >= gl->cellused) {
+		gl->cellsize = gd->sx;
+		if (gl->cellused > gd->sx)
+			gl->cellused = gd->sx;
+		return;
+	}
+	for (x = gd->sx; x < end; x++)
+		grid_clear_cell(gd, x, py, 8, 0);
 }
 
 /* Get length of line. */
