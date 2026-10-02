@@ -862,6 +862,23 @@ def alt_stale_cursor(g, i):
     g.pane(b'\033[?1049l')
 
 
+def leak_prompt_client_lost(g, i):
+    # A terminal goes while its copy mode prompt is open (t waits for the
+    # character to jump to), then the pane is killed.
+    pane = g.split()
+    g.server.cmd('select-pane', '-t', pane)
+    t = Terminal(g.server, rows=24, cols=80)
+    g.terms.append(t)
+    g.server.cmd('copy-mode', '-t', pane)
+    t.send(b't')
+    g.settle()
+    g.terms.remove(t)
+    t.close()
+    wait(lambda: len(g.server.cmd('list-clients').splitlines()) == 1,
+         'client to go')
+    g.unsplit(pane)
+
+
 def leak_bad_command(g, i):
     # A client sends a command that does not parse.
     for cmd in ('n {f', 'display -p {', 'set -g status "on'):
@@ -1032,6 +1049,7 @@ SCENARIOS = [
     ('lifecycle-exit-resize', None, lifecycle_exit_resize),
     ('alt-stale-cursor', None, alt_stale_cursor),
     ('leak-bad-command', None, leak_bad_command),
+    ('leak-prompt-client-lost', None, leak_prompt_client_lost),
     ('leak-keys-behind-wait', None, leak_keys_behind_wait),
     # Upstream leaks.
     ('leak-term-remove', leak_term_remove_setup, leak_term_remove),
