@@ -1,9 +1,10 @@
 #!/bin/sh
 
-# An integer format expression whose result is not a number (0 % 0) or does
-# not fit (1 / 0) fails, as other bad expressions do, rather than converting
-# it to an integer, which is undefined (it gave 0 and 9223372036854775808 on
-# one machine). Floating point (|f) still gives inf.
+# An integer format expression whose result or either side is not a number
+# (0 % 0, nan) or does not fit (1 / 0, 1e30) fails, as other bad expressions
+# do, rather than converting it to an integer, which is undefined (it gave 0
+# and 9223372036854775808 on one machine). Floating point (|f) still gives
+# inf.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -24,6 +25,9 @@ check() {
 check '#{e|%:,}' ''
 check '#{e|%:7,0}' ''
 check '#{e|/:1,0}' ''
+check '#{e|+:nan,0}' ''
+check '#{e|*:1e30,1}' ''
+check '#{e|+:-inf,1}' ''
 check '#{e|*:3,4}' 12
 check '#{e|%:7,4}' 3
 check '#{e|/|f:1,0}' inf
