@@ -193,7 +193,8 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
-static int	input_osc_9_conemu(const char *);
+static u_int	input_osc_9_conemu(const char *);
+static void	input_osc_9_path(struct input_ctx *, const char *);
 static void	input_osc_22(struct input_ctx *, const char *);
 static void	input_osc_66(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
@@ -2997,12 +2998,15 @@ input_exit_osc(struct input_ctx *ictx)
 		break;
 	case 9:
 		/*
-		 * 9;4 is a progress bar; the other ConEmu commands (9;1 to
-		 * 9;12, such as 9;9 with the directory) are not notifications.
+		 * 9;4 is a progress bar and 9;9 the shell's directory; the
+		 * other ConEmu commands (9;1 to 9;12) are not notifications
+		 * either.
 		 */
 		if (*p == '4' && (p[1] == ';' || p[1] == '\0'))
 			input_osc_9(ictx, p);
-		else if (wp != NULL && !input_osc_9_conemu(p))
+		else if (input_osc_9_conemu(p) == 9)
+			input_osc_9_path(ictx, p);
+		else if (wp != NULL && input_osc_9_conemu(p) == 0)
 			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 22:
@@ -3617,8 +3621,11 @@ input_osc_22(struct input_ctx *ictx, const char *p)
 	screen_pointer_set(s, p);
 }
 
-/* Whether OSC 9 is a ConEmu command (9;1 to 9;12) rather than a notification. */
-static int
+/*
+ * Which ConEmu command OSC 9 is (9;1 to 9;12), or 0 if it is not one but a
+ * notification.
+ */
+static u_int
 input_osc_9_conemu(const char *p)
 {
 	u_int	n = 0;
@@ -3627,7 +3634,46 @@ input_osc_9_conemu(const char *p)
 		return (0);
 	while (*p >= '0' && *p <= '9' && n <= 12)
 		n = n * 10 + *p++ - '0';
-	return (n <= 12 && (*p == ';' || *p == '\0'));
+	if (n > 12 || (*p != ';' && *p != '\0'))
+		return (0);
+	return (n);
+}
+
+/*
+ * Handle OSC 9;9, ConEmu's (and Windows Terminal's) report of the shell's
+ * directory, which may be in double quotes. It is the pane's path, as OSC 7
+ * sets, when it is a path tmux can use (absolute: not C:\ or \\server, which
+ * a shell in WSL sends) and OSC 7 is not giving the path already (a URL, or
+ * anything but an absolute path: that is kept, whichever of the two the shell
+ * sends last).
+ */
+static void
+input_osc_9_path(struct input_ctx *ictx, const char *p)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct window_pane	*wp = ictx->wp;
+	const char		*now = sctx->s->path;
+	char			*path;
+	size_t			 len;
+
+	if (wp == NULL || p[0] != '9' || p[1] != ';')
+		return;
+	p += 2;
+	len = strlen(p);
+	if (len >= 2 && p[0] == '"' && p[len - 1] == '"') {
+		p++;
+		len -= 2;
+	}
+	if (len == 0 || *p != '/')
+		return;
+	if (now != NULL && *now != '\0' && *now != '/')
+		return;
+	path = xstrndup(p, len);
+	if (screen_set_path(sctx->s, path, 1)) {
+		server_redraw_window_borders(wp->window);
+		server_status_window(wp->window);
+	}
+	free(path);
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */
