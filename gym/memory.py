@@ -833,6 +833,12 @@ def alt_stale_cursor(g, i):
     g.pane(b'\033[?1049l')
 
 
+def leak_bad_command(g, i):
+    # A client sends a command that does not parse.
+    for cmd in ('n {f', 'display -p {', 'set -g status "on'):
+        g.server.cmd(cmd, check=False)
+
+
 def lifecycle_truncate(g, i):
     # The file shrinks while tmux reads it.
     path = tmpimage(g.tmp, os.urandom(3 * 256 * 256), 'trunc')
@@ -974,6 +980,7 @@ SCENARIOS = [
     ('lifecycle-menu-pane', None, lifecycle_menu_pane),
     ('lifecycle-exit-resize', None, lifecycle_exit_resize),
     ('alt-stale-cursor', None, alt_stale_cursor),
+    ('leak-bad-command', None, leak_bad_command),
     # Upstream leaks.
     ('leak-term-remove', leak_term_remove_setup, leak_term_remove),
     ('leak-run-wait-killed', None, leak_run_wait_killed),
