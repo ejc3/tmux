@@ -2738,6 +2738,8 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
 		switch (pr->status) {
 		case CMD_PARSE_ERROR:
 			cause = pr->error;
+			args_free_values(values, argc);
+			free(values);
 			goto error;
 		case CMD_PARSE_SUCCESS:
 			break;
