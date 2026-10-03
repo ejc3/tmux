@@ -1681,6 +1681,8 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
 		tty_default_features(c, "ghostty", 0);
 	else if (strncmp(tmp, "Rio ", 4) == 0)
 		tty_default_features(c, "Rio", 0);
+	else if (strncmp(tmp, "kitty(", 6) == 0)
+		tty_default_features(c, "kitty", 0);
 	log_debug("%s: received extended DA %.*s", c->name, (int)*size, buf);
 
 	free(c->term_type);
