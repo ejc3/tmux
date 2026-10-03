@@ -29,19 +29,23 @@ $TMUX new-session -d -s short -x 100 -y 30 'sleep 100' || exit 1
 $TMUX set -g mouse on || exit 1
 $TMUX set -g status off || exit 1
 $TMUX2 new-session -d -x 100 -y 30 "$TMUX attach" || exit 1
-sleep 1
+# Wait for the client to answer tmux's startup queries.
+i=0
+while [ -z "$($TMUX list-clients -F '#{client_termtype}')" ]; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && fail "client did not attach"
+	sleep 0.05
+done
 
 for name in short aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
 	$TMUX rename-session "$name" || exit 1
 	for lines in none single padded; do
 		$TMUX set -g menu-border-lines "$lines" || exit 1
 		$TMUX choose-tree -s || exit 1
-		sleep 1
 
 		# Right-button press at window (60, 0), away from either edge.
 		seq=$(printf '\033[<2;61;1M')
 		$TMUX2 send-keys -l "$seq" || exit 1
-		sleep 1
 
 		row=2
 		column=54
@@ -50,21 +54,42 @@ for name in short aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; 
 		elif [ "$name" != short ]; then
 			column=31
 		fi
-		text=$($TMUX2 capture-pane -p | awk -v row="$row" \
-		    -v column="$column" 'NR == row {
-			# Keep byte offsets equal to columns with non-Unicode awk.
-			gsub(/│/, "|")
-			print substr($0, column, 7)
-		    }')
-		[ "$text" = 'Select ' ] || \
-		    fail "$lines menu for $name: expected Select at ($column, $row), got '$text'"
+		# Wait for the menu to be drawn.
+		i=0
+		while :; do
+			text=$($TMUX2 capture-pane -p | awk -v row="$row" \
+			    -v column="$column" 'NR == row {
+				# Keep byte offsets equal to columns with
+				# non-Unicode awk.
+				gsub(/│/, "|")
+				print substr($0, column, 7)
+			    }')
+			[ "$text" = 'Select ' ] && break
+			i=$((i + 1))
+			[ $i -gt 400 ] && \
+			    fail "$lines menu for $name: expected Select at ($column, $row), got '$text'"
+			sleep 0.05
+		done
 
 		# Close the menu, release the button, then leave the chooser.
 		$TMUX2 send-keys Escape || exit 1
 		seq=$(printf '\033[<2;61;1m')
 		$TMUX2 send-keys -l "$seq" || exit 1
 		$TMUX2 send-keys q || exit 1
-		sleep 1
+		# Wait until the chooser has gone and no menu is left on the
+		# screen, so the next check sees only the next menu.
+		i=0
+		until [ "$($TMUX display -p '#{pane_in_mode}')" = 0 ] &&
+		    ! $TMUX2 capture-pane -p | grep -q Select; do
+			i=$((i + 1))
+			[ $i -gt 400 ] && fail "$lines menu for $name did not close"
+			sleep 0.05
+		done
+
+		# Click the left button, so the next right press is a new click
+		# rather than a second click (which does not open the menu).
+		seq=$(printf '\033[<0;61;1M\033[<0;61;1m')
+		$TMUX2 send-keys -l "$seq" || exit 1
 	done
 done
 

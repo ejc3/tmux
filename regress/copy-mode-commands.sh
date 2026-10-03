@@ -34,15 +34,15 @@ x()
 
 wait_mode()
 {
-	want=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t copy:0 '#{pane_in_mode}' 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_want=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_got=$($TMUX display-message -p -t copy:0 '#{pane_in_mode}' 2>/dev/null)
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane_in_mode is '$got', expected '$want'"
+	fail "pane_in_mode is '$_got', expected '$_want'"
 }
 
 fresh()
@@ -62,19 +62,20 @@ select_text()
 }
 
 $TMUX new-session -d -s copy -x40 -y8 \
-    "sh -c 'i=0; while [ \$i -lt 40 ]; do printf \"  line-%02d needle (a[b]c) end\\n\" \$i; i=\$((i + 1)); done; printf \"\\nparagraph two needle\\n\\nparagraph three\\n\"; printf \"\\033]133;A\\007prompt-one\\n\\033]133;C\\007output-one\\n\\033]133;A\\007prompt-two\\n\\033]133;C\\007output-two\\n\"; exec sleep 100'" ||
+    "sh -c 'i=0; while [ \$i -lt 40 ]; do printf \"  line-%02d needle (a[b]c) end\\n\" \$i; i=\$((i + 1)); done; printf \"\\nparagraph two needle\\n\\nparagraph three\\n\"; printf \"\\033]133;A\\007prompt-one\\n\\033]133;C\\007output-one\\n\\033]133;A\\007prompt-two\\n\\033]133;C\\007output-two\\n\\033]7;done\\007\"; exec sleep 100'" ||
 	exit 1
 $TMUX set-option -g status off || exit 1
 $TMUX set-option -g history-limit 200 || exit 1
 
+# The pane sets its path (OSC 7) after the last of its output.
 i=0
-while [ "$i" -lt 50 ]; do
-	history=$($TMUX display-message -p -t copy:0 '#{history_size}')
-	[ "$history" -ge 30 ] && break
-	sleep 0.1
+while [ "$($TMUX display-message -p -t copy:0 '#{pane_path}')" != done ]; do
 	i=$((i + 1))
+	[ "$i" -lt 400 ] || fail "pane output did not finish"
+	sleep 0.05
 done
-[ "$i" -lt 50 ] || fail "history did not fill"
+history=$($TMUX display-message -p -t copy:0 '#{history_size}')
+[ "$history" -ge 30 ] || fail "history did not fill"
 
 fresh
 

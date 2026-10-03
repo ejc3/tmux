@@ -50,6 +50,83 @@ fmt()
 	$TMUX display-message -p -t "$1" "$2"
 }
 
+# wait_fmt <target> <format> <value>: poll until the format has the value.
+wait_fmt()
+{
+	_i=0
+	while [ "$(fmt "$1" "$2")" != "$3" ]; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] ||
+			fail "$2 of $1 is '$(fmt "$1" "$2")', expected '$3'"
+		sleep 0.05
+	done
+}
+
+# wait_modal: poll until window 0 has a modal pane.
+wait_modal()
+{
+	_i=0
+	while [ -z "$(fmt modal:0 '#{window_modal_pane}')" ]; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || fail "no modal pane appeared"
+		sleep 0.05
+	done
+}
+
+# wait_opt <option> <value>: poll until the global option has the value.
+wait_opt()
+{
+	_i=0
+	while [ "$($TMUX show -gv "$1")" != "$2" ]; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] ||
+			fail "$1 is '$($TMUX show -gv "$1")', expected '$2'"
+		sleep 0.05
+	done
+}
+
+# wait_capture <pane> <text>: poll until the pane shows the text.
+wait_capture()
+{
+	_i=0
+	until $TMUX capture-pane -pt "$1" | grep -qF -- "$2"; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || fail "'$2' did not appear in $1"
+		sleep 0.05
+	done
+}
+
+# sync_keys: F12 is bound to count in @sync. Send it after earlier input and
+# wait for the binding to run: the input before it has been handled.
+_sync=0
+sync_keys()
+{
+	_sync=$((_sync + 1))
+	$TMUX2 send-keys -t "$OUTER" F12
+	wait_opt @sync "$_sync"
+}
+
+# sync_report: a theme report is handled as soon as it is read, before dead,
+# modal or key-capturing panes see keys. Send one after earlier input and wait
+# for the client theme to change: the input before it has been handled.
+sync_report()
+{
+	if [ "$($TMUX list-clients -F '#{client_theme}')" = dark ]; then
+		_theme=light
+		_report='\033[?997;2n'
+	else
+		_theme=dark
+		_report='\033[?997;1n'
+	fi
+	$TMUX2 send-keys -t "$OUTER" -l "$(printf "$_report")"
+	_i=0
+	while [ "$($TMUX list-clients -F '#{client_theme}')" != "$_theme" ]; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || fail "theme report was not handled"
+		sleep 0.05
+	done
+}
+
 click()
 {
 	col="$1"
@@ -57,7 +134,6 @@ click()
 	seq=$(printf '\033[<0;%s;%sM\033[<0;%s;%sm' \
 	    "$col" "$row" "$col" "$row")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
 }
 
 move_mouse()
@@ -66,7 +142,6 @@ move_mouse()
 	row="$2"
 	seq=$(printf '\033[<35;%s;%sM' "$col" "$row")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
 }
 
 ctrl_drag()
@@ -78,13 +153,10 @@ ctrl_drag()
 
 	seq=$(printf '\033[<16;%s;%sM' "$scol" "$srow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<48;%s;%sM' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<16;%s;%sm' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
 }
 
 drag()
@@ -96,13 +168,10 @@ drag()
 
 	seq=$(printf '\033[<0;%s;%sM' "$scol" "$srow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<32;%s;%sM' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<0;%s;%sm' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
 }
 
 meta_drag()
@@ -114,22 +183,17 @@ meta_drag()
 
 	seq=$(printf '\033[<8;%s;%sM' "$scol" "$srow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<40;%s;%sM' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<8;%s;%sm' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
 }
 
 cleanup
 
 check_ok new-session -d -s modal -x 80 -y 24 'cat'
-sleep 1
 p0=$(fmt modal:0 '#{pane_id}')
 check_ok split-window -h -t "$p0" 'cat'
-sleep 1
 p1=$(fmt modal:0 '#{pane_id}')
 
 check_ok select-pane -t "$p0"
@@ -139,7 +203,6 @@ must_equal "$(fmt modal:0 '#{window_zoomed_flag}')" 1
 modal=$($TMUX new-pane -OPF '#{pane_id}' -t "$p1" \
     -x 20 -y 5 -X 20 -Y 10 'cat') ||
 	fail "new-pane -O failed"
-sleep 1
 must_equal "$(fmt "$modal" '#{pane_floating_flag}:#{pane_modal_flag}:#{pane_active}')" 1:1:1
 case "$(fmt "$modal" '#{pane_flags}')" in
 *O*) ;;
@@ -178,14 +241,12 @@ must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 
 under=$($TMUX split-window -PF '#{pane_id}' -t "$p0" 'cat') ||
 	fail "split-window under modal failed"
-sleep 1
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 must_equal "$(fmt "$under" '#{pane_active}')" 0
 must_equal "$(fmt modal:0 '#{window_zoomed_flag}')" 1
 
 float=$($TMUX new-pane -PF '#{pane_id}' -x 10 -y 4 -X 5 -Y 3 'cat') ||
 	fail "new floating pane under modal failed"
-sleep 1
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 must_equal "$(fmt "$float" '#{pane_active}')" 0
 must_equal "$(fmt modal:0 '#{window_zoomed_flag}')" 1
@@ -198,11 +259,7 @@ check_ok select-window -t modal:0
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 
 check_ok send-keys -t modal:0 'modal-key' Enter
-sleep 1
-case "$($TMUX capture-pane -pt "$modal")" in
-*modal-key*) ;;
-*) fail "keyboard input did not reach modal pane" ;;
-esac
+wait_capture "$modal" modal-key
 case "$($TMUX capture-pane -pt "$p0")" in
 *modal-key*) fail "keyboard input reached pane below modal" ;;
 esac
@@ -213,54 +270,68 @@ $TMUX set -g @modal-mouse ''
 $TMUX bind -n MouseDown1Pane run-shell \
     "$TMUX set -g @modal-mouse '#{mouse_pane}'"
 $TMUX bind x set -g @modal-prefix yes
+$TMUX set -g @sync 0
+$TMUX bind -n F12 set -gF @sync '#{e|+:#{@sync},1}'
 
 $TMUX2 new-session -d -x 80 -y 24 "$TMUX attach -t modal" ||
 	fail "outer session failed"
-sleep 1
+# The client has settled once it has the terminal's answer to its queries.
+_i=0
+until [ -n "$($TMUX list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	_i=$((_i + 1))
+	[ $_i -lt 400 ] || fail "inner client did not attach"
+	sleep 0.05
+done
 OUTER=$($TMUX2 list-panes -F '#{pane_id}' | head -1)
 [ -n "$OUTER" ] || fail "no outer pane"
 
 click 1 1
+sync_keys
 must_equal "$($TMUX show -gv @modal-mouse)" ''
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 
 panes=$(fmt modal:0 '#{window_panes}')
 ctrl_drag 1 1 8 3
+sync_keys
 must_equal "$(fmt modal:0 '#{window_panes}')" "$panes"
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 
 move_mouse 1 1
+sync_keys
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 
 left=$(fmt "$modal" '#{pane_left}')
 top=$(fmt "$modal" '#{pane_top}')
 click $((left + 1)) $((top + 1))
-must_equal "$($TMUX show -gv @modal-mouse)" "$modal"
+wait_opt @modal-mouse "$modal"
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 
 width=$(fmt "$modal" '#{pane_width}')
 right=$((left + width + 1))
+# Presses of the same button within the 300 ms click timer are a second click.
+sleep 0.35
 drag "$right" $((top + 1)) $((right + 5)) $((top + 1))
-new_width=$(fmt "$modal" '#{pane_width}')
-[ "$new_width" -gt "$width" ] ||
-	fail "modal pane did not grow after right-border drag"
+_i=0
+while [ "$(fmt "$modal" '#{pane_width}')" -le "$width" ]; do
+	_i=$((_i + 1))
+	[ $_i -lt 400 ] || fail "modal pane did not grow after right-border drag"
+	sleep 0.05
+done
 
 $TMUX2 send-keys -t "$OUTER" C-b x
-sleep 1
-must_equal "$($TMUX show -gv @modal-prefix)" yes
+wait_opt @modal-prefix yes
 
 $TMUX set-buffer -b modal-edit-test 'test'
 check_ok choose-buffer -t "$modal"
 panes=$(fmt modal:0 '#{window_panes}')
 $TMUX2 send-keys -t "$OUTER" e
-sleep 1
+sync_keys
 must_equal "$(fmt modal:0 '#{window_panes}')" "$panes"
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$modal"
 $TMUX2 send-keys -t "$OUTER" q
-sleep 1
+wait_fmt "$modal" '#{pane_in_mode}' 0
 
 check_ok kill-pane -t "$modal"
-sleep 1
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
 case "$(fmt modal:0 '#{window_flags}')" in
 *O*) fail "modal window flag remained after modal pane closed" ;;
@@ -275,13 +346,11 @@ check_ok resize-pane -Z -t "$p0"
 check_ok choose-buffer -t "$p0"
 panes=$(fmt modal:0 '#{window_panes}')
 $TMUX2 send-keys -t "$OUTER" e
-sleep 1
+wait_modal
 editor=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$editor" ] || fail "buffer editor did not open as modal pane"
 must_equal "$(fmt modal:0 '#{window_panes}')" $((panes + 1))
 must_equal "$(fmt "$editor" '#{pane_modal_flag}:#{pane_active}')" 1:1
 check_ok kill-pane -t "$editor"
-sleep 1
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
 must_equal "$(fmt modal:0 '#{pane_id}')" "$p0"
 must_equal "$(fmt modal:0 '#{window_zoomed_flag}')" 1
@@ -290,11 +359,9 @@ must_equal "$(fmt modal:0 '#{window_zoomed_flag}')" 0
 
 detached=$($TMUX new-pane -OdPF '#{pane_id}' -x 20 -y 5 -X 20 -Y 10 \
     'cat') || fail "new detached modal failed"
-sleep 1
 must_equal "$(fmt "$detached" '#{pane_modal_flag}:#{pane_active}')" 1:1
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$detached"
 check_ok kill-pane -t "$detached"
-sleep 1
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
 must_equal "$(fmt modal:0 '#{pane_id}')" "$p0"
 
@@ -303,28 +370,23 @@ check_ok customize-mode -t "$p0" \
 	-f '#{==:#{option_name},@modal-custom}'
 panes=$(fmt modal:0 '#{window_panes}')
 $TMUX2 send-keys -t "$OUTER" j Right j e
-sleep 1
+wait_modal
 editor=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$editor" ] || fail "customize editor did not open as modal pane"
 must_equal "$(fmt modal:0 '#{window_panes}')" $((panes + 1))
 must_equal "$(fmt "$editor" '#{pane_modal_flag}:#{pane_active}')" 1:1
 check_ok kill-pane -t "$editor"
-sleep 1
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
 $TMUX2 send-keys -t "$OUTER" q
-sleep 1
+sync_keys
 
 modal=$($TMUX new-pane -OkPF '#{pane_id}' -x 20 -y 5 -X 20 -Y 10 'printf done') ||
 	fail "new retained modal failed"
-sleep 2
-must_equal "$(fmt "$modal" '#{pane_dead}:#{pane_modal_flag}:#{pane_active}')" 1:1:1
+wait_fmt "$modal" '#{pane_dead}:#{pane_modal_flag}:#{pane_active}' 1:1:1
 check_ok respawn-pane -k -t "$modal" 'cat'
-sleep 1
-must_equal "$(fmt "$modal" '#{pane_dead}:#{pane_modal_flag}:#{pane_active}')" 0:1:1
+wait_fmt "$modal" '#{pane_dead}:#{pane_modal_flag}:#{pane_active}' 0:1:1
 check_ok select-pane -t "$p1"
 must_equal "$(fmt modal:0 '#{pane_id}')" "$modal"
 check_ok kill-pane -t "$modal"
-sleep 1
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
 must_equal "$(fmt modal:0 '#{pane_id}')" "$p0"
 must_equal "$(fmt "$p0" '#{window_zoomed_flag}:#{pane_zoomed_flag}')" 0:0
@@ -340,89 +402,82 @@ $TMUX bind -n z set -g @modal-root yes
 modal=$($TMUX new-pane -ODKPF '#{pane_id}' -t "$p0" \
     -x 20 -y 5 -X 20 -Y 10 'cat') ||
 	fail "new-pane -ODK failed"
-sleep 1
 $TMUX2 send-keys -t "$OUTER" C-b x z Enter
-sleep 1
+wait_capture "$modal" xz
 must_equal "$($TMUX show -gv @modal-prefix)" no
 must_equal "$($TMUX show -gv @modal-root)" no
-case "$($TMUX capture-pane -pt "$modal")" in
-*xz*) ;;
-*) fail "keys did not reach key-capturing modal pane" ;;
-esac
 left=$(fmt "$modal" '#{pane_left}')
 top=$(fmt "$modal" '#{pane_top}')
 meta_drag $((left + 2)) $((top + 2)) $((left + 7)) $((top + 4))
+_i=0
+while [ "$(fmt "$modal" '#{pane_left}:#{pane_top}')" = "$left:$top" ]; do
+	_i=$((_i + 1))
+	[ $_i -lt 400 ] || fail "key-capturing modal pane did not move"
+	sleep 0.05
+done
 new_left=$(fmt "$modal" '#{pane_left}')
 new_top=$(fmt "$modal" '#{pane_top}')
 [ "$new_left" -gt "$left" ] || [ "$new_top" -gt "$top" ] ||
 	fail "key-capturing modal pane did not move"
 $TMUX2 send-keys -t "$OUTER" Escape
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 modal=$($TMUX new-pane -ODKPF '#{pane_id}' -t "$p0" \
     -x 20 -y 5 -X 20 -Y 10 'trap "" INT; exec cat') ||
 	fail "new-pane -ODK failed"
-sleep 1
+wait_fmt "$modal" '#{pane_current_command}' cat
 $TMUX2 send-keys -t "$OUTER" C-c
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 # A dead modal does not close on Escape or C-c without -D.
 modal=$($TMUX new-pane -OPF '#{pane_id}' -t "$p0" \
     -x 20 -y 5 -X 20 -Y 10 'sleep 1') ||
 	fail "new-pane -O failed"
 check_ok set-option -p -t "$modal" remain-on-exit on
-sleep 2
-must_equal "$(fmt "$modal" '#{pane_dead}:#{pane_modal_flag}')" 1:1
+wait_fmt "$modal" '#{pane_dead}:#{pane_modal_flag}' 1:1
 $TMUX2 send-keys -t "$OUTER" Escape
+# A lone Escape is only handled once escape-time (500 ms) has passed.
 sleep 1
+sync_report
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$modal"
 check_ok kill-pane -t "$modal"
-sleep 1
 
 # failed-key closes successful panes and retains failed panes until a key.
 modal=$($TMUX new-pane -OPF '#{pane_id}' -t "$p0" \
     -x 20 -y 5 -X 20 -Y 10 'sleep 1') ||
 	fail "new-pane -O failed"
 check_ok set-option -p -t "$modal" remain-on-exit failed-key
-sleep 2
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 modal=$($TMUX new-pane -OPF '#{pane_id}' -t "$p0" \
     -x 20 -y 5 -X 20 -Y 10 'sleep 1; exit 1') ||
 	fail "new-pane -O failed"
 check_ok set-option -p -t "$modal" remain-on-exit failed-key
-sleep 2
-must_equal "$(fmt "$modal" '#{pane_dead}:#{pane_modal_flag}')" 1:1
+wait_fmt "$modal" '#{pane_dead}:#{pane_modal_flag}' 1:1
 must_equal "$($TMUX show-options -pv -t "$modal" remain-on-exit)" failed-key
 $TMUX2 send-keys -t "$OUTER" a
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 $TMUX bind P display-popup -E -t "$p0" -w 20 -h 5 -T popup-title 'cat'
 $TMUX2 send-keys -t "$OUTER" C-b P
-sleep 1
+wait_modal
 modal=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$modal" ] || fail "display-popup did not create a modal pane"
 must_equal "$(fmt "$modal" '#{pane_title}')" popup-title
 must_equal "$($TMUX show-options -pv -t "$modal" pane-border-status)" top
 must_equal "$($TMUX show-options -pv -t "$modal" pane-border-format)" \
 	'#{pane_title}'
 $TMUX2 send-keys -t "$OUTER" C-b x z Enter
-sleep 1
+wait_capture "$modal" xz
 must_equal "$($TMUX show -gv @modal-prefix)" no
 must_equal "$($TMUX show -gv @modal-root)" no
-case "$($TMUX capture-pane -pt "$modal")" in
-*xz*) ;;
-*) fail "keys did not reach display-popup pane" ;;
-esac
 $TMUX2 send-keys -t "$OUTER" Escape
+# A lone Escape is only handled once escape-time (500 ms) has passed; C-c
+# before then would be read as M-C-c.
 sleep 1
+sync_report
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$modal"
 $TMUX2 send-keys -t "$OUTER" C-c
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 # Creating a popup pane must not fire the split-window hook.
 check_ok set-hook -t modal after-split-window \
@@ -439,64 +494,58 @@ check_ok resize-window -t modal:popup-small -x 1 -y 1
 small=$(fmt modal:popup-small '#{pane_id}')
 check_ok bind Z display-popup -B -t "$small" 'cat'
 $TMUX2 send-keys -t "$OUTER" C-b Z
-sleep 1
+sync_keys
 must_equal "$(fmt modal:popup-small '#{window_panes}')" 1
 must_equal "$(fmt modal:popup-small '#{window_modal_pane}')" ''
 
 $TMUX bind D display-popup -t "$p0" -w 20 -h 5 'printf done'
 $TMUX2 send-keys -t "$OUTER" C-b D
-sleep 2
+wait_modal
 modal=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$modal" ] || fail "retained display-popup was not created"
-must_equal "$(fmt "$modal" '#{pane_dead}')" 1
+wait_fmt "$modal" '#{pane_dead}' 1
 case "$($TMUX capture-pane -pt "$modal")" in
 *'Pane is dead'*) fail "display-popup showed remain-on-exit message" ;;
 esac
 $TMUX2 send-keys -t "$OUTER" a
-sleep 1
+sync_report
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$modal"
 $TMUX2 send-keys -t "$OUTER" Escape
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 $TMUX bind K display-popup -k -t "$p0" -w 20 -h 5 'printf done'
 $TMUX2 send-keys -t "$OUTER" C-b K
-sleep 2
+wait_modal
 modal=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$modal" ] || fail "display-popup -k was not created"
-must_equal "$(fmt "$modal" '#{pane_dead}')" 1
+wait_fmt "$modal" '#{pane_dead}' 1
 $TMUX2 send-keys -t "$OUTER" a
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 $TMUX bind F display-popup -EE -t "$p0" -w 20 -h 5 'exit 1'
 $TMUX2 send-keys -t "$OUTER" C-b F
-sleep 2
+wait_modal
 modal=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$modal" ] || fail "failed display-popup -EE did not remain"
-must_equal "$(fmt "$modal" '#{pane_dead}')" 1
+wait_fmt "$modal" '#{pane_dead}' 1
 $TMUX2 send-keys -t "$OUTER" a
-sleep 1
+sync_report
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$modal"
 $TMUX2 send-keys -t "$OUTER" Escape
+# A lone Escape is only handled once escape-time (500 ms) has passed.
 sleep 1
+sync_report
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" "$modal"
 check_ok kill-pane -t "$modal"
-sleep 1
 
 check_ok display-popup -EE -t "$p0" true
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
 
 $TMUX bind G display-popup -EE -k -t "$p0" -w 20 -h 5 'exit 1'
 $TMUX2 send-keys -t "$OUTER" C-b G
-sleep 2
+wait_modal
 modal=$(fmt modal:0 '#{window_modal_pane}')
-[ -n "$modal" ] || fail "failed display-popup -EE -k did not remain"
-must_equal "$(fmt "$modal" '#{pane_dead}')" 1
+wait_fmt "$modal" '#{pane_dead}' 1
 must_equal "$($TMUX show-options -pv -t "$modal" remain-on-exit)" failed-key
 $TMUX2 send-keys -t "$OUTER" a
-sleep 1
-must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
+wait_fmt modal:0 '#{window_modal_pane}' ''
 
 check_ok display-popup -EE -k -t "$p0" true
 must_equal "$(fmt modal:0 '#{window_modal_pane}')" ''
@@ -560,6 +609,12 @@ check_ok select-pane -t "$over"
 left=$(fmt "$over" '#{pane_left}')
 top=$(fmt "$over" '#{pane_top}')
 meta_drag $((left + 2)) $((top + 2)) $((left + 7)) $((top + 4))
+_i=0
+while [ "$(fmt "$over" '#{pane_left}:#{pane_top}')" = "$left:$top" ]; do
+	_i=$((_i + 1))
+	[ $_i -lt 400 ] || fail "float-over-zoom pane did not move"
+	sleep 0.05
+done
 new_left=$(fmt "$over" '#{pane_left}')
 new_top=$(fmt "$over" '#{pane_top}')
 [ "$new_left" -gt "$left" ] || [ "$new_top" -gt "$top" ] ||
@@ -587,8 +642,8 @@ dying=$($TMUX new-pane -AdPF '#{pane_id}' -t "$base" \
 i=0
 while $TMUX list-panes -a -F '#{pane_id}' | grep -qx "$dying"; do
     i=$((i + 1))
-    [ $i -gt 50 ] && fail "short-lived float-over-zoom pane did not exit"
-    sleep 0.1
+    [ $i -gt 400 ] && fail "short-lived float-over-zoom pane did not exit"
+    sleep 0.05
 done
 must_equal "$(fmt "$base" '#{window_zoomed_flag}:#{pane_zoomed_flag}')" 1:1
 

@@ -48,14 +48,14 @@ capture()
 # capture is known to show the mode instance under test.
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
 		if printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1'"
 }
@@ -65,14 +65,14 @@ wait_for()
 # Wait (up to ~10s) until the rendered screen no longer contains $marker.
 wait_gone()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
 		if ! printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1' to disappear"
 }
@@ -83,15 +83,15 @@ wait_gone()
 # matching capture is left in CAPTURED.
 wait_count()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
-		c=$(printf '%s\n' "$CAPTURED" | grep -F -c "$1")
-		[ "$c" -eq "$2" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		_c=$(printf '%s\n' "$CAPTURED" | grep -F -c "$1")
+		[ "$_c" -eq "$2" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "timed out waiting for $2 lines of '$1' (have $c)"
+	fail "timed out waiting for $2 lines of '$1' (have $_c)"
 }
 
 # wait_clients $n
@@ -99,12 +99,12 @@ wait_count()
 # Wait (up to ~10s) until the test server has exactly $n clients attached.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 10 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
@@ -114,28 +114,28 @@ wait_clients()
 # Wait (up to ~10s) until a pane enters or leaves mode.
 wait_mode()
 {
-	t=$1
-	want=$2
+	_t=$1
+	_want=$2
 
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t "$t" '#{pane_in_mode}' \
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t "$_t" '#{pane_in_mode}' \
 		    2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane $t mode state is $got, expected $want"
+	fail "pane $_t mode state is $_got, expected $_want"
 }
 
 exit_mode()
 {
-	marker=$1
+	_marker=$1
 	shift
 
 	$TMUX send-keys -t aaa:0 "$@" || fail "send-keys $* failed"
 	wait_mode aaa:0 0
-	wait_gone "$marker"
+	wait_gone "$_marker"
 }
 
 # One client attached to each of two sessions; the mode is displayed on the
