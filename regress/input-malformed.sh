@@ -7,12 +7,12 @@ check_discard()
 {
 	name=$1
 	printf 'OK\n' >"$EXP"
-	i=0
-	while [ "$i" -lt 300 ]; do
+	_i=0
+	while [ "$_i" -lt 300 ]; do
 		capture_grid "$name" >"$TMP"
 		cmp -s "$TMP" "$EXP" && return 0
 		sleep 0.05
-		i=$((i + 1))
+		_i=$((_i + 1))
 	done
 	fail "$name (timed out waiting for discard)"
 }
@@ -24,7 +24,7 @@ test_discard()
 {
 	name=$1
 	prefix=$2
-	start_cmd "$name" 8 3 "$INPUT_HOLD"
+	start_cmd "$name" 8 3 "printf '$INPUT_DONE'; $INPUT_HOLD"
 	$TMUX select-pane -T discard-test || exit 1
 	$TMUX respawn-pane -k \
 	    "perl -e 'print qq{$prefix}, q{x} x 1100000, qq{\e\\\\\e[H\e[2JOK}'; $INPUT_HOLD" || exit 1
@@ -35,11 +35,11 @@ test_discard()
 }
 
 start_cmd csi-param-discard 8 3 \
-    "perl -e 'print qq{\e[}, q{1} x 80, qq{\030OK}'; sleep 2"
+    "perl -e 'print qq{\e[}, q{1} x 80, qq{\030OK}'; printf '$INPUT_DONE'; sleep 2"
 check_capture csi-param-discard 'OK'
 
 start_cmd csi-interm-discard 8 3 \
-    "perl -e 'print qq{\e[    \030OK}'; sleep 2"
+    "perl -e 'print qq{\e[    \030OK}'; printf '$INPUT_DONE'; sleep 2"
 check_capture csi-interm-discard 'OK'
 
 test_discard osc-discard '\e]2;'
@@ -60,7 +60,8 @@ check_raw_matches malformed-osc \
     'C 0,3 data=\(1,1,K\).* link=NONE linkid=NONE'
 
 start_pane malformed-dcs 8 3 '\033P$qBAD\033\\OK'
-check_capture malformed-dcs 'OK^[P0$r
+# The reply is echoed by the pane's terminal.
+wait_capture malformed-dcs 'OK^[P0$r
 ^[\'
 
 start_pane malformed-utf8 8 3 '\360\200\200\200A\355\240\200B'
