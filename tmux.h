@@ -1923,6 +1923,7 @@ struct tty {
 	size_t		 discarded;
 
 	size_t		 sync_offset;
+	size_t		 exempt;	/* queued bytes TTY_BLOCK ignores */
 
 	struct termios	 tio;
 
