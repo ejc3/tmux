@@ -23,14 +23,46 @@ TMUX2="$TEST_TMUX -LtestB$$ -f/dev/null"
 $TMUX2 kill-server 2>/dev/null
 
 $TMUX2 -f/dev/null new -d "$TMUX -f/dev/null new -- $shell"
-sleep 2
+
+# Wait until the inner client has attached and answered tmux's queries.
+_i=0
+until [ -n "$($TMUX list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	_i=$((_i + 1))
+	if [ $_i -ge 400 ]; then
+		echo "inner client did not attach"
+		exit 1
+	fi
+	sleep 0.05
+done
 $TMUX set -g status-style fg=default,bg=default
 
+# The status line as drawn in the outer pane.
+status_line() {
+	$TMUX2 capturep -Cep|tail -1|sed 's|\\033\[||g'
+}
+
+# Draw a unique marker first, so a status line left from the previous check
+# cannot pass for the new one; then wait for the expected line.
+_sync=0
 check() {
 	v=$($TMUX display -p "$1")
+	_sync=$((_sync + 1))
+	$TMUX set -g status-format[0] "=SYNC$_sync="
+	_i=0
+	until status_line | grep -qF "=SYNC$_sync="; do
+		_i=$((_i + 1))
+		if [ $_i -ge 400 ]; then
+			echo "status line did not show =SYNC$_sync="
+			exit 1
+		fi
+		sleep 0.05
+	done
 	$TMUX set -g status-format[0] "$1"
-	sleep 1
-	r=$($TMUX2 capturep -Cep|tail -1|sed 's|\\033\[||g')
+	_i=0
+	while r=$(status_line); [ "$r" != "$3" ] && [ $_i -lt 400 ]; do
+		_i=$((_i + 1))
+		sleep 0.05
+	done
 
 	if [ "$v" != "$2" -o "$r" != "$3" ]; then
 		printf "$1 = [$v = $2] [$r = $3]"

@@ -29,17 +29,45 @@ fail() {
 	exit 1
 }
 
+# settle: wait for the inner server to go round its loop, then for the outer
+# capture to stop changing (unchanged for 0.15 s, at most 5 s).
+settle() {
+	$TMUX2 display -p x >/dev/null || exit 1
+	_last=
+	_same=0
+	_i=0
+	while [ $_same -lt 3 ] && [ $_i -lt 100 ]; do
+		_sum=$($TMUX capturep -pe | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+		else
+			_same=0
+			_last=$_sum
+		fi
+		_i=$((_i + 1))
+		sleep 0.05
+	done
+}
+
 # compare <name>: capture the outer pane with escapes and compare (or generate).
+# The inner drawing reaches the outer pane asynchronously, so compare until it
+# matches.
 compare() {
-	sleep 1
-	$TMUX capturep -pe >$TMP || exit 1
 	if [ -n "$GENERATE" ]; then
+		settle
+		$TMUX capturep -pe >$TMP || exit 1
 		cp $TMP "$RESULTS/$1.result" || exit 1
 		echo "generated $1"
-	else
-		cmp -s $TMP "$RESULTS/$1.result" || \
-			fail "scene $1 differs from $RESULTS/$1.result"
+		return
 	fi
+	_i=0
+	while :; do
+		$TMUX capturep -pe >$TMP || exit 1
+		cmp -s $TMP "$RESULTS/$1.result" && break
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && fail "scene $1 differs from $RESULTS/$1.result"
+		sleep 0.05
+	done
 }
 
 # new_scene: fresh inner window, single full-size pane.
@@ -63,7 +91,13 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+# Wait for the inner client to answer tmux's startup queries.
+i=0
+while [ -z "$($TMUX2 list-clients -F '#{client_termtype}')" ]; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && fail "inner client did not attach"
+	sleep 0.05
+done
 
 # Right, width 1, no pad.
 new_scene

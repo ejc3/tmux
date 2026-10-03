@@ -33,7 +33,15 @@ $INNER set -g window-style 'bg=black'
 $OUTER new-session -d -x80 -y24 || exit 1
 $OUTER set -g window-style 'bg=white'
 $OUTER new-window "$INNER attach" || exit 1
-sleep 2
+# Wait for the inner client to have answered tmux's startup queries and
+# reported its theme.
+i=0
+until $INNER list-clients -F '#{client_termtype}:#{client_theme}' 2>/dev/null |
+    grep -q '.:.'; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "[FAIL] inner client reported no theme"; exit 1; }
+	sleep 0.05
+done
 
 # Query DSR 996 from an inner pane and capture the CSI ? 997 ; Ps n reply.
 $INNER respawnw -k -t:0 -- sh -c "
@@ -41,9 +49,16 @@ $INNER respawnw -k -t:0 -- sh -c "
 	stty raw -echo
 	printf '\033[?996n'
 	dd bs=1 count=9 2>/dev/null | cat -v > $TMP
+	printf '\033]7;done\007'
 	sleep 1
 "
-sleep 2
+# The pane prints OSC 7 once the reply is in $TMP.
+i=0
+while [ "$($INNER display -p -t:0 '#{pane_path}')" != done ]; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "[FAIL] no reply to DSR 996"; exit 1; }
+	sleep 0.05
+done
 
 actual=$(cat "$TMP")
 expected='^[[?997;2n'   # 2 = light (from the terminal), not 1 = dark (from bg)

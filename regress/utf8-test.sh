@@ -13,7 +13,13 @@ $TMUX -f/dev/null \
 	  set -g remain-on-exit on \; \
 	  set -g remain-on-exit-format '' \; \
       new -d -- cat UTF-8-test.txt
-sleep 1
+# The pane is dead once cat has exited and all its output has been read.
+i=0
+until [ "$($TMUX display -p '#{pane_dead}')" = 1 ]; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "cat did not finish" >&2; exit 1; }
+	sleep 0.05
+done
 $TMUX capturep -pCeJS- >$TMP
 $TMUX kill-server
 

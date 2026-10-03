@@ -29,23 +29,51 @@ fail() {
 	exit 1
 }
 
+# settle [-e]: wait until the inner server has gone round its loop and the
+# outer pane has stopped changing (3 equal captures 0.05s apart, at most 5s).
+settle() {
+	$TMUX2 display -p x >/dev/null || exit 1
+	_prev=
+	_same=0
+	_i=0
+	while [ $_same -lt 3 ] && [ $_i -lt 100 ]; do
+		_cur=$($TMUX capturep -p $1 | cksum)
+		if [ "$_cur" = "$_prev" ]; then
+			_same=$((_same + 1))
+		else
+			_same=0
+		fi
+		_prev=$_cur
+		_i=$((_i + 1))
+		sleep 0.05
+	done
+}
+
+# compare <name> [-e]: wait until the outer pane matches the golden file.
 compare() {
 	if [ -n "$GENERATE" ]; then
-		sleep 1
+		settle $2
 		$TMUX capturep -p $2 >$TMP || exit 1
 		cp $TMP "$RESULTS/$1.result" || exit 1
 		echo "generated $1"
 		return
 	fi
-
-	tries=0
-	while [ "$tries" -lt 100 ]; do
-		$TMUX capturep -p $2 >$TMP || exit 1
-		cmp -s $TMP "$RESULTS/$1.result" && return
-		sleep 0.1
-		tries=$((tries + 1))
+	_i=0
+	until $TMUX capturep -p $2 >$TMP && cmp -s $TMP "$RESULTS/$1.result"; do
+		_i=$((_i + 1))
+		[ $_i -ge 400 ] && fail "scene $1 differs from $RESULTS/$1.result"
+		sleep 0.05
 	done
-	fail "scene $1 differs from $RESULTS/$1.result"
+}
+
+# wait_attached: wait until the inner client has answered tmux's startup queries.
+wait_attached() {
+	_i=0
+	until [ -n "$($TMUX2 list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+		_i=$((_i + 1))
+		[ $_i -ge 400 ] && fail "inner client did not attach"
+		sleep 0.05
+	done
 }
 
 wait_for_pids() {
@@ -111,7 +139,7 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+wait_attached
 
 # Basic floating pane, well inside the window.
 new_scene 40 12

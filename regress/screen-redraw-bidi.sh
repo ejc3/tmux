@@ -30,8 +30,30 @@ fail() {
 	exit 1
 }
 
+# Wait until the inner server has gone round its loop and what it drew has
+# reached the outer pane: the capture is unchanged for 0.15 seconds.
+wait_settled() {
+	$TMUX2 display -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ $_i -lt 100 ]; do
+		_sum=$($TMUX capturep -p | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ $_same -ge 3 ] && return
+		else
+			_same=0
+			_last=$_sum
+		fi
+		_i=$((_i + 1))
+		sleep 0.05
+	done
+	fail "outer pane did not settle"
+}
+
 compare() {
-	sleep 1
+	wait_settled
 	$TMUX capturep -p >$TMP || exit 1
 	if [ -n "$GENERATE" ]; then
 		cp $TMP "$RESULTS/$1.result" || exit 1
@@ -43,22 +65,31 @@ compare() {
 }
 
 wait_for_pane() {
-	i=0
-	while [ $i -lt 50 ]; do
+	_i=0
+	while [ $_i -lt 100 ]; do
 		case "$($TMUX2 capturep -p -t "$1")" in
 		*"$2"*) return ;;
 		esac
-		i=$((i + 1))
-		sleep 0.1
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	fail "pane $1 did not contain: $2"
 }
 
 attach_scene() {
 	# Start with a fresh outer screen and attach only after the complete
-	# scene exists, so it receives one initial redraw.
+	# scene exists, so it receives one initial redraw. The new client has
+	# settled once its terminal has answered tmux's queries.
+	_old=$($TMUX2 lsc -F '#{client_pid}' 2>/dev/null)
 	$TMUX respawnp -k "$TMUX2 attach" || exit 1
-	sleep 1
+	_i=0
+	until [ "$($TMUX2 lsc -F '#{client_pid} #{client_termtype}' 2>/dev/null |
+	    awk -v old="$_old" '$1 != old && NF > 1' | wc -l)" -eq 1 ] &&
+	    [ "$($TMUX2 lsc 2>/dev/null | wc -l)" -eq 1 ]; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || fail "client did not attach"
+		sleep 0.05
+	done
 }
 
 new_scene() {
