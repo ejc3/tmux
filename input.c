@@ -276,6 +276,7 @@ enum input_csi_type {
 	INPUT_CSI_ED,
 	INPUT_CSI_EL,
 	INPUT_CSI_HPA,
+	INPUT_CSI_HPR,
 	INPUT_CSI_ICH,
 	INPUT_CSI_IL,
 	INPUT_CSI_MODOFF,
@@ -321,6 +322,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'X', "",  INPUT_CSI_ECH },
 	{ 'Z', "",  INPUT_CSI_CBT },
 	{ '`', "",  INPUT_CSI_HPA },
+	{ 'a', "",  INPUT_CSI_HPR },
 	{ 'b', "",  INPUT_CSI_REP },
 	{ 'c', "",  INPUT_CSI_DA },
 	{ 'c', ">", INPUT_CSI_DA_TWO },
@@ -868,6 +870,8 @@ input_restore_state(struct input_ctx *ictx)
 	else
 		screen_write_mode_clear(sctx, MODE_ORIGIN);
 	screen_write_cursormove(sctx, ictx->old_cx, ictx->old_cy, 0);
+	if (ictx->old_cx == screen_size_x(sctx->s))
+		screen_write_wrapnext(sctx, 1);
 }
 
 /* Initialise input parser. */
@@ -1324,6 +1328,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case '\010':	/* BS */
+		screen_write_wrapnext(sctx, 0);
 		screen_write_backspace(sctx);
 		break;
 	case '\011':	/* HT */
@@ -1360,6 +1365,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 	case '\012':	/* LF */
 	case '\013':	/* VT */
 	case '\014':	/* FF */
+		screen_write_wrapnext(sctx, 0);
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
 		if (s->mode & MODE_CRLF)
 			screen_write_carriagereturn(sctx);
@@ -1409,6 +1415,7 @@ input_esc_dispatch(struct input_ctx *ictx)
 		screen_write_fullredraw(sctx);
 		break;
 	case INPUT_ESC_IND:
+		screen_write_wrapnext(sctx, 0);
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
 		break;
 	case INPUT_ESC_NEL:
@@ -1502,6 +1509,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		s->cx = cx;
 		break;
 	case INPUT_CSI_CUB:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursorleft(sctx, n);
@@ -1512,6 +1520,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_cursordown(sctx, n);
 		break;
 	case INPUT_CSI_CUF:
+	case INPUT_CSI_HPR:
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursorright(sctx, n);
@@ -1606,11 +1615,13 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ECH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_clearcharacter(sctx, n, bg);
 		break;
 	case INPUT_CSI_DCH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_deletecharacter(sctx, n, bg);
@@ -1622,9 +1633,14 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_scrollregion(sctx, n - 1, m - 1);
 		break;
 	case INPUT_CSI_DL:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
-		if (n != -1)
+		if (n != -1) {
 			screen_write_deleteline(sctx, n, bg);
+			/* Inside the region, the cursor goes to the margin. */
+			if (s->cy >= s->rupper && s->cy <= s->rlower)
+				screen_write_carriagereturn(sctx);
+		}
 		break;
 	case INPUT_CSI_DSR_PRIVATE:
 		switch (input_get(ictx, 0, 0, 0)) {
@@ -1735,6 +1751,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ED:
+		screen_write_wrapnext(sctx, 0);
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
 			break;
@@ -1762,6 +1779,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_EL:
+		screen_write_wrapnext(sctx, 0);
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
 			break;
@@ -1785,14 +1803,20 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_cursormove(sctx, n - 1, -1, 1);
 		break;
 	case INPUT_CSI_ICH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_insertcharacter(sctx, n, bg);
 		break;
 	case INPUT_CSI_IL:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
-		if (n != -1)
+		if (n != -1) {
 			screen_write_insertline(sctx, n, bg);
+			/* Inside the region, the cursor goes to the margin. */
+			if (s->cy >= s->rupper && s->cy <= s->rlower)
+				screen_write_carriagereturn(sctx);
+		}
 		break;
 	case INPUT_CSI_REP:
 		n = input_get(ictx, 0, 1, 1);
@@ -1866,6 +1890,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_VPA:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursormove(sctx, -1, n - 1, 1);
@@ -1942,6 +1967,7 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			screen_write_cursormove(sctx, 0, 0, 1);
 			break;
 		case 7:		/* DECAWM */
+			screen_write_wrapnext(sctx, 0);
 			screen_write_mode_clear(sctx, MODE_WRAP);
 			break;
 		case 12:
