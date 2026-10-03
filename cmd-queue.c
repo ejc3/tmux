@@ -415,13 +415,6 @@ cmdq_insert_hook(__unused struct session *s, struct cmdq_item *item,
 	free(name);
 }
 
-/* Continue processing command queue. */
-void
-cmdq_continue(struct cmdq_item *item)
-{
-	item->flags &= ~CMDQ_WAITING;
-}
-
 /* Remove an item. */
 static void
 cmdq_remove(struct cmdq_item *item)
@@ -436,6 +429,45 @@ cmdq_remove(struct cmdq_item *item)
 
 	free(item->name);
 	free(item);
+}
+
+/*
+ * Remove what has stopped waiting in a lost client's queue, once the waiters
+ * have finished with it. Only waiting items are left there after
+ * cmdq_flush_lost, so none of these owns anything a callback would free;
+ * an item already removed (by server_client_lost's own run) is not there.
+ */
+static void
+cmdq_continue_lost(__unused int fd, __unused short events, void *arg)
+{
+	struct client		*c = arg;
+	struct cmdq_item	*item, *item1;
+
+	TAILQ_FOREACH_SAFE(item, &c->queue->list, entry, item1) {
+		if (~item->flags & CMDQ_WAITING)
+			cmdq_remove(item);
+	}
+	server_client_unref(c);
+}
+
+/* Continue processing command queue. */
+void
+cmdq_continue(struct cmdq_item *item)
+{
+	struct client	*c = item->client;
+
+	item->flags &= ~CMDQ_WAITING;
+
+	/*
+	 * The server loop no longer runs the queue of a client that has been
+	 * lost (cmdq_flush_lost has handled what was behind this item), so
+	 * remove the item once the caller has finished with it; otherwise it
+	 * and its reference keep the client forever.
+	 */
+	if (c != NULL && item->queue == c->queue && (c->flags & CLIENT_DEAD)) {
+		c->references++;
+		event_once(-1, EV_TIMEOUT, cmdq_continue_lost, c, NULL);
+	}
 }
 
 /* Remove all subsequent items that match this item's group. */
@@ -699,6 +731,35 @@ static enum cmd_retval
 cmdq_fire_callback(struct cmdq_item *item)
 {
 	return (item->cb(item, item->data));
+}
+
+/*
+ * A lost client's queue stops at an item that waits (run -d, a prompt), and
+ * the server loop never runs it again. Handle what is behind that item now,
+ * while the client is as server_client_lost runs its queue: callbacks run,
+ * as they would have (they free what they own), and commands are dropped, as
+ * they would not run for a dead client. The waiting item goes when it ends.
+ */
+void
+cmdq_flush_lost(struct client *c)
+{
+	struct cmdq_item	*first, *item, *item1;
+
+	first = TAILQ_FIRST(&c->queue->list);
+	if (first == NULL)
+		return;
+	TAILQ_FOREACH_SAFE(item, &c->queue->list, entry, item1) {
+		if (item == first || (item->flags & CMDQ_WAITING))
+			continue;
+		if (item->type == CMDQ_CALLBACK && (~item->flags & CMDQ_FIRED)) {
+			item->flags |= CMDQ_FIRED;
+			if (cmdq_fire_callback(item) == CMD_RETURN_WAIT) {
+				item->flags |= CMDQ_WAITING;
+				continue;
+			}
+		}
+		cmdq_remove(item);
+	}
 }
 
 /* Process next item on command queue. */
