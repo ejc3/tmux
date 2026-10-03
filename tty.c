@@ -3346,12 +3346,34 @@ tty_pay_scroll(struct tty *tty)
 }
 
 /* Move cursor to absolute position. */
+/*
+ * Whether tty_cursor moves relative to the cursor: the terminal keeps its own
+ * scrollback (clear-on-attach off), the cursor position is known, and the
+ * scroll region and margins are the whole screen.
+ */
+static int
+tty_move_relative(struct tty *tty, u_int thisy)
+{
+	struct tty_term	*term = tty->term;
+
+	if (options_get_number(global_options, "clear-on-attach"))
+		return (0);
+	if (thisy == UINT_MAX || tty->cx == UINT_MAX)
+		return (0);
+	if (tty->rupper != 0 || tty->rlower != tty->sy - 1)
+		return (0);
+	if (tty_use_margin(tty) &&
+	    (tty->rleft != 0 || tty->rright != tty->sx - 1))
+		return (0);
+	return (tty_term_has(term, TTYC_CUU) && tty_term_has(term, TTYC_HPA));
+}
+
 void
 tty_cursor(struct tty *tty, u_int cx, u_int cy)
 {
 	struct tty_term	*term = tty->term;
 	u_int		 thisx, thisy;
-	int		 change;
+	int		 change, row;
 
 	if (tty->flags & TTY_BLOCK)
 		return;
@@ -3377,9 +3399,67 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 	if (cx == thisx && cy == thisy)
 		return;
 
-	/* Currently at the very end of the line - use absolute movement. */
-	if (thisx > tty->sx - 1)
-		goto absolute;
+	/*
+	 * Currently at the very end of the line, so a wrap is pending. Moving
+	 * relative to the cursor (see tty_move_relative) starts from column 0
+	 * after a CR, which also clears the pending wrap; otherwise use
+	 * absolute movement.
+	 */
+	if (thisx > tty->sx - 1) {
+		if (!tty_move_relative(tty, thisy))
+			goto absolute;
+		tty_putc(tty, '\r');
+		thisx = tty->cx = 0;
+		if (cx == 0 && cy == thisy)
+			goto out;
+	}
+
+	/*
+	 * With clear-on-attach off the terminal keeps its own scrollback and
+	 * can move its screen against it without tmux knowing: a phone
+	 * keyboard that grows and shrinks the terminal faster than the new
+	 * size is reported pulls rows back from scrollback and moves the
+	 * cursor down with them. An application drawing straight to the
+	 * terminal moves relative to the cursor and stays in line; absolute
+	 * movement would draw over the wrong rows. So move relative to the
+	 * cursor too, down by line feeds (which scroll such a terminal back
+	 * into line rather than stopping at its last row).
+	 */
+	if (tty_move_relative(tty, thisy)) {
+		row = (cy != thisy);
+		if (cy < thisy) {
+			if (thisy - cy == 1 && tty_term_has(term, TTYC_CUU1))
+				tty_putcode(tty, TTYC_CUU1);
+			else
+				tty_putcode_i(tty, TTYC_CUU, thisy - cy);
+		} else {
+			for (; thisy < cy; thisy++)
+				tty_putc(tty, '\n');
+		}
+		if (cx == thisx)
+			goto out;
+		/*
+		 * After a change of row the column is set absolutely, as
+		 * absolute movement would: moving across a character the
+		 * terminal draws wider or narrower than tmux (an emoji
+		 * sequence) would carry the difference along. On the same
+		 * row, move as absolute movement does too.
+		 */
+		change = thisx - cx;
+		if (cx == 0)
+			tty_putc(tty, '\r');
+		else if (row || (u_int)abs(change) > cx ||
+		    !tty_term_has(term, TTYC_CUB) ||
+		    !tty_term_has(term, TTYC_CUF))
+			tty_putcode_i(tty, TTYC_HPA, cx);
+		else if (change > 0)
+			tty_putcode_i(tty, TTYC_CUB, change);
+		else
+			tty_putcode_i(tty, TTYC_CUF, -change);
+		thisy = cy;
+		tty->cy = cy;
+		goto out;
+	}
 
 	/* Move to home position (0, 0). */
 	if (cx == 0 && cy == 0 && tty_term_has(term, TTYC_HOME)) {
