@@ -2523,21 +2523,233 @@ server_client_set_path(struct client *c)
 }
 
 /*
+ * Find a key (such as i= for the identifier) in the metadata of an OSC 99
+ * notification (99;metadata;payload): its value's start and length, or -1.
+ */
+static int
+server_client_notify_key(const char *s, char key, size_t *start, size_t *len)
+{
+	const char	*meta, *end, *p;
+
+	if (strncmp(s, "99;", 3) != 0)
+		return (-1);
+	meta = s + 3;
+	end = meta + strcspn(meta, ";");
+	for (p = meta; p < end; p += strcspn(p, ":;") + 1) {
+		if (p[0] == key && p[1] == '=') {
+			*start = (p + 2) - s;
+			*len = strcspn(p + 2, ":;");
+			return (0);
+		}
+		if (*p == ';' || p[strcspn(p, ":;")] != ':')
+			break;
+	}
+	return (-1);
+}
+
+/*
+ * Whether an OSC 99 notification is a query, which one terminal answers: for
+ * what is supported (p=?) or for the notifications still open (p=alive).
+ */
+int
+server_client_notify_is_query(const char *s)
+{
+	size_t	start, len;
+
+	if (server_client_notify_key(s, 'p', &start, &len) != 0)
+		return (0);
+	if (len == 1 && s[start] == '?')
+		return (1);
+	return (len == 5 && strncmp(s + start, "alive", 5) == 0);
+}
+
+/*
  * A pane sent a notification: pass it to each client with the pane's window
- * in its session, current or not.
+ * in its session, current or not. An OSC 99 identifier becomes one naming
+ * the pane, so what the terminal sends back for it (an activation report, a
+ * close event) finds the pane. (A query goes to one terminal as an input
+ * request, input.c.)
  */
 void
 server_client_notify(struct window_pane *wp, const char *s)
 {
 	struct client	*c;
+	char		*copy;
 
+	copy = server_client_notify_rewrite(wp, s);
 	TAILQ_FOREACH(c, &clients, entry) {
 		if (c->session == NULL || (c->flags & CLIENT_CONTROL))
 			continue;
 		if (!session_has(c->session, wp->window))
 			continue;
-		tty_notify(&c->tty, s);
+		tty_notify(&c->tty, copy);
 	}
+	free(copy);
+}
+
+/*
+ * A random part for the identifiers given to notifications without one, so
+ * this server does not reuse one given by another tmux (or by this one before
+ * a restart) that the terminal may still show: it would update that one.
+ */
+static const char *
+server_client_notify_nonce(void)
+{
+	static char	nonce[9];
+
+	if (*nonce == '\0')
+		xsnprintf(nonce, sizeof nonce, "%08x", arc4random());
+	return (nonce);
+}
+
+/*
+ * A notification with its OSC 99 identifier made one naming the pane: t, the
+ * pane, _ and the program's identifier. One without an identifier is given
+ * t, the pane, ., this server's random part, . and a number, the same for
+ * each of its chunks (until d=0 is not given), and the terminal's i=0 goes
+ * back for it.
+ */
+char *
+server_client_notify_rewrite(struct window_pane *wp, const char *s)
+{
+	char	*copy;
+	size_t	 start, len;
+	int	 done;
+
+	if (strncmp(s, "99;", 3) != 0)
+		return (xstrdup(s));
+	if (server_client_notify_key(s, 'i', &start, &len) == 0) {
+		xasprintf(&copy, "%.*st%u_%s", (int)start, s, wp->id,
+		    s + start);
+		return (copy);
+	}
+	done = (server_client_notify_key(s, 'd', &start, &len) != 0 ||
+	    len != 1 || s[start] != '0');
+	xasprintf(&copy, "99;i=t%u.%s.%u%s%s", wp->id,
+	    server_client_notify_nonce(), wp->notify_anon,
+	    s[3] == ';' ? "" : ":", s + 3);
+	if (done)
+		wp->notify_anon++;
+	return (copy);
+}
+
+/*
+ * Undo server_client_notify_rewrite for an identifier the terminal sent back:
+ * the pane it names, and the program's own identifier (NULL for one without,
+ * given by this server). Returns -1 if it names no pane.
+ */
+static int
+server_client_notify_own(const char *id, size_t len, u_int *pane,
+    const char **own, size_t *ownlen)
+{
+	const char	*end = id + len, *p, *nonce;
+	size_t		 n;
+
+	if (len < 3 || *id != 't')
+		return (-1);
+	*pane = 0;
+	for (p = id + 1; p < end && *p >= '0' && *p <= '9'; p++)
+		*pane = *pane * 10 + (*p - '0');
+	if (p == id + 1 || p == end)
+		return (-1);
+	if (*p == '_') {
+		*own = p + 1;
+		*ownlen = end - *own;
+	} else if (*p == '.') {
+		nonce = server_client_notify_nonce();
+		n = strlen(nonce);
+		if ((size_t)(end - p) < n + 2 || strncmp(p + 1, nonce, n) != 0 ||
+		    p[1 + n] != '.')
+			return (-1);
+		*own = NULL;
+		*ownlen = 0;
+	} else
+		return (-1);
+	return (0);
+}
+
+/*
+ * The list of notifications still open in an answer to p=alive, for a pane:
+ * its own, with its own identifiers. (Those without one are not listed.)
+ */
+static void
+server_client_notify_alive(struct evbuffer *evb, struct window_pane *wp,
+    const char *list)
+{
+	const char	*own;
+	size_t		 len, ownlen;
+	u_int		 pane;
+	int		 first = 1;
+
+	for (;;) {
+		len = strcspn(list, ",");
+		if (server_client_notify_own(list, len, &pane, &own,
+		    &ownlen) == 0 && pane == wp->id && own != NULL) {
+			evbuffer_add_printf(evb, "%s%.*s", first ? "" : ",",
+			    (int)ownlen, own);
+			first = 0;
+		}
+		if (list[len] == '\0')
+			break;
+		list += len + 1;
+	}
+}
+
+/*
+ * A terminal sent an OSC 99 notification message (without ESC ] and the
+ * terminator, which is end): if its identifier names a pane, give it to that
+ * pane with the program's own identifier (0 for none). Returns 1 if it did.
+ */
+int
+server_client_notify_reply(struct client *c, const char *s, size_t n,
+    const char *end)
+{
+	struct window_pane	*wp;
+	struct evbuffer		*evb;
+	char			*copy, *meta;
+	const char		*own;
+	size_t			 start, len, ownlen, pstart, plen;
+	u_int			 pane;
+
+	copy = xstrndup(s, n);
+	if (server_client_notify_key(copy, 'i', &start, &len) != 0 ||
+	    server_client_notify_own(copy + start, len, &pane, &own,
+	    &ownlen) != 0 ||
+	    (wp = window_pane_find_by_id(pane)) == NULL || wp->event == NULL) {
+		free(copy);
+		return (0);
+	}
+	if (own == NULL) {
+		own = "0";
+		ownlen = 1;
+	}
+	meta = copy + 3 + strcspn(copy + 3, ";");
+
+	evb = evbuffer_new();
+	if (evb == NULL)
+		fatalx("out of memory");
+	evbuffer_add_printf(evb, "\033]%.*s%.*s%.*s", (int)start, copy,
+	    (int)ownlen, own, (int)(meta - (copy + start + len)),
+	    copy + start + len);
+	if (*meta == ';') {
+		evbuffer_add(evb, ";", 1);
+		if (server_client_notify_key(copy, 'p', &pstart, &plen) == 0 &&
+		    plen == 5 && strncmp(copy + pstart, "alive", 5) == 0)
+			server_client_notify_alive(evb, wp, meta + 1);
+		else
+			evbuffer_add(evb, meta + 1, strlen(meta + 1));
+	}
+	evbuffer_add(evb, end, strlen(end));
+	evbuffer_add(evb, "", 1);
+
+	if (server_client_notify_is_query(copy))
+		input_request_reply(c, INPUT_REQUEST_NOTIFY, EVBUFFER_DATA(evb));
+	else
+		bufferevent_write(wp->event, EVBUFFER_DATA(evb),
+		    EVBUFFER_LENGTH(evb) - 1);
+	evbuffer_free(evb);
+	free(copy);
+	return (1);
 }
 
 /* Set client progress bar. */
