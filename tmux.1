@@ -5200,6 +5200,14 @@ Allows setting the cursor style.
 Supports extended keys.
 .It focus
 Supports focus reporting.
+.It graphemes
+Supports grapheme cluster mode (mode 2027), turned off.
+.Nm
+turns it on, so the terminal counts the cells of an emoji with a skin tone, a
+joined emoji, a flag or a character with a variation selector as
+.Nm
+does.
+Found by asking the terminal.
 .It hyperlinks
 Supports OSC 8 hyperlinks.
 .It ignorefkeys
@@ -5230,6 +5238,15 @@ Supports SIXEL graphics.
 Supports the strikethrough SGR escape sequence.
 .It sync
 Supports synchronized updates.
+.It textsize
+Supports the width part of the kitty text sizing protocol (OSC 66).
+A program can give text a width in cells (up to 7; 7 is kept as 6 cells and
+a blank one), which
+.Nm
+keeps as one character and gives this terminal as OSC 66; other terminals get
+the text in that many cells, padded.
+The scale part is not supported.
+Assumed for kitty.
 .It title
 Supports
 .Xr xterm 1

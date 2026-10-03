@@ -5803,6 +5803,21 @@ format_loop_clients(struct format_expand_state *es, const char *fmt)
 	return (value);
 }
 
+/*
+ * Truncate a value to an integer, failing if it has none (not a number, as
+ * from 0 % 0 or nan) or is too big for one.
+ */
+static int
+format_truncate_integer(double *v)
+{
+	/* A long long holds -2^63 up to (not including) 2^63. */
+	if (isnan(*v) || *v >= 9223372036854775808.0 ||
+	    *v < -9223372036854775808.0)
+		return (-1);
+	*v = (long long)*v;
+	return (0);
+}
+
 static char *
 format_replace_expression(struct format_modifier *mexp,
     struct format_expand_state *es, const char *copy)
@@ -5888,9 +5903,10 @@ format_replace_expression(struct format_modifier *mexp,
 		goto fail;
 	}
 
-	if (!use_fp) {
-		mleft = (long long)mleft;
-		mright = (long long)mright;
+	if (!use_fp && (format_truncate_integer(&mleft) != 0 ||
+	    format_truncate_integer(&mright) != 0)) {
+		format_log(es, "expression side is not an integer");
+		goto fail;
 	}
 	format_log(es, "expression left side is: %.*f", prec, mleft);
 	format_log(es, "expression right side is: %.*f", prec, mright);
@@ -5932,8 +5948,13 @@ format_replace_expression(struct format_modifier *mexp,
 	}
 	if (use_fp)
 		xasprintf(&value, "%.*f", prec, result);
-	else
-		xasprintf(&value, "%.*f", prec, (double)(long long)result);
+	else {
+		if (format_truncate_integer(&result) != 0) {
+			format_log(es, "expression result is not an integer");
+			goto fail;
+		}
+		xasprintf(&value, "%.*f", prec, result);
+	}
 	format_log(es, "expression result is %s", value);
 
 	free(right);

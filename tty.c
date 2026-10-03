@@ -38,6 +38,7 @@ static int	tty_log_fd = -1;
 static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
 static void	tty_set_italics(struct tty *);
+static void	tty_graphemes(struct tty *);
 static int	tty_try_colour(struct tty *, int, const char *);
 static void	tty_force_cursor_colour(struct tty *, int);
 static void	tty_cursor_pane(struct tty *, const struct tty_ctx *, u_int,
@@ -80,6 +81,7 @@ static void	tty_write_one(void (*)(struct tty *, const struct tty_ctx *),
 #define TTY_BLOCK_INTERVAL (100000 /* 100 milliseconds */)
 #define TTY_BLOCK_START(tty) (1 + ((tty)->sx * (tty)->sy) * 8)
 #define TTY_BLOCK_STOP(tty) (1 + ((tty)->sx * (tty)->sy) / 8)
+#define TTY_BLOCK_LIMIT(tty) (1024 * 1024 + TTY_BLOCK_START(tty))
 
 #define TTY_QUERY_TIMEOUT 5
 #define TTY_REQUEST_LIMIT 30
@@ -214,12 +216,31 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 	evtimer_add(&tty->timer, &tv);
 }
 
-static int
-tty_block_maybe(struct tty *tty)
+/* Discard what is queued for a terminal and what is written to it from now. */
+static void
+tty_block_start(struct tty *tty)
 {
 	struct client	*c = tty->client;
 	size_t		 size = EVBUFFER_LENGTH(tty->out);
 	struct timeval	 tv = { .tv_usec = TTY_BLOCK_INTERVAL };
+
+	tty->flags |= TTY_BLOCK;
+
+	log_debug("%s: can't keep up, %zu discarded", c->name, size);
+
+	evbuffer_drain(tty->out, size);
+	c->discarded += size;
+	c->redraw = 0;
+	tty->exempt = 0;
+
+	tty->discarded = 0;
+	evtimer_add(&tty->timer, &tv);
+}
+
+static int
+tty_block_maybe(struct tty *tty)
+{
+	size_t		 size = EVBUFFER_LENGTH(tty->out);
 
 	if (size == 0)
 		tty->flags &= ~TTY_NOBLOCK;
@@ -229,18 +250,42 @@ tty_block_maybe(struct tty *tty)
 	if (size < TTY_BLOCK_START(tty))
 		return (0);
 
-	if (tty->flags & TTY_BLOCK)
-		return (1);
-	tty->flags |= TTY_BLOCK;
-
-	log_debug("%s: can't keep up, %zu discarded", c->name, size);
-
-	evbuffer_drain(tty->out, size);
-	c->discarded += size;
-
-	tty->discarded = 0;
-	evtimer_add(&tty->timer, &tv);
+	if (~tty->flags & TTY_BLOCK)
+		tty_block_start(tty);
 	return (1);
+}
+
+/*
+ * A pane's output is about to be queued for a terminal. Whether a terminal is
+ * behind is found when it takes something (tty_write_callback), so one that
+ * takes nothing is never found to be: its queue would grow for as long as
+ * panes write. Discard here once the queue is far longer than a terminal
+ * taking output leaves it, not counting what is deliberately long: the redraw
+ * being waited for and the writes marked with tty_no_block.
+ */
+static void
+tty_block_limit(struct tty *tty)
+{
+	struct client	*c = tty->client;
+	size_t		 size = EVBUFFER_LENGTH(tty->out), exempt;
+
+	if (tty->flags & TTY_BLOCK)
+		return;
+	exempt = (c->redraw > tty->exempt) ? c->redraw : tty->exempt;
+	if (size < exempt || size - exempt < TTY_BLOCK_LIMIT(tty))
+		return;
+	tty_block_start(tty);
+}
+
+/*
+ * What is queued for the terminal up to here is one long write that must
+ * arrive whole: it is not a sign of the terminal being behind.
+ */
+static void
+tty_no_block(struct tty *tty)
+{
+	tty->flags |= TTY_NOBLOCK;
+	tty->exempt = EVBUFFER_LENGTH(tty->out);
 }
 
 static void
@@ -255,6 +300,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 	if (nwrite == -1)
 		return;
 	log_debug("%s: wrote %d bytes (of %zu)", c->name, nwrite, size);
+	tty->exempt = (tty->exempt > (size_t)nwrite) ? tty->exempt - nwrite : 0;
 
 	if (c->redraw > 0) {
 		if ((size_t)nwrite >= c->redraw)
@@ -388,6 +434,7 @@ tty_start_tty(struct tty *tty)
 		tty_puts(tty, "\033[?2031h\033[?996n");
 	}
 
+	tty_graphemes(tty);
 	tty_start_start_timer(tty);
 
 	tty->flags |= TTY_STARTED;
@@ -416,6 +463,8 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[>q");
 		if (~tty->flags & TTY_HAVESYNC)
 			tty_puts(tty, "\033[?2026$p");
+		if (~tty->flags & TTY_HAVEGRAPHEMES)
+			tty_puts(tty, "\033[?2027$p");
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
@@ -505,6 +554,10 @@ tty_stop_tty(struct tty *tty)
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSESC));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSFCS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	if (tty->flags & TTY_GRAPHEMES) {
+		tty_raw(tty, "\033[?2027l");
+		tty->flags &= ~TTY_GRAPHEMES;
+	}
 
 	if (tty_use_margin(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_DSMG));
@@ -554,6 +607,17 @@ tty_free(struct tty *tty)
 	tty_close(tty);
 }
 
+/* Turn grapheme cluster mode on if the terminal has it, once. */
+static void
+tty_graphemes(struct tty *tty)
+{
+	if ((tty->term->flags & TERM_GRAPHEMES) &&
+	    (~tty->flags & TTY_GRAPHEMES)) {
+		tty_puts(tty, "\033[?2027h");
+		tty->flags |= TTY_GRAPHEMES;
+	}
+}
+
 void
 tty_update_features(struct tty *tty)
 {
@@ -568,6 +632,7 @@ tty_update_features(struct tty *tty)
 		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
 	if (options_get_number(global_options, "focus-events"))
 		tty_puts(tty, tty_term_string(tty->term, TTYC_ENFCS));
+	tty_graphemes(tty);
 	tty_puts(tty, tty_term_string(tty->term, TTYC_ENESC));
 
 	/*
@@ -1591,6 +1656,7 @@ tty_write(void (*cmdfn)(struct tty *, const struct tty_ctx *),
 				break;
 			if (state == 0)
 				continue;
+			tty_block_limit(&c->tty);
 			cmdfn(&c->tty, ctx);
 		}
 	}
@@ -2028,8 +2094,8 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 	encoded = xmalloc(size);
 
 	b64_ntop(buf, len, encoded, size);
-	tty->flags |= TTY_NOBLOCK;
 	tty_putcode_ss(tty, TTYC_MS, clip, encoded);
+	tty_no_block(tty);
 
 	free(encoded);
 }
@@ -2037,8 +2103,8 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 void
 tty_cmd_rawstring(struct tty *tty, const struct tty_ctx *ctx)
 {
-	tty->flags |= TTY_NOBLOCK;
 	tty_add(tty, ctx->data.data, ctx->data.size);
+	tty_no_block(tty);
 	tty_invalidate(tty);
 }
 
@@ -2083,8 +2149,8 @@ tty_cmd_sixelimage(struct tty *tty, const struct tty_ctx *ctx)
 		tty_margin_off(tty);
 		tty_cursor(tty, x, y);
 
-		tty->flags |= TTY_NOBLOCK;
 		tty_add(tty, data, size);
+		tty_no_block(tty);
 		tty_invalidate(tty);
 		free(data);
 	}
@@ -2106,6 +2172,8 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
     const struct tty_style_ctx *style_ctx)
 {
 	const struct grid_cell	*gcp;
+	char			 buf[TTY_SIZED_SIZE];
+	size_t			 len;
 
 	/* Skip last character if terminal is stupid. */
 	if ((tty->term->flags & TERM_NOAM) &&
@@ -2121,6 +2189,13 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 	gcp = tty_check_codeset(tty, gc);
 	tty_attributes(tty, gcp, style_ctx);
 
+	/* A character the program gave a width (OSC 66). */
+	if (gcp->attr & GRID_ATTR_SIZED) {
+		len = tty_sized_cell(tty, gcp, buf, sizeof buf);
+		tty_putn(tty, buf, len, gcp->data.width);
+		return;
+	}
+
 	/* If it is a single character, write with putc to handle ACS. */
 	if (gcp->data.size == 1) {
 		if (*gcp->data.data < 0x20 || *gcp->data.data == 0x7f)
@@ -2131,6 +2206,63 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 
 	/* Write the data. */
 	tty_putn(tty, gcp->data.data, gcp->data.size, gcp->data.width);
+}
+
+/*
+ * The bytes for a character the program gave a width (OSC 66) in buf, which
+ * holds TTY_SIZED_SIZE: OSC 66 if the terminal has it, otherwise as much of
+ * the text as fits in the width and spaces after it, so it takes exactly
+ * that many cells either way. The text is measured as the terminal measures
+ * it: with grapheme clusters, a character joining the one before it (zero
+ * width, after a joiner, a skin tone) adds nothing, or makes a cluster of
+ * width 1 width 2 (a skin tone, variation selector 16).
+ */
+size_t
+tty_sized_cell(struct tty *tty, const struct grid_cell *gc, char *buf,
+    size_t size)
+{
+	const struct utf8_data	*ud = &gc->data;
+	struct utf8_data	 one, prev;
+	char			 text[UTF8_SIZE + 1];
+	const char		*cp = text;
+	size_t			 len = 0;
+	u_int			 used = 0, cw = 0, w;
+	int			 graphemes, join;
+
+	if (size < TTY_SIZED_SIZE)
+		fatalx("%s: buffer too small", __func__);
+	if (tty->term->flags & TERM_TEXTSIZE) {
+		return (xsnprintf(buf, size, "\033]66;w=%u;%.*s\033\\",
+		    ud->width, (int)ud->size, ud->data));
+	}
+
+	graphemes = (tty->term->flags & TERM_GRAPHEMES);
+	memcpy(text, ud->data, ud->size);
+	text[ud->size] = '\0';
+	memset(&prev, 0, sizeof prev);
+	while (*cp != '\0') {
+		if (!utf8_next(&cp, &one))
+			continue;
+		join = (graphemes && prev.size != 0 && (one.width == 0 ||
+		    utf8_is_zwj(&prev) || utf8_should_combine(&one, &prev)));
+		if (!join)
+			w = cw = one.width;	/* a new cluster */
+		else if (cw == 1 &&
+		    (utf8_should_combine(&one, &prev) || utf8_is_vs(&one))) {
+			w = 1;			/* the cluster is now 2 wide */
+			cw = 2;
+		} else
+			w = 0;
+		if (used + w > ud->width)
+			break;
+		memcpy(buf + len, one.data, one.size);
+		len += one.size;
+		used += w;
+		memcpy(&prev, &one, sizeof prev);
+	}
+	for (; used < ud->width; used++)
+		buf[len++] = ' ';
+	return (len);
 }
 
 void
@@ -2152,6 +2284,13 @@ tty_reset(struct tty *tty)
 void
 tty_invalidate(struct tty *tty)
 {
+	/*
+	 * Mouse modes are set again at once, not turned off until the next
+	 * redraw: a mouse event in between would reach tmux with the mouse
+	 * off and go to the pane as keys.
+	 */
+	int	mouse = tty->mode & ALL_MOUSE_MODES;
+
 	memcpy(&tty->cell, &grid_default_cell, sizeof tty->cell);
 	memcpy(&tty->last_cell, &grid_default_cell, sizeof tty->last_cell);
 
@@ -2165,7 +2304,7 @@ tty_invalidate(struct tty *tty)
 		tty_putcode(tty, TTYC_SGR0);
 
 		tty->mode = ALL_MODES;
-		tty_update_mode(tty, MODE_CURSOR, NULL);
+		tty_update_mode(tty, MODE_CURSOR|mouse, NULL);
 
 		tty_cursor(tty, 0, 0);
 		tty_region_off(tty);
@@ -2498,6 +2637,7 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 
 	/* Copy cell and update default colours. */
 	memcpy(&gc2, gc, sizeof gc2);
+	gc2.attr &= ~GRID_ATTR_SIZED;	/* not an attribute the terminal has */
 	if (~gc->flags & GRID_FLAG_NOPALETTE) {
 		if (gc2.fg == 8)
 			gc2.fg = style_ctx->defaults->fg;
@@ -2579,7 +2719,12 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 	if (changed & GRID_ATTR_ITALICS)
 		tty_set_italics(tty);
 	if (changed & GRID_ATTR_ALL_UNDERSCORE) {
-		if (changed & GRID_ATTR_UNDERSCORE)
+		/*
+		 * A terminal without styled underlines still gets an
+		 * underline, rather than none at all.
+		 */
+		if ((changed & GRID_ATTR_UNDERSCORE) ||
+		    !tty_term_has(tty->term, TTYC_SMULX))
 			tty_putcode(tty, TTYC_SMUL);
 		else if (changed & GRID_ATTR_UNDERSCORE_2)
 			tty_putcode_i(tty, TTYC_SMULX, 2);

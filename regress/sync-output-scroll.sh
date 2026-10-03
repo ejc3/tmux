@@ -35,42 +35,70 @@ trap cleanup 0 1 15
 
 wait_for_file()
 {
-	i=0
-	while [ "$i" -lt 50 ] && [ ! -e "$1" ]; do
-		sleep 0.1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 100 ] && [ ! -e "$1" ]; do
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	[ -e "$1" ] || fail "$2"
 }
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$INNER list-clients -F '#{client_termfeatures}' 2>/dev/null |
 		    grep -q 'sync' && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "sync-capable client did not attach"
 }
 
+# Wait until the inner server has gone round its loop and the outer pane shows
+# the whole initial paint, unchanged for 0.15 seconds.
+wait_for_painted()
+{
+	$INNER display-message -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ "$_i" -lt 100 ]; do
+		_screen=$($OUTER capture-pane -p -t outer:0.0 2>/dev/null)
+		_sum=$(printf '%s\n' "$_screen" | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+		else
+			_same=0
+			_last=$_sum
+		fi
+		printf '%s\n' "$_screen" | grep -q '^INIT_ROW_24_' &&
+		    [ "$_same" -ge 3 ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "initial paint did not reach the client"
+}
+
+# Wait until the inner server has gone round its loop and the client byte
+# stream has not grown for 0.15 seconds.
 wait_for_stable_bytes()
 {
-	previous=-1
-	stable=0
-	i=0
-	while [ "$i" -lt 50 ]; do
-		current=$(wc -c <"$CLIENT_BYTES" 2>/dev/null) || current=0
-		if [ "$current" -gt 0 ] && [ "$current" -eq "$previous" ]; then
-			stable=$((stable + 1))
-			[ "$stable" -eq 5 ] && return 0
+	$INNER display-message -p x >/dev/null || exit 1
+	_previous=-1
+	_stable=0
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_current=$(wc -c <"$CLIENT_BYTES" 2>/dev/null) || _current=0
+		if [ "$_current" -gt 0 ] && [ "$_current" -eq "$_previous" ]; then
+			_stable=$((_stable + 1))
+			[ "$_stable" -eq 3 ] && return 0
 		else
-			stable=0
+			_stable=0
 		fi
-		previous=$current
-		sleep 0.1
-		i=$((i + 1))
+		_previous=$_current
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "client byte stream did not become stable"
 }
@@ -120,13 +148,13 @@ $OUTER set-option -g window-size manual || exit 1
 wait_for_client
 
 wait_for_file "$DIR/painted" "application did not paint"
-sleep 1
+wait_for_painted
 $OUTER pipe-pane -O -t outer:0.0 "cat >'$CLIENT_BYTES'" || exit 1
 : >"$CONTROL"
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 100 ]; do
 	grep -q 'SCROLLED_LINE_' "$CLIENT_BYTES" 2>/dev/null && break
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
 grep -q 'SCROLLED_LINE_' "$CLIENT_BYTES" || fail "scrolled line not sent"
