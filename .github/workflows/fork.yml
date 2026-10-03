@@ -1,10 +1,14 @@
-# Tests for this fork's branch (not for upstream: drop .github/fork and this
-# file from pull requests to tmux/tmux).
+# Tests for this fork (not for upstream: drop .github/fork and this file from
+# pull requests to tmux/tmux).
+#
+# Every pull request: the regress suite against upstream's, and the check
+# that its test commit fails without its fix. The reference build (every
+# item together): the same suite, and the gym on real terminals.
 name: 'Fork tests'
 
 on:
   push:
-    branches: [scroll-native-v4]
+    branches: [menu/reference, scroll-native-v5]
   pull_request:
   workflow_dispatch:
 
@@ -50,8 +54,31 @@ jobs:
           path: regress/logs/
           if-no-files-found: ignore
 
+  red-green:
+    name: the test commit fails without the fix
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake bison build-essential \
+            libevent-dev libncurses-dev pkg-config
+      - name: check
+        run: |
+          sh .github/fork/redgreen.sh \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
+
   gym:
     name: real terminals (gym)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
     env:
@@ -94,11 +121,6 @@ jobs:
             CFLAGS="-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined" \
             LDFLAGS="-fsanitize=address,undefined"
           make -j"$(nproc)"
-      - name: render-parity
-        run: |
-          cd regress
-          TEST_TMUX=$PWD/../tmux sh render-parity.sh
-          RENDER_PARITY_FORWARD=off TEST_TMUX=$PWD/../tmux sh render-parity.sh
       - name: parity on real terminals
         run: |
           cd gym2
