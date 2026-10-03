@@ -95,6 +95,15 @@ struct input_param {
 	};
 };
 
+/* A kitty graphics placeholder as the program wrote it. */
+struct input_kgfx_cell {
+	int				fg;
+	int				us;
+	u_int				row;
+	u_int				column;
+	u_int				high;	/* of the image id */
+};
+
 /* Input parser context. */
 struct input_ctx {
 	struct window_pane	       *wp;
@@ -128,6 +137,20 @@ struct input_ctx {
 
 	int				ch;
 	struct utf8_data		last;
+
+	/*
+	 * The last kitty graphics placeholder written (in a pane with kitty
+	 * graphics in tmux) and the number of its diacritics so far (-1 once
+	 * anything else is written), and the placeholder before it, if it was
+	 * written just before.
+	 */
+	int				kgfx_marks;
+	struct input_kgfx_cell		kgfx_cell;
+	struct input_kgfx_cell		kgfx_last;
+	int				kgfx_same;	/* same colours as last */
+
+	/* Replies go here, not to the pane, if not NULL. */
+	struct evbuffer		       *capture;
 
 	const struct input_state       *state;
 	int				flags;
@@ -945,6 +968,7 @@ input_reset(struct input_ctx *ictx, int clear)
 
 	ictx->state = &input_state_ground;
 	ictx->flags = 0;
+	ictx->kgfx_marks = -1;
 }
 
 /* Return pending data. */
@@ -1164,6 +1188,10 @@ input_get(struct input_ctx *ictx, u_int validx, int minval, int defval)
 static void
 input_send_reply(struct input_ctx *ictx, const char *reply)
 {
+	if (ictx->capture != NULL) {
+		evbuffer_add(ictx->capture, reply, strlen(reply));
+		return;
+	}
 	if (ictx->event != NULL) {
 		log_debug("%s: %s", __func__, reply);
 		bufferevent_write(ictx->event, reply, strlen(reply));
@@ -1243,6 +1271,7 @@ input_print(struct input_ctx *ictx)
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);
 	ictx->flags |= INPUT_LAST;
+	ictx->kgfx_marks = -1;
 
 	ictx->cell.cell.attr &= ~GRID_ATTR_CHARSET;
 
@@ -2800,8 +2829,13 @@ input_exit_apc(struct input_ctx *ictx)
 	log_debug("%s: \"%s\"", __func__, ictx->input_buf);
 
 	/* A kitty graphics command, not a title. */
-	if (input_is_kitty_graphics(ictx->input_buf))
+	if (input_is_kitty_graphics(ictx->input_buf)) {
+		if (wp != NULL) {
+			kgfx_command(wp, sctx, ictx->event, ictx->input_buf,
+			    ictx->input_len);
+		}
 		return;
+	}
 
 	if (wp != NULL &&
 	    options_get_number(wp->options, "allow-set-title") &&
@@ -2879,6 +2913,119 @@ input_exit_rename(struct input_ctx *ictx)
 	server_status_window(w);
 }
 
+/*
+ * Write the placeholder before the cursor again with the image id's high byte
+ * now known, in place.
+ */
+static void
+input_kgfx_rewrite(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	struct grid_cell	 gc;
+	u_int			 cx = s->cx, cy = s->cy;
+	int			 mode = s->mode;
+
+	if (cx == 0)
+		return;
+	grid_view_get_cell(s->grid, cx - 1, cy, &gc);
+	if (gc.data.size < 4 || memcmp(gc.data.data, "\364\216\273\256", 4))
+		return;
+	gc.fg = ictx->kgfx_cell.fg;
+	gc.us = ictx->kgfx_cell.us;
+	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_cell.high);
+	s->mode &= ~MODE_INSERT;
+	screen_write_cursormove(sctx, cx - 1, cy, 0);
+	screen_write_cell(sctx, &gc);
+	s->mode = mode;
+}
+
+/*
+ * A kitty graphics placeholder, in a pane with kitty graphics in tmux: its ids
+ * become tmux's. Like kitty, without diacritics it follows the placeholder to
+ * its left if that has the same colours: the same row, the next column and the
+ * same high byte of the image id.
+ */
+static void
+input_kgfx_placeholder(struct input_ctx *ictx)
+{
+	struct input_kgfx_cell	*cell = &ictx->kgfx_cell;
+	struct input_kgfx_cell	*last = &ictx->kgfx_last;
+	struct grid_cell	 gc;
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (ictx->kgfx_marks != -1)
+		memcpy(last, cell, sizeof *last);
+	ictx->kgfx_same = (ictx->kgfx_marks != -1 && gc.fg == last->fg &&
+	    gc.us == last->us);
+	cell->fg = gc.fg;
+	cell->us = gc.us;
+	if (ictx->kgfx_same) {
+		cell->row = last->row;
+		cell->column = last->column + 1;
+		cell->high = last->high;
+	} else
+		cell->row = cell->column = cell->high = 0;
+	ictx->kgfx_marks = 0;
+	kgfx_placeholder(ictx->wp, &gc, cell->high);
+	screen_write_collect_add(&ictx->ctx, &gc);
+}
+
+/*
+ * A character after a placeholder. A diacritic gives its row, then its column,
+ * then the high byte of the image id; as kitty, the high byte is the one of the
+ * placeholder to the left only if that has the same colours and row (and the
+ * column before, if there is a column). If the high byte changes, the
+ * placeholder is written again; the third diacritic is not written (tmux's ids
+ * are smaller). Returns 1 if the character has been handled.
+ */
+static int
+input_kgfx_mark(struct input_ctx *ictx)
+{
+	struct input_kgfx_cell	*cell = &ictx->kgfx_cell;
+	struct input_kgfx_cell	*last = &ictx->kgfx_last;
+	struct utf8_data	*ud = &ictx->utf8data;
+	u_int			 high = cell->high;
+	int			 n;
+
+	if (ud->width != 0 || (n = kgfx_diacritic(ud)) == -1) {
+		ictx->kgfx_marks = -1;
+		return (0);
+	}
+	switch (++ictx->kgfx_marks) {
+	case 1:
+		cell->row = n;
+		if (ictx->kgfx_same && last->row == cell->row) {
+			cell->column = last->column + 1;
+			cell->high = last->high;
+		} else {
+			cell->column = 0;
+			cell->high = 0;
+		}
+		break;
+	case 2:
+		cell->column = n;
+		if (ictx->kgfx_same && last->row == cell->row &&
+		    last->column + 1 == cell->column)
+			cell->high = last->high;
+		else
+			cell->high = 0;
+		break;
+	case 3:
+		cell->high = n;
+		if (cell->high != high)
+			input_kgfx_rewrite(ictx);
+		ictx->flags |= INPUT_LAST;
+		return (1);
+	default:
+		return (0);
+	}
+	screen_write_collect_add(&ictx->ctx, &ictx->cell.cell);
+	if (cell->high != high)
+		input_kgfx_rewrite(ictx);
+	return (1);
+}
+
 /* Open UTF-8 character. */
 static int
 input_top_bit_set(struct input_ctx *ictx)
@@ -2886,6 +3033,8 @@ input_top_bit_set(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct utf8_data	*ud = &ictx->utf8data;
 
+	if (!ictx->utf8started && (~ictx->flags & INPUT_LAST))
+		ictx->kgfx_marks = -1;
 	ictx->flags &= ~INPUT_LAST;
 
 	if (!ictx->utf8started) {
@@ -2910,7 +3059,11 @@ input_top_bit_set(struct input_ctx *ictx)
 	    (int)ud->size, ud->data, ud->width);
 
 	utf8_copy(&ictx->cell.cell.data, ud);
-	screen_write_collect_add(sctx, &ictx->cell.cell);
+	if (ictx->wp != NULL && (ictx->wp->flags & PANE_KGFX) &&
+	    ud->size == 4 && memcmp(ud->data, "\364\216\273\256", 4) == 0)
+		input_kgfx_placeholder(ictx);
+	else if (ictx->kgfx_marks == -1 || !input_kgfx_mark(ictx))
+		screen_write_collect_add(sctx, &ictx->cell.cell);
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);
 	ictx->flags |= INPUT_LAST;
@@ -3498,33 +3651,42 @@ input_osc_104(struct input_ctx *ictx, const char *p)
 	free(copy);
 }
 
+/* A clipboard reply, or NULL. */
+static char *
+input_clipboard_string(const char *buf, size_t len, const char *end, char clip)
+{
+	char	*out = NULL, *s;
+	int	 outlen = 0;
+
+	if (buf != NULL && len != 0) {
+		if (len >= ((size_t)INT_MAX * 3 / 4) - 1)
+			return (NULL);
+		outlen = 4 * ((len + 2) / 3) + 1;
+		out = xmalloc(outlen);
+		if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
+			free(out);
+			return (NULL);
+		}
+	}
+	if (clip != 0)
+		xasprintf(&s, "\033]52;%c;%s%s", clip, out == NULL ? "" : out, end);
+	else
+		xasprintf(&s, "\033]52;;%s%s", out == NULL ? "" : out, end);
+	free(out);
+	return (s);
+}
+
 /* Send a clipboard reply. */
 void
 input_reply_clipboard(struct bufferevent *bev, const char *buf, size_t len,
     const char *end, char clip)
 {
-	char	*out = NULL;
-	int	 outlen = 0;
+	char	*s;
 
-	if (buf != NULL && len != 0) {
-		if (len >= ((size_t)INT_MAX * 3 / 4) - 1)
-			return;
-		outlen = 4 * ((len + 2) / 3) + 1;
-		out = xmalloc(outlen);
-		if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
-			free(out);
-			return;
-		}
-	}
-
-	bufferevent_write(bev, "\033]52;", 5);
-	if (clip != 0)
-		bufferevent_write(bev, &clip, 1);
-	bufferevent_write(bev, ";", 1);
-	if (outlen != 0)
-		bufferevent_write(bev, out, outlen);
-	bufferevent_write(bev, end, strlen(end));
-	free(out);
+	if ((s = input_clipboard_string(buf, len, end, clip)) == NULL)
+		return;
+	bufferevent_write(bev, s, strlen(s));
+	free(s);
 }
 
 /* Set input buffer size. */
@@ -3544,6 +3706,13 @@ input_request_timer_callback(__unused int fd, __unused short events, void *arg)
 	uint64_t		 t = get_timer();
 
 	TAILQ_FOREACH_SAFE(ir, &ictx->requests, entry, ir1) {
+		/*
+		 * A kitty graphics answer waits until the terminal has said
+		 * whether it has the protocol (at most until the terminal's
+		 * start timer), and answers after it wait behind it.
+		 */
+		if (ir->type == INPUT_REQUEST_KGFX)
+			break;
 		if (ir->t >= t - INPUT_REQUEST_TIMEOUT)
 			continue;
 		if (ir->type == INPUT_REQUEST_QUEUE)
@@ -3641,11 +3810,60 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	case INPUT_REQUEST_CLIPBOARD:
 		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
 		break;
+	case INPUT_REQUEST_KGFX:
 	case INPUT_REQUEST_QUEUE:
 		break;
 	}
 
 	return (0);
+}
+
+/*
+ * Hold a kitty graphics answer until the client's terminal has said whether it
+ * has the protocol (kgfx.c); answers after it wait behind it.
+ */
+void
+input_kgfx_request(struct input_ctx *ictx, struct client *c,
+    const char *reply)
+{
+	struct input_request	*ir;
+
+	ir = input_make_request(ictx, INPUT_REQUEST_KGFX);
+	ir->c = c;
+	ir->data = xstrdup(reply);
+	TAILQ_INSERT_TAIL(&c->input_requests, ir, centry);
+}
+
+/*
+ * The client's terminal has said whether it has the kitty graphics protocol
+ * (yes): every answer held for it goes if it has, and answers waiting behind
+ * them go too.
+ */
+void
+input_kgfx_known(struct client *c, int yes)
+{
+	struct input_request	*ir, *ir1, *next;
+	struct input_ctx	*ictx;
+
+	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
+		if (ir->type != INPUT_REQUEST_KGFX)
+			continue;
+		ictx = ir->ictx;
+		if (!yes)
+			input_free_request(ir);
+		else {
+			TAILQ_REMOVE(&c->input_requests, ir, centry);
+			ir->c = NULL;
+			ir->type = INPUT_REQUEST_QUEUE;
+		}
+
+		/* Answers at the front of the pane's queue can go now. */
+		while ((next = TAILQ_FIRST(&ictx->requests)) != NULL &&
+		    next->type == INPUT_REQUEST_QUEUE) {
+			input_send_reply(ictx, next->data);
+			input_free_request(next);
+		}
+	}
 }
 
 /* Handle a palette reply. */
@@ -3662,10 +3880,9 @@ static void
 input_request_clipboard_reply(struct input_request *ir, void *data)
 {
 	struct input_ctx			*ictx = ir->ictx;
-	struct bufferevent			*ev = ictx->event;
 	struct input_request_clipboard_data	*cd = data;
 	int					 state;
-	char					*copy;
+	char					*copy, *s;
 
 	state = options_get_number(global_options, "get-clipboard");
 	if (state == 0 || state == 1)
@@ -3677,9 +3894,31 @@ input_request_clipboard_reply(struct input_request *ir, void *data)
 	}
 
 	if (ir->idx == INPUT_END_BEL)
-		input_reply_clipboard(ev, cd->buf, cd->len, "\007", cd->clip);
+		s = input_clipboard_string(cd->buf, cd->len, "\007", cd->clip);
 	else
-		input_reply_clipboard(ev, cd->buf, cd->len, "\033\\", cd->clip);
+		s = input_clipboard_string(cd->buf, cd->len, "\033\\", cd->clip);
+	if (s != NULL) {
+		input_send_reply(ictx, s);
+		free(s);
+	}
+}
+
+/*
+ * A reply captured while answers wait behind a held one: it waits in the
+ * request's place.
+ */
+static void
+input_queue_capture(struct input_ctx *ictx, struct input_request *before)
+{
+	struct input_request	*ir;
+	size_t			 len = EVBUFFER_LENGTH(ictx->capture);
+
+	if (len == 0)
+		return;
+	ir = input_make_request(ictx, INPUT_REQUEST_QUEUE);
+	ir->data = xstrndup(EVBUFFER_DATA(ictx->capture), len);
+	TAILQ_REMOVE(&ictx->requests, ir, entry);
+	TAILQ_INSERT_BEFORE(before, ir, entry);
 }
 
 /* Handle a reply to a request. */
@@ -3688,9 +3927,12 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 {
 	struct input_request			*ir, *ir1, *found = NULL;
 	struct input_request_palette_data	*pd = data;
-	int					 complete = 0;
+	struct input_ctx			*ictx;
+	int					 complete = 0, held = 0;
 
 	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
+		if (ir->type == INPUT_REQUEST_KGFX)
+			continue;
 		if (ir->type != type) {
 			input_free_request(ir);
 			continue;
@@ -3711,16 +3953,35 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 	if (found == NULL)
 		return;
 
-	TAILQ_FOREACH_SAFE(ir, &found->ictx->requests, entry, ir1) {
+	/*
+	 * Answers go in order: earlier requests not answered are given up, but
+	 * a kitty graphics answer held until the terminal says whether it has
+	 * the protocol is kept, and the answers after it wait behind it.
+	 */
+	ictx = found->ictx;
+	TAILQ_FOREACH_SAFE(ir, &ictx->requests, entry, ir1) {
 		if (complete && ir->type != INPUT_REQUEST_QUEUE)
 			break;
-		if (ir->type == INPUT_REQUEST_QUEUE)
-			input_send_reply(ir->ictx, ir->data);
-		else if (ir == found) {
+		if (ir->type == INPUT_REQUEST_KGFX) {
+			held = 1;
+			continue;
+		}
+		if (ir->type == INPUT_REQUEST_QUEUE) {
+			if (held)
+				continue;
+			input_send_reply(ictx, ir->data);
+		} else if (ir == found) {
+			if (held && (ictx->capture = evbuffer_new()) == NULL)
+				fatalx("out of memory");
 			if (ir->type == INPUT_REQUEST_PALETTE)
 				input_request_palette_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_CLIPBOARD)
 				input_request_clipboard_reply(ir, data);
+			if (held) {
+				input_queue_capture(ictx, ir);
+				evbuffer_free(ictx->capture);
+				ictx->capture = NULL;
+			}
 			complete = 1;
 		}
 		input_free_request(ir);

@@ -208,6 +208,7 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if (tty->discarded < TTY_BLOCK_STOP(tty)) {
 		tty->flags &= ~TTY_BLOCK;
+		kgfx_client_sync(c);
 		tty_invalidate(tty);
 		return;
 	}
@@ -231,6 +232,7 @@ tty_block_start(struct tty *tty)
 	c->discarded += size;
 	c->redraw = 0;
 	tty->exempt = 0;
+	kgfx_client_dropped(c);
 
 	tty->discarded = 0;
 	evtimer_add(&tty->timer, &tv);
@@ -239,6 +241,7 @@ tty_block_start(struct tty *tty)
 static int
 tty_block_maybe(struct tty *tty)
 {
+	struct client	*c = tty->client;
 	size_t		 size = EVBUFFER_LENGTH(tty->out);
 
 	if (size == 0)
@@ -246,7 +249,8 @@ tty_block_maybe(struct tty *tty)
 	else if (tty->flags & TTY_NOBLOCK)
 		return (0);
 
-	if (size < TTY_BLOCK_START(tty))
+	/* Images do not count: kgfx.c keeps them within a budget. */
+	if (size - kgfx_client_queued(c) < TTY_BLOCK_START(tty))
 		return (0);
 
 	if (~tty->flags & TTY_BLOCK)
@@ -271,6 +275,7 @@ tty_block_limit(struct tty *tty)
 	if (tty->flags & TTY_BLOCK)
 		return;
 	exempt = (c->redraw > tty->exempt) ? c->redraw : tty->exempt;
+	exempt += kgfx_client_queued(c);
 	if (size < exempt || size - exempt < TTY_BLOCK_LIMIT(tty))
 		return;
 	tty_block_start(tty);
@@ -310,6 +315,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 		    c->redraw);
 	} else if (tty_block_maybe(tty))
 		return;
+	kgfx_client_written(c);
 
 	if (EVBUFFER_LENGTH(tty->out) != 0)
 		event_add(&tty->event_out, NULL);
@@ -351,6 +357,20 @@ tty_open(struct tty *tty, char **cause)
 	return (0);
 }
 
+/*
+ * No more answers to tmux's requests are waited for. Answers to programs held
+ * until the terminal said whether it has kitty graphics go.
+ */
+static void
+tty_all_requests(struct tty *tty)
+{
+	int	kgfx = (tty->flags & TTY_HAVEKGFX);
+
+	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	if (!kgfx)
+		kgfx_known(tty->client);
+}
+
 static void
 tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 {
@@ -361,7 +381,7 @@ tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if ((tty->flags & (TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA)) == 0)
 		tty_update_features(tty);
-	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	tty_all_requests(tty);
 
 	tty->flags &= ~(TTY_WAITBG|TTY_WAITFG);
 }
@@ -444,6 +464,9 @@ tty_start_tty(struct tty *tty)
 	tty->mouse_drag_flag = 0;
 	tty->mouse_drag_update = NULL;
 	tty->mouse_drag_release = NULL;
+
+	/* Images made while it was stopped. */
+	kgfx_client_sync(c);
 }
 
 void
@@ -453,6 +476,14 @@ tty_send_requests(struct tty *tty)
 		return;
 
 	if (tty->term->flags & TERM_VT100LIKE) {
+		/*
+		 * The kitty graphics query goes before DA1: a terminal that
+		 * answers DA1 first does not have the protocol.
+		 */
+		if (~tty->flags & TTY_HAVEKGFX) {
+			tty_puts(tty, "\033_Gi=4294967295,s=1,v=1,a=q,t=d,"
+			    "f=24;AAAA\033\\");
+		}
 		if (~tty->flags & TTY_HAVEDA)
 			tty_puts(tty, "\033[c");
 		if (~tty->flags & TTY_HAVEDA2)
@@ -461,10 +492,11 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[>q");
 		if (~tty->flags & TTY_HAVESYNC)
 			tty_puts(tty, "\033[?2026$p");
+
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
-		tty->flags |= TTY_ALL_REQUEST_FLAGS;
+		tty_all_requests(tty);
 	tty->last_requests = time(NULL);
 }
 
@@ -506,6 +538,14 @@ tty_stop_tty(struct tty *tty)
 
 	evtimer_del(&tty->start_timer);
 	evtimer_del(&tty->clipboard_timer);
+
+	/*
+	 * Answers held until the terminal says whether it has kitty graphics
+	 * go now, as far as is known; the question is asked again when the
+	 * terminal starts.
+	 */
+	if (~tty->flags & TTY_HAVEKGFX)
+		kgfx_known(c);
 
 	event_del(&tty->timer);
 	tty->flags &= ~TTY_BLOCK;
