@@ -1799,7 +1799,12 @@ input_csi_dispatch(struct input_ctx *ictx)
 		if (n == -1)
 			break;
 
-		m = screen_size_x(s) - s->cx;
+		/*
+		 * Repeat as if written again, wrapping at the end of the line
+		 * as xterm and others do; more than a screenful changes
+		 * nothing more that can be seen, so stop there.
+		 */
+		m = screen_size_x(s) * screen_size_y(s);
 		if (n > m)
 			n = m;
 
