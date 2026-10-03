@@ -1211,8 +1211,9 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
     struct mouse_event *m)
 {
 	struct client	*c = tty->client;
-	u_int		 i, x, y, b, sgr_b;
+	u_int		 i, x, y, b, sgr_b, px = 0, py = 0;
 	u_char		 sgr_type, ch;
+	int		 pixels = 0;
 
 	/*
 	 * Standard mouse sequences are \033[M followed by three characters
@@ -1305,11 +1306,35 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
 		log_debug("%s: mouse input (SGR): %.*s", c->name, (int)*size,
 		    buf);
 
-		/* Check and return the mouse input. */
-		if (x < 1 || y < 1)
-			return (-2);
-		x--;
-		y--;
+		/*
+		 * Check and return the mouse input. In pixels (asked for with
+		 * 1016), the position is made from 0 and the cell is found
+		 * from the cell size.
+		 */
+		if (tty->flags & TTY_MOUSEPIXELS) {
+			if (tty->xpixel == 0 || tty->ypixel == 0)
+				return (-2);
+			if (~tty->flags & TTY_PIXELSFROM0) {
+				if (x > 0)
+					x--;
+				if (y > 0)
+					y--;
+			}
+			px = x;
+			py = y;
+			pixels = 1;
+			x = px / tty->xpixel;
+			y = py / tty->ypixel;
+			if (x >= tty->sx)
+				x = tty->sx - 1;
+			if (y >= tty->sy)
+				y = tty->sy - 1;
+		} else {
+			if (x < 1 || y < 1)
+				return (-2);
+			x--;
+			y--;
+		}
 		b = sgr_b;
 
 		/* Type is M for press, m for release. */
@@ -1337,6 +1362,11 @@ tty_keys_mouse(struct tty *tty, const char *buf, size_t len, size_t *size,
 	m->b = b;
 	m->sgr_type = sgr_type;
 	m->sgr_b = sgr_b;
+	m->pixels = pixels;
+	m->px = px;
+	m->py = py;
+	m->xpixel = tty->xpixel;
+	m->ypixel = tty->ypixel;
 
 	/* Update last mouse state. */
 	tty->mouse_last_x = x;
@@ -1544,28 +1574,33 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 }
 
 /*
- * Handle a synchronized update mode response. Returns 0 for success, -1 for
- * failure, 1 for partial.
+ * Handle a DECRPM response for a mode tmux asks about: 2026 (synchronized
+ * output) or 1016 (mouse in pixels). Returns 0 for success, -1 for failure,
+ * 1 for partial.
  */
 static int
 tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 {
-	struct client		*c = tty->client;
-	static const char	 prefix[] = "\033[?2026;";
-	size_t			 i;
-	int			 status;
+	struct client	*c = tty->client;
+	size_t		 i;
+	u_int		 mode = 0;
+	int		 status;
 
 	*size = 0;
-	if (tty->flags & TTY_HAVESYNC)
-		return (-1);
 
-	/* The response is always \033[?2026;Ps$y. */
-	for (i = 0; i < (sizeof prefix) - 1; i++) {
+	/* The response is \033[?Pd;Ps$y. */
+	for (i = 0; i < 3; i++) {
 		if (i == len)
 			return (1);
-		if (buf[i] != prefix[i])
+		if (buf[i] != "\033[?"[i])
 			return (-1);
 	}
+	for (; i < len && i < 8 && isdigit((u_char)buf[i]); i++)
+		mode = mode * 10 + (buf[i] - '0');
+	if (i == len)
+		return (1);
+	if (buf[i++] != ';' || (mode != 2026 && mode != 1016))
+		return (-1);
 	if (i == len)
 		return (1);
 	if (buf[i] < '0' || buf[i] > '4')
@@ -1580,14 +1615,22 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 	if (buf[i++] != 'y')
 		return (-1);
 	*size = i;
-
-	if (status == 1 || status == 2 || status == 3) {
-		tty_parse_client_features(c, "sync", ",");
-		tty_update_features(tty);
-	}
 	log_debug("%s: received DECRPM %.*s", c->name, (int)*size, buf);
-	tty->flags |= TTY_HAVESYNC;
 
+	if (mode == 2026 && (~tty->flags & TTY_HAVESYNC)) {
+		tty->flags |= TTY_HAVESYNC;
+		if (status == 1 || status == 2 || status == 3) {
+			tty_parse_client_features(c, "sync", ",");
+			tty_update_features(tty);
+		}
+	}
+	if (mode == 1016 && (~tty->flags & TTY_HAVEPIXELS)) {
+		tty->flags |= TTY_HAVEPIXELS;
+		if (status == 1 || status == 2) {
+			tty_parse_client_features(c, "mousepixels", ",");
+			tty_update_features(tty);
+		}
+	}
 	return (0);
 }
 
@@ -1737,6 +1780,15 @@ tty_keys_extended_device_attributes(struct tty *tty, const char *buf,
 	else if (strncmp(tmp, "Rio ", 4) == 0)
 		tty_default_features(c, "Rio", 0);
 	log_debug("%s: received extended DA %.*s", c->name, (int)*size, buf);
+
+	/*
+	 * Mouse positions in pixels (1016) are from 0 in kitty, ghostty and
+	 * tmux, from 1 in xterm (and foot and WezTerm).
+	 */
+	if (strncmp(tmp, "kitty(", 6) == 0 ||
+	    strncmp(tmp, "ghostty ", 8) == 0 ||
+	    strncmp(tmp, "tmux ", 5) == 0)
+		tty->flags |= TTY_PIXELSFROM0;
 
 	free(c->term_type);
 	c->term_type = xstrdup(tmp);

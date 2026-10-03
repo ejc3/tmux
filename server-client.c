@@ -2154,6 +2154,8 @@ server_client_reset_state(struct client *c)
 			TAILQ_FOREACH(loop, &w->panes, entry) {
 				if (loop->screen->mode & MODE_MOUSE_ALL)
 					mode |= MODE_MOUSE_ALL;
+				if (loop->screen->mode & MODE_MOUSE_PIXELS)
+					mode |= MODE_MOUSE_PIXELS;
 			}
 		}
 		if (options_get_number(oo, "focus-follows-mouse") ||

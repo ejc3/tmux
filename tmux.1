@@ -5118,6 +5118,9 @@ Supports DECSLRM margins.
 Supports
 .Xr xterm 1
 mouse sequences.
+.It mousepixels
+Reports the mouse in pixels (SGR-Pixels).
+Found by asking the terminal; used while a pane asks for it.
 .It osc7
 Supports the OSC 7 working directory extension.
 .It overline
@@ -7363,6 +7366,7 @@ The following variables are available, where appropriate:
 .It Li "mouse_button_flag" Ta "" Ta "Pane mouse button flag"
 .It Li "mouse_hyperlink" Ta "" Ta "Hyperlink under mouse, if any"
 .It Li "mouse_line" Ta "" Ta "Line under mouse, if any"
+.It Li "mouse_pixels_flag" Ta "" Ta "Pane mouse SGR pixels flag"
 .It Li "mouse_sgr_flag" Ta "" Ta "Pane mouse SGR flag"
 .It Li "mouse_standard_flag" Ta "" Ta "Pane mouse standard flag"
 .It Li "mouse_status_line" Ta "" Ta "Status line on which mouse event took place"
