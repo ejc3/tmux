@@ -557,10 +557,18 @@ tty_stop_tty(struct tty *tty)
 {
 	struct client	*c = tty->client;
 	struct winsize	 ws;
+	int		 forwarding;
 
 	if (!(tty->flags & TTY_STARTED))
 		return;
 	tty->flags &= ~TTY_STARTED;
+
+	/*
+	 * A stopped terminal is not forwarded to: stop now, so nothing writes
+	 * to it (or to its buffer, which tty_close frees) on its behalf.
+	 */
+	forwarding = (c->forward_pane != UINT_MAX);
+	c->forward_pane = UINT_MAX;
 
 	/* Whatever uses the terminal next writes to its scrollback. */
 	tty_history_lost(tty);
@@ -593,6 +601,8 @@ tty_stop_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tty->tio) == -1)
 		return;
 
+	if (forwarding)
+		tty_raw(tty, FORWARD_RESET);
 	if (tty->flags & TTY_OWESCROLL) {
 		tty->flags &= ~TTY_OWESCROLL;
 		tty_raw(tty, "\r\n");
@@ -840,6 +850,24 @@ tty_puts(struct tty *tty, const char *s)
 {
 	if (*s != '\0')
 		tty_add(tty, s, strlen(s));
+}
+
+/*
+ * Write a pane's output as the program wrote it (forward.c). Where the cursor
+ * is and which region and margins are set is then up to the terminal.
+ */
+void
+tty_forward(struct tty *tty, const u_char *buf, size_t len)
+{
+	tty_block_limit(tty);
+	tty_add(tty, (const char *)buf, len);
+	/* The program's attributes are the terminal's now; tmux resets them
+	 * with tty_invalidate when it draws again (forward_stop). */
+	memcpy(&tty->cell, &grid_default_cell, sizeof tty->cell);
+	tty->flags &= ~(TTY_OWESCROLL|TTY_WRAPNEXT|TTY_WRAPPED0);
+	tty->cx = tty->cy = UINT_MAX;
+	tty->rupper = tty->rleft = UINT_MAX;
+	tty->rlower = tty->rright = UINT_MAX;
 }
 
 void
@@ -1851,6 +1879,9 @@ tty_write(void (*cmdfn)(struct tty *, const struct tty_ctx *),
 	if (ctx->set_client_cb == NULL)
 		return;
 	TAILQ_FOREACH(c, &clients, entry) {
+		/* The terminal has the pane's output as written. */
+		if (ctx->wp != NULL && c->forward_pane == ctx->wp->id)
+			continue;
 		if (tty_client_ready(ctx, c)) {
 			state = ctx->set_client_cb(ctx, c);
 			if (state == -1)
@@ -2588,6 +2619,20 @@ tty_invalidate(struct tty *tty)
 	tty->cx = tty->cy = UINT_MAX;
 	tty->rupper = tty->rleft = UINT_MAX;
 	tty->rlower = tty->rright = UINT_MAX;
+
+	/*
+	 * Forwarding (forward.c): the program's own output has the cursor,
+	 * region, margins and attributes where it wants them - on a resize,
+	 * a feature update or anything else, only forget them and set tmux's
+	 * own modes again. forward_stop sets them all when drawing resumes.
+	 */
+	if (tty->client->forward_pane != UINT_MAX) {
+		if (tty->flags & TTY_STARTED) {
+			tty->mode = ALL_MODES;
+			tty_update_mode(tty, MODE_CURSOR|mouse, NULL);
+		}
+		return;
+	}
 
 	if (tty->flags & TTY_STARTED) {
 		if (tty_use_margin(tty))

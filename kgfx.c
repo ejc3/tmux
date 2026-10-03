@@ -1862,6 +1862,7 @@ kgfx_command(struct window_pane *wp, struct screen_write_ctx *ctx,
 {
 	struct kgfx_cmd		*cmd;
 	struct kgfx_pending	*pd;
+	struct client		*c;
 
 	if (kgfx_supported(wp) == 0)
 		return;
@@ -1925,4 +1926,10 @@ kgfx_command(struct window_pane *wp, struct screen_write_ctx *ctx,
 
 	kgfx_run(wp, ctx, bev, cmd);
 	kgfx_free_cmd(cmd);
+
+	/* The pane is drawn from its grid again where it was forwarded. */
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->forward_pane == wp->id)
+			forward_stop(c);
+	}
 }
