@@ -506,9 +506,18 @@ screen_write_reset(struct screen_write_ctx *ctx)
 
 	if (options_get_number(global_options, "extended-keys") == 2)
 		s->mode = (s->mode & ~EXTENDED_KEY_MODES)|MODE_KEYS_EXTENDED;
+	screen_kkeys_reset(s);
+	screen_pointer_reset(s);
 
 	screen_write_clearscreen(ctx, 8);
 	screen_write_set_cursor(ctx, 0, 0);
+}
+
+/* Write what has been collected to the grid now. */
+void
+screen_write_flush(struct screen_write_ctx *ctx)
+{
+	screen_write_collect_flush(ctx, 0, __func__);
 }
 
 /* Write character. */

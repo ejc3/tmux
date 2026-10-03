@@ -2054,6 +2054,18 @@ format_cb_mouse_sgr_flag(struct format_tree *ft)
 	return (NULL);
 }
 
+/* Callback for mouse_pixels_flag. */
+static void *
+format_cb_mouse_pixels_flag(struct format_tree *ft)
+{
+	if (ft->wp != NULL) {
+		if (ft->wp->base.mode & MODE_MOUSE_PIXELS)
+			return (xstrdup("1"));
+		return (xstrdup("0"));
+	}
+	return (NULL);
+}
+
 /* Callback for mouse_standard_flag. */
 static void *
 format_cb_mouse_standard_flag(struct format_tree *ft)
@@ -2490,7 +2502,15 @@ format_cb_pane_unseen_changes(struct format_tree *ft)
 static void *
 format_cb_pane_key_mode(struct format_tree *ft)
 {
+	char	*value;
+	u_int	 flags;
+
 	if (ft->wp != NULL && ft->wp->screen != NULL) {
+		flags = screen_kkeys_flags(ft->wp->screen);
+		if (flags != 0) {
+			xasprintf(&value, "Kitty %u", flags);
+			return (value);
+		}
 		switch (ft->wp->screen->mode & EXTENDED_KEY_MODES) {
 		case MODE_KEYS_EXTENDED:
 			return (xstrdup("Ext 1"));
@@ -3782,6 +3802,9 @@ static const struct format_table_entry format_table[] = {
 	},
 	{ "mouse_pane", FORMAT_TABLE_STRING,
 	  format_cb_mouse_pane
+	},
+	{ "mouse_pixels_flag", FORMAT_TABLE_STRING,
+	  format_cb_mouse_pixels_flag
 	},
 	{ "mouse_sgr_flag", FORMAT_TABLE_STRING,
 	  format_cb_mouse_sgr_flag

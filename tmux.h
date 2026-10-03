@@ -57,6 +57,7 @@ struct format_tree;
 struct hyperlinks_uri;
 struct hyperlinks;
 struct input_ctx;
+struct kgfx_client;
 struct input_request;
 struct input_requests;
 struct job;
@@ -698,6 +699,8 @@ enum tty_code_code {
 #define MODE_KEYS_EXTENDED_2 0x40000
 #define MODE_THEME_UPDATES 0x80000
 #define MODE_SYNC 0x100000
+#define MODE_INBAND_RESIZE 0x200000
+#define MODE_MOUSE_PIXELS 0x400000
 
 #define ALL_MODES 0xffffff
 #define ALL_MOUSE_MODES (MODE_MOUSE_STANDARD|MODE_MOUSE_BUTTON|MODE_MOUSE_ALL)
@@ -1122,6 +1125,29 @@ struct progress_bar {
 /* Virtual screen. */
 struct screen_sel;
 struct screen_titles;
+/*
+ * Kitty keyboard protocol progressive enhancement flags. A program pushes and
+ * pops them; the entry on top is in effect.
+ */
+#define KKEYS_DISAMBIGUATE 0x1
+#define KKEYS_EVENTS 0x2
+#define KKEYS_ALTERNATES 0x4
+#define KKEYS_ALL 0x8
+#define KKEYS_TEXT 0x10
+#define KKEYS_MASK 0x7f
+#define KKEYS_DEPTH 8
+struct screen_kkeys {
+	u_char				 flags[KKEYS_DEPTH];
+	u_int				 n;
+};
+
+/* A stack of mouse pointer shapes (OSC 22). */
+#define SCREEN_POINTERS 16
+struct screen_pointers {
+	char				*shape[SCREEN_POINTERS];
+	u_int				 n;
+};
+
 struct screen {
 	char				*title;
 	char				*path;
@@ -1164,6 +1190,9 @@ struct screen {
 
 	struct hyperlinks		*hyperlinks;
 	struct progress_bar		 progress_bar;
+
+	struct screen_kkeys		 kkeys[2]; /* main, alternate screen */
+	struct screen_pointers		 pointers[2]; /* main, alternate */
 };
 
 /* Screen write context. */
@@ -1298,6 +1327,8 @@ struct window_mode_entry {
 enum input_request_type {
 	INPUT_REQUEST_PALETTE,
 	INPUT_REQUEST_CLIPBOARD,
+	INPUT_REQUEST_KGFX,
+	INPUT_REQUEST_NOTIFY,
 	INPUT_REQUEST_QUEUE
 };
 
@@ -1357,11 +1388,18 @@ struct visible_ranges {
 	u_int			 size;    /* allocated capacity of ranges */
 };
 
+/* Notifications a pane waits to hear back about (server-client.c). */
+struct notify_item;
+TAILQ_HEAD(notify_items, notify_item);
+
 /* Child window structure. */
 struct window_pane {
 	u_int		 id;
 	int		 references;
 	u_int		 active_point;
+	u_int		 notify_anon;	/* OSC 99 without an identifier */
+	struct notify_items notifies;	/* OSC 99 awaiting reports */
+	u_int		 nnotifies;
 
 	struct window	*window;
 	struct options	*options;
@@ -1399,6 +1437,7 @@ struct window_pane {
 #define PANE_CAPTUREALLKEYS 0x100000
 #define PANE_FLOATOVERZOOM 0x200000
 #define PANE_CLOSEONCANCEL 0x400000
+#define PANE_KGFX 0x800000
 
 	bitstr_t	*sync_dirty;
 	u_int		 sync_dirty_size;
@@ -1776,6 +1815,12 @@ struct mouse_event {
 
 	u_int		sgr_type;
 	u_int		sgr_b;
+
+	int		pixels;	/* px and py are from the terminal */
+	u_int		px;
+	u_int		py;
+	u_int		xpixel;	/* the terminal's cell size */
+	u_int		ypixel;
 };
 
 /* Key event. */
@@ -1808,6 +1853,11 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_NOTIFY 0x200
+#define TERM_POINTER 0x400
+#define TERM_KKEYS 0x800
+#define TERM_MOUSEPIXELS 0x1000
+#define TERM_KGFX 0x2000
 #define TERM_TEXTSIZE 0x4000
 #define TERM_GRAPHEMES 0x8000
 	int		 flags;
@@ -1896,11 +1946,18 @@ struct tty {
 #define TTY_OWESCROLL 0x40000
 #define TTY_WRAPNEXT 0x80000
 #define TTY_WRAPPED0 0x100000
+#define TTY_HAVEKKEYS 0x200000
+#define TTY_KKEYS 0x400000
+#define TTY_HAVEPIXELS 0x800000
+#define TTY_MOUSEPIXELS 0x1000000
+#define TTY_HAVEKGFX 0x2000000
 #define TTY_HAVEGRAPHEMES 0x4000000
 #define TTY_GRAPHEMES 0x8000000
+#define TTY_PIXELSFROM0 0x10000000
 #define TTY_HISTWRITTEN 0x20000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEGRAPHEMES)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
+	 TTY_HAVEPIXELS|TTY_HAVEKGFX|TTY_HAVEGRAPHEMES)
 	int		 flags;
 
 	/*
@@ -2322,6 +2379,9 @@ struct client {
 	int			 term_features;
 	int		 	 term_nofeatures;
 	char			*term_type;
+	char			*pointer;	/* shape set, or NULL */
+
+	struct kgfx_client	*kgfx;		/* kitty graphics given */
 	char		       **term_caps;
 	u_int			 term_ncaps;
 
@@ -3039,6 +3099,8 @@ void	tty_repeat_requests(struct tty *, int);
 void	tty_stop_tty(struct tty *);
 void	tty_set_title(struct tty *, const char *);
 void	tty_set_path(struct tty *, const char *);
+void	tty_notify(struct tty *, const char *);
+void	tty_set_pointer(struct tty *, const char *);
 void	tty_set_progress_bar(struct tty *, struct progress_bar *);
 void	tty_default_attributes(struct tty *, u_int,
 	    const struct tty_style_ctx *);
@@ -3089,6 +3151,19 @@ void	tty_draw_images(struct client *, struct window_pane *);
 void	tty_cmd_syncstart(struct tty *, const struct tty_ctx *);
 void	tty_default_colours(struct grid_cell *, struct window_pane *, u_int *);
 
+
+/* kgfx.c */
+void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,
+	     struct bufferevent *, const u_char *, size_t);
+void	 kgfx_pane_free(struct window_pane *);
+void	 kgfx_client_free(struct client *);
+void	 kgfx_client_sync(struct client *);
+void	 kgfx_client_written(struct client *);
+void	 kgfx_client_dropped(struct client *);
+size_t	 kgfx_client_queued(struct client *);
+void	 kgfx_known(struct client *);
+void	 kgfx_placeholder(struct window_pane *, struct grid_cell *, u_int);
+int	 kgfx_diacritic(const struct utf8_data *);
 /* tty-term.c */
 extern struct tty_terms tty_terms;
 u_int		 tty_term_ncodes(void);
@@ -3407,6 +3482,13 @@ u_int	 server_client_how_many(void);
 void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
+void	 server_client_notify(struct window_pane *, const char *);
+void	 server_client_notify_free(struct window_pane *);
+char	*server_client_notify_rewrite(struct window_pane *, const char *);
+int	 server_client_notify_is_query(const char *);
+int	 server_client_notify_reply(struct client *, const char *, size_t,
+	     const char *);
+const char *window_pane_pointer(struct window_pane *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);
 int	 server_client_handle_key(struct client *, struct key_event *);
@@ -3526,6 +3608,8 @@ void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 	     const char *, char);
 void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
+void	 input_kgfx_request(struct input_ctx *, struct client *, const char *);
+void	 input_kgfx_known(struct client *, int);
 void	 input_cancel_requests(struct client *);
 const char *input_sized_parse(const char *, u_int *);
 int	 input_sized_data(const char *, u_int, struct utf8_data *);
@@ -3535,7 +3619,7 @@ void	 input_key_build(void);
 int	 input_key_pane(struct window_pane *, key_code, struct mouse_event *);
 int	 input_key(struct screen *, struct bufferevent *, key_code);
 int	 input_key_get_mouse(struct screen *, struct mouse_event *, u_int,
-	     u_int, const char **, size_t *);
+	     u_int, u_int, u_int, const char **, size_t *);
 
 /* colour.c */
 int	 colour_find_rgb(u_char, u_char, u_char);
@@ -3662,6 +3746,7 @@ char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 
 /* screen-write.c */
 void	 screen_write_make_list(struct screen *);
+void	 screen_write_flush(struct screen_write_ctx *);
 void	 screen_write_free_list(struct screen *);
 int	 screen_write_full_window(struct window_pane *);
 int	 screen_write_passthrough(struct window_pane *);
@@ -3773,6 +3858,16 @@ int	 screen_set_path(struct screen *, const char *, int);
 void	 screen_push_title(struct screen *);
 void	 screen_pop_title(struct screen *);
 void	 screen_set_progress_bar(struct screen *, enum progress_bar_state, int);
+u_int	 screen_kkeys_flags(struct screen *);
+void	 screen_kkeys_push(struct screen *, u_int);
+void	 screen_kkeys_pop(struct screen *, u_int);
+void	 screen_kkeys_set(struct screen *, u_int, u_int);
+const char *screen_pointer(struct screen *);
+void	 screen_pointer_set(struct screen *, const char *);
+void	 screen_pointer_push(struct screen *, const char *);
+void	 screen_pointer_pop(struct screen *);
+void	 screen_pointer_reset(struct screen *);
+void	 screen_kkeys_reset(struct screen *);
 void	 screen_resize(struct screen *, u_int, u_int, int);
 void	 screen_resize_cursor(struct screen *, u_int, u_int, int, int, int);
 void	 screen_set_selection(struct screen *, u_int, u_int, u_int, u_int,
@@ -3835,6 +3930,7 @@ void		 window_redraw_active_switch(struct window *,
 struct window_pane *window_add_pane(struct window *, struct window_pane *,
 		     u_int, int);
 void		 window_resize(struct window *, u_int, u_int, int, int);
+void		 window_pane_report_size(struct window_pane *, u_int, u_int);
 void		 window_pane_send_resize(struct window_pane *, u_int, u_int);
 int		 window_zoom(struct window_pane *);
 int		 window_unzoom(struct window *, int);

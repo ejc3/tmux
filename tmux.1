@@ -4944,8 +4944,20 @@ When set to
 .Ic off ,
 this feature is disabled and only standard keys are reported.
 .Pp
+Unless set to
+.Ic off ,
+the program can also use the kitty keyboard protocol: push, pop, set and ask
+for its progressive enhancement flags, which are kept separately for the main
+and alternate screens.
+While any are set, keys are encoded as kitty encodes them.
 .Nm
-will always request extended keys itself if the terminal supports them.
+knows only key presses and the Control, Meta and Shift modifiers, so it does
+not report key releases or repeats, modifier keys pressed alone, or other
+modifiers.
+.Pp
+.Nm
+will always request extended keys itself if the terminal supports them,
+with the kitty keyboard protocol if the terminal has it.
 See also the
 .Ic extkeys
 feature for the
@@ -5131,16 +5143,49 @@ Ignore function keys from
 and use the
 .Nm
 internal set only.
+.It kittygraphics
+Supports the kitty graphics protocol.
+.Nm
+keeps the images programs in panes send and gives them to the terminal;
+where a program displays one, the pane holds Unicode placeholders, which the
+terminal draws the image on, so images move and scroll with the pane.
+An image is fitted to whole cells with its shape kept, and text written over
+part of it removes that part.
+Found by asking the terminal, and assumed for
+.Ql xterm-kitty
+and
+.Ql xterm-ghostty .
+.It kittykeys
+Supports the kitty keyboard protocol;
+.Nm
+asks for it instead of the
+.Ic extkeys
+sequences.
+Found by asking the terminal.
 .It margins
 Supports DECSLRM margins.
 .It mouse
 Supports
 .Xr xterm 1
 mouse sequences.
+.It mousepixels
+Reports the mouse in pixels (SGR-Pixels).
+Found by asking the terminal; used while a pane asks for it.
+.It notify
+Shows desktop notifications (OSC 9, OSC 99 and OSC 777): notifications from
+panes are passed on to it.
+What it reports for one (that it was activated or closed) goes back to the
+pane.
+With the notification on several terminals, the pane is told as one terminal
+would tell it: activations are passed on from the first terminal to report
+one, closes from the first to report one, and an activation closes the
+notification on the other terminals.
 .It osc7
 Supports the OSC 7 working directory extension.
 .It overline
 Supports the overline SGR attribute.
+.It pointer
+Sets the mouse pointer shape (OSC 22).
 .It progressbar
 Supports the OSC 9;4 progress bar extension.
 .It rectfill
@@ -7429,6 +7474,7 @@ The following variables are available, where appropriate:
 .It Li "mouse_button_flag" Ta "" Ta "Pane mouse button flag"
 .It Li "mouse_hyperlink" Ta "" Ta "Hyperlink under mouse, if any"
 .It Li "mouse_line" Ta "" Ta "Line under mouse, if any"
+.It Li "mouse_pixels_flag" Ta "" Ta "Pane mouse SGR pixels flag"
 .It Li "mouse_sgr_flag" Ta "" Ta "Pane mouse SGR flag"
 .It Li "mouse_standard_flag" Ta "" Ta "Pane mouse standard flag"
 .It Li "mouse_status_line" Ta "" Ta "Status line on which mouse event took place"
@@ -7479,7 +7525,7 @@ The following variables are available, where appropriate:
 .It Li "pane_in_mode" Ta "" Ta "Number of modes pane is in"
 .It Li "pane_index" Ta "#P" Ta "Index of pane"
 .It Li "pane_input_off" Ta "" Ta "1 if input to pane is disabled"
-.It Li "pane_key_mode" Ta "" Ta "Extended key reporting mode in this pane"
+.It Li "pane_key_mode" Ta "" Ta "Extended key reporting mode in this pane (VT10x, Ext 1, Ext 2 or Kitty and its flags)"
 .It Li "pane_last" Ta "" Ta "1 if last pane"
 .It Li "pane_last_output_time" Ta "" Ta "Time pane last produced output"
 .It Li "pane_last_prompt_time" Ta "" Ta "Time most recent OSC 133 prompt began"
