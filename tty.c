@@ -2113,6 +2113,8 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
     const struct tty_style_ctx *style_ctx)
 {
 	const struct grid_cell	*gcp;
+	char			 buf[TTY_SIZED_SIZE];
+	size_t			 len;
 
 	/* Skip last character if terminal is stupid. */
 	if ((tty->term->flags & TERM_NOAM) &&
@@ -2128,6 +2130,13 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 	gcp = tty_check_codeset(tty, gc);
 	tty_attributes(tty, gcp, style_ctx);
 
+	/* A character the program gave a width (OSC 66). */
+	if (gcp->attr & GRID_ATTR_SIZED) {
+		len = tty_sized_cell(tty, gcp, buf, sizeof buf);
+		tty_putn(tty, buf, len, gcp->data.width);
+		return;
+	}
+
 	/* If it is a single character, write with putc to handle ACS. */
 	if (gcp->data.size == 1) {
 		if (*gcp->data.data < 0x20 || *gcp->data.data == 0x7f)
@@ -2138,6 +2147,63 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 
 	/* Write the data. */
 	tty_putn(tty, gcp->data.data, gcp->data.size, gcp->data.width);
+}
+
+/*
+ * The bytes for a character the program gave a width (OSC 66) in buf, which
+ * holds TTY_SIZED_SIZE: OSC 66 if the terminal has it, otherwise as much of
+ * the text as fits in the width and spaces after it, so it takes exactly
+ * that many cells either way. The text is measured as the terminal measures
+ * it: with grapheme clusters, a character joining the one before it (zero
+ * width, after a joiner, a skin tone) adds nothing, or makes a cluster of
+ * width 1 width 2 (a skin tone, variation selector 16).
+ */
+size_t
+tty_sized_cell(struct tty *tty, const struct grid_cell *gc, char *buf,
+    size_t size)
+{
+	const struct utf8_data	*ud = &gc->data;
+	struct utf8_data	 one, prev;
+	char			 text[UTF8_SIZE + 1];
+	const char		*cp = text;
+	size_t			 len = 0;
+	u_int			 used = 0, cw = 0, w;
+	int			 graphemes, join;
+
+	if (size < TTY_SIZED_SIZE)
+		fatalx("%s: buffer too small", __func__);
+	if (tty->term->flags & TERM_TEXTSIZE) {
+		return (xsnprintf(buf, size, "\033]66;w=%u;%.*s\033\\",
+		    ud->width, (int)ud->size, ud->data));
+	}
+
+	graphemes = (tty->term->flags & TERM_GRAPHEMES);
+	memcpy(text, ud->data, ud->size);
+	text[ud->size] = '\0';
+	memset(&prev, 0, sizeof prev);
+	while (*cp != '\0') {
+		if (!utf8_next(&cp, &one))
+			continue;
+		join = (graphemes && prev.size != 0 && (one.width == 0 ||
+		    utf8_is_zwj(&prev) || utf8_should_combine(&one, &prev)));
+		if (!join)
+			w = cw = one.width;	/* a new cluster */
+		else if (cw == 1 &&
+		    (utf8_should_combine(&one, &prev) || utf8_is_vs(&one))) {
+			w = 1;			/* the cluster is now 2 wide */
+			cw = 2;
+		} else
+			w = 0;
+		if (used + w > ud->width)
+			break;
+		memcpy(buf + len, one.data, one.size);
+		len += one.size;
+		used += w;
+		memcpy(&prev, &one, sizeof prev);
+	}
+	for (; used < ud->width; used++)
+		buf[len++] = ' ';
+	return (len);
 }
 
 void
@@ -2505,6 +2571,7 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 
 	/* Copy cell and update default colours. */
 	memcpy(&gc2, gc, sizeof gc2);
+	gc2.attr &= ~GRID_ATTR_SIZED;	/* not an attribute the terminal has */
 	if (~gc->flags & GRID_FLAG_NOPALETTE) {
 		if (gc2.fg == 8)
 			gc2.fg = style_ctx->defaults->fg;

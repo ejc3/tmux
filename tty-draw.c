@@ -282,7 +282,9 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 			else if (current_state == TTY_DRAW_LINE_FIRST)
 				next_state = TTY_DRAW_LINE_SAME;
 			else if (grid_cells_look_equal(gcp, &last)) {
-				if (gcp->data.size > (sizeof buf) - len)
+				if (((gcp->attr & GRID_ATTR_SIZED) ?
+				    TTY_SIZED_SIZE : gcp->data.size) >
+				    (sizeof buf) - len)
 					next_state = TTY_DRAW_LINE_FLUSH;
 				else
 					next_state = TTY_DRAW_LINE_SAME;
@@ -324,7 +326,12 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 		}
 
 		/* Append the cell if it is not empty and not padding. */
-		if (next_state != TTY_DRAW_LINE_EMPTY) {
+		if (next_state != TTY_DRAW_LINE_EMPTY &&
+		    (gcp->attr & GRID_ATTR_SIZED)) {
+			len += tty_sized_cell(tty, gcp, buf + len,
+			    (sizeof buf) - len);
+			width += gcp->data.width;
+		} else if (next_state != TTY_DRAW_LINE_EMPTY) {
 			memcpy(buf + len, gcp->data.data, gcp->data.size);
 			len += gcp->data.size;
 			width += gcp->data.width;
