@@ -164,6 +164,18 @@ screen_write_redraw_cb(const struct tty_ctx *ttyctx, u_int py, u_int ny)
 	if (wp == NULL)
 		return;
 
+	/*
+	 * A pane whose rows a terminal keeps in its own scrollback is drawn
+	 * again whole, after its history is brought up to date and the
+	 * terminal is on the right screen (tty_sync_history,
+	 * server_client_check_redraw), and nothing is written to it until
+	 * then: rows drawn before that could scroll into the scrollback.
+	 */
+	if (screen_write_passthrough(wp)) {
+		wp->flags |= PANE_REDRAW;
+		return;
+	}
+
 	x0 = wp->xoff;
 	y0 = wp->yoff + (int)py;
 	x1 = x0 + (int)wp->sx;
