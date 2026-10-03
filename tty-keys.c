@@ -73,6 +73,8 @@ static int	tty_keys_extended_device_attributes(struct tty *, const char *,
 		    size_t, size_t *, int);
 static int	tty_keys_sync(struct tty *, const char *, size_t, size_t *,
 		    int);
+static int	tty_keys_notify(struct tty *, const char *, size_t, size_t *,
+		    int);
 static int	tty_keys_colours1(struct tty *, const char *, size_t, size_t *,
 		    int);
 static int	tty_keys_palette(struct tty *, const char *, size_t, size_t *,
@@ -89,6 +91,7 @@ static const struct {
 } tty_keys_replies[] = {
 	{ KEYC_REPORT_CLIPBOARD, tty_keys_clipboard },
 	{ KEYC_REPORT_SYNC, tty_keys_sync },
+	{ KEYC_REPORT_NOTIFY, tty_keys_notify },
 	{ KEYC_REPORT_DA, tty_keys_device_attributes },
 	{ KEYC_REPORT_DA2, tty_keys_device_attributes2 },
 	{ KEYC_REPORT_XDA, tty_keys_extended_device_attributes },
@@ -1934,3 +1937,43 @@ tty_keys_winsz(struct tty *tty, const char *buf, size_t len, size_t *size,
 	log_debug("%s: unrecognized window size sequence: %s", c->name, tmp);
 	return (-1);
 }
+
+/*
+ * Handle a notification message from the terminal, \033]99;...: an answer to
+ * a query, an activation report or a close event, for the pane its
+ * identifier names. Returns 0 for success, -1 for failure, 1 for partial.
+ */
+static int
+tty_keys_notify(struct tty *tty, const char *buf, size_t len, size_t *size,
+    int apply)
+{
+	struct client	*c = tty->client;
+	size_t		 i;
+	const char	*end;
+
+	*size = 0;
+	for (i = 0; i < 5; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033]99;"[i])
+			return (-1);
+	}
+	for (; i < len; i++) {
+		if (buf[i] == '\007')
+			break;
+		if (buf[i] == '\033' && i + 1 < len && buf[i + 1] == '\\')
+			break;
+		if (buf[i] == '\033' && i + 1 == len)
+			return (1);
+	}
+	if (i == len)
+		return (1);
+	end = (buf[i] == '\007') ? "\007" : "\033\\";
+	*size = i + ((buf[i] == '\007') ? 1 : 2);
+	if (!apply)
+		return (0);
+	log_debug("%s: received notification %.*s", c->name, (int)*size, buf);
+	server_client_notify_reply(c, buf + 2, i - 2, end);
+	return (0);
+}
+
