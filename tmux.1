@@ -5192,6 +5192,14 @@ Allows setting the cursor style.
 Supports extended keys.
 .It focus
 Supports focus reporting.
+.It graphemes
+Supports grapheme cluster mode (mode 2027), turned off.
+.Nm
+turns it on, so the terminal counts the cells of an emoji with a skin tone, a
+joined emoji, a flag or a character with a variation selector as
+.Nm
+does.
+Found by asking the terminal.
 .It hyperlinks
 Supports OSC 8 hyperlinks.
 .It ignorefkeys
