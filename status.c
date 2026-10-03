@@ -642,6 +642,9 @@ status_prompt_screen_line(struct client *c)
 	struct tty	*tty = &c->tty;
 	u_int		 n;
 
+	/* Without a status line the prompt is drawn on the last line. */
+	if (status_line_size(c) == 0)
+		return (tty->sy - 1);
 	if (options_get_number(c->session->options, "status-position") == 0)
 		return (status_prompt_line_at(c));
 	n = status_line_size(c) - status_prompt_line_at(c);

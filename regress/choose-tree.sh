@@ -56,14 +56,14 @@ capture()
 # capture is known to show the mode instance under test.
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
 		if printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1'"
 }
@@ -73,15 +73,15 @@ wait_for()
 # Wait (up to ~10s) until exactly $n rendered list rows contain $row-marker.
 wait_count()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
-		c=$(printf '%s\n' "$CAPTURED" | grep -F -c "$1")
-		[ "$c" -eq "$2" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		_c=$(printf '%s\n' "$CAPTURED" | grep -F -c "$1")
+		[ "$_c" -eq "$2" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "timed out waiting for $2 lines of '$1' (have $c)"
+	fail "timed out waiting for $2 lines of '$1' (have $_c)"
 }
 
 # wait_clients $n
@@ -89,12 +89,12 @@ wait_count()
 # Wait (up to ~10s) until the test server has exactly $n clients attached.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 10 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
@@ -104,18 +104,18 @@ wait_clients()
 # Wait (up to ~10s) until a pane enters or leaves mode.
 wait_mode()
 {
-	t=$1
-	want=$2
+	_t=$1
+	_want=$2
 
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t "$t" '#{pane_in_mode}' \
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t "$_t" '#{pane_in_mode}' \
 		    2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane $t mode state is $got, expected $want"
+	fail "pane $_t mode state is $_got, expected $_want"
 }
 
 exit_mode()
@@ -266,12 +266,12 @@ $TMUX choose-tree -t aaa:0 -F 'G3' -O index || exit 1
 wait_count ': G3' 9
 $TMUX send-keys -t aaa:0 g Enter || fail "send-keys Enter failed"
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	[ "$($TMUX list-clients -F '#{client_session}')" = "zzz" ] && break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "client did not switch to zzz"
+[ "$i" -lt 200 ] || fail "client did not switch to zzz"
 $TMUX switch-client -c "$($TMUX list-clients -F '#{client_name}')" -t aaa || \
 	exit 1
 wait_mode aaa:0 0
@@ -295,14 +295,14 @@ exit_mode q
 # help renderer deliberately leaves the tree unchanged.
 $TMUX2 resize-window -t out:0 -x 80 -y 50 || exit 1
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	# The inner session has a one-line status, leaving a 49-line window.
 	[ "$($TMUX display-message -p -t aaa:0 '#{window_height}')" -ge 49 ] &&
 		break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "attached client did not resize for tree help"
+[ "$i" -lt 200 ] || fail "attached client did not resize for tree help"
 $TMUX choose-tree -t aaa:0 -F 'G5' -O index || exit 1
 wait_count ': G5' 7
 $TMUX2 send-keys -t out:0 F1 || fail "send-keys F1 failed"
@@ -333,14 +333,14 @@ $TMUX choose-tree -w -t aaa:0 -O index -F 'WT #{window_name}' \
 wait_count 'WT swap-' 2
 $TMUX send-keys -t aaa:0 g j J || fail "window tree swap failed"
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	aname=$($TMUX display-message -p -t "aaa:$aidx" '#{window_name}')
 	bname=$($TMUX display-message -p -t "aaa:$bidx" '#{window_name}')
 	[ "$aname:$bname" = 'swap-b:swap-a' ] && break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "window tree did not swap the two windows"
+[ "$i" -lt 200 ] || fail "window tree did not swap the two windows"
 
 # ':' runs an entered command for the current item and rebuilds the tree when
 # its queued command completes.
@@ -350,13 +350,13 @@ wait_for '(current)'
 $TMUX send-keys -t aaa:0 -l "set-option -g @tree-command '%%'" || exit 1
 $TMUX send-keys -t aaa:0 Enter || exit 1
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	value=$($TMUX show-option -gqv @tree-command)
 	[ -n "$value" ] && break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "window tree entered command did not run"
+[ "$i" -lt 200 ] || fail "window tree entered command did not run"
 case "$value" in
 =aaa:*.) ;;
 *) fail "window tree command target was '$value'" ;;
@@ -368,14 +368,14 @@ $TMUX send-keys -t aaa:0 g j t j t X || fail "tagged kill keys failed"
 wait_for 'Kill 2 tagged?'
 $TMUX send-keys -t aaa:0 y || fail "tagged kill confirmation failed"
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	left=$($TMUX list-windows -t aaa -F '#{window_name}' | \
 	    grep -c '^swap-' || true)
 	[ "$left" -eq 0 ] && break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "tagged windows were not killed"
+[ "$i" -lt 200 ] || fail "tagged windows were not killed"
 exit_mode q
 
 exit 0

@@ -27,6 +27,23 @@ must_equal()
 	[ "$got" = "$want" ] || fail "got '$got', expected '$want'"
 }
 
+# settle
+#
+# Type the marker key z after the mouse events and wait until the inner server
+# has run its binding: keys are handled in order, so every earlier event (and
+# the commands it queued) has been handled too.
+settle()
+{
+	$TMUX set -g @seen 0
+	$TMUX2 send-keys -t "$OUTER" -l z 2>/dev/null
+	_i=0
+	while [ "$($TMUX show -gv @seen)" != 1 ]; do
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && fail "marker key was not handled"
+		sleep 0.05
+	done
+}
+
 # drag STARTCOL STARTROW ENDCOL ENDROW
 #
 # Write an SGR Ctrl-mouse press, drag update and release at 1-based positions
@@ -40,13 +57,11 @@ drag()
 
 	seq=$(printf '\033[<16;%s;%sM' "$scol" "$srow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<48;%s;%sM' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	seq=$(printf '\033[<16;%s;%sm' "$ecol" "$erow")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
+	settle
 }
 
 # right_click COL ROW KEY
@@ -60,9 +75,8 @@ right_click()
 
 	seq=$(printf '\033[<2;%s;%sM' "$col" "$row")
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 0.2
 	$TMUX2 send-keys -t "$OUTER" "$key" 2>/dev/null
-	sleep 1
+	settle
 }
 
 cleanup
@@ -70,6 +84,7 @@ cleanup
 $TMUX new-session -d -s inner -x 80 -y 24 || exit 1
 $TMUX set -g mouse on
 $TMUX set -g default-command 'sleep 100'
+$TMUX bind -n z set -g @seen 1
 keys=$($TMUX list-keys -T root -F '#{key_command}' MouseDown3Empty) ||
 	fail "list MouseDown3Empty failed"
 case "$keys" in
@@ -78,7 +93,13 @@ case "$keys" in
 esac
 
 $TMUX2 new-session -d -x 80 -y 24 "$TMUX attach -t inner" || exit 1
-sleep 1
+# Wait for the client to answer tmux's startup queries.
+i=0
+while [ -z "$($TMUX list-clients -F '#{client_termtype}')" ]; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && fail "inner client did not attach"
+	sleep 0.05
+done
 OUTER=$($TMUX2 list-panes -F '#{pane_id}' | head -1)
 [ -n "$OUTER" ] || fail "No outer pane."
 BASE=$($TMUX list-panes -F '#{pane_id}' | head -1)

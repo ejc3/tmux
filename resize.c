@@ -382,14 +382,21 @@ recalculate_size(struct window *w, int now)
 	    recalculate_size_skip_client, &sx, &sy, &xpixel, &ypixel);
 
 	/*
-	 * Make sure the size has actually changed. If the window has already
-	 * got a resize scheduled, then use the new size; otherwise the old.
+	 * Make sure the size has actually changed, in cells or in pixels (as
+	 * window_resize keeps them). If the window has already got a resize
+	 * scheduled, then use the new size; otherwise the old.
 	 */
+	if (xpixel == 0)
+		xpixel = DEFAULT_XPIXEL;
+	if (ypixel == 0)
+		ypixel = DEFAULT_YPIXEL;
 	if (w->flags & WINDOW_RESIZE) {
-		if (!now && changed && w->new_sx == sx && w->new_sy == sy)
+		if (!now && changed && w->new_sx == sx && w->new_sy == sy &&
+		    w->new_xpixel == xpixel && w->new_ypixel == ypixel)
 			changed = 0;
 	} else {
-		if (!now && changed && w->sx == sx && w->sy == sy)
+		if (!now && changed && w->sx == sx && w->sy == sy &&
+		    w->xpixel == xpixel && w->ypixel == ypixel)
 			changed = 0;
 	}
 

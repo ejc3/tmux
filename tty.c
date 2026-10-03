@@ -35,9 +35,17 @@
 
 static int	tty_log_fd = -1;
 
+static void	tty_count_history(struct tty *, const struct tty_ctx *);
+static int	tty_catch_up_history(struct tty *, struct window_pane *);
+static void	tty_history_lost(struct tty *);
+static int	tty_rewrap(struct tty *, const struct tty_ctx *, u_int, u_int,
+		    u_int);
+static void	tty_pay_scroll(struct tty *);
 static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
 static void	tty_set_italics(struct tty *);
+static void	tty_extended_keys(struct tty *);
+static void	tty_graphemes(struct tty *);
 static int	tty_try_colour(struct tty *, int, const char *);
 static void	tty_force_cursor_colour(struct tty *, int);
 static void	tty_cursor_pane(struct tty *, const struct tty_ctx *, u_int,
@@ -80,6 +88,7 @@ static void	tty_write_one(void (*)(struct tty *, const struct tty_ctx *),
 #define TTY_BLOCK_INTERVAL (100000 /* 100 milliseconds */)
 #define TTY_BLOCK_START(tty) (1 + ((tty)->sx * (tty)->sy) * 8)
 #define TTY_BLOCK_STOP(tty) (1 + ((tty)->sx * (tty)->sy) / 8)
+#define TTY_BLOCK_LIMIT(tty) (1024 * 1024 + TTY_BLOCK_START(tty))
 
 #define TTY_QUERY_TIMEOUT 5
 #define TTY_REQUEST_LIMIT 30
@@ -113,6 +122,8 @@ tty_init(struct tty *tty, struct client *c)
 	tty->ccolour = -1;
 	tty->fg = tty->bg = -1;
 	tty->mouse_last_pane = -1;
+	tty->hist_pane = UINT_MAX;
+	tty->hist_shown = UINT_MAX;
 
 	if (tcgetattr(c->fd, &tty->tio) != 0)
 		return (-1);
@@ -207,9 +218,35 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if (tty->discarded < TTY_BLOCK_STOP(tty)) {
 		tty->flags &= ~TTY_BLOCK;
+		kgfx_client_sync(c);
 		tty_invalidate(tty);
 		return;
 	}
+	tty->discarded = 0;
+	evtimer_add(&tty->timer, &tv);
+}
+
+/* Discard what is queued for a terminal and what is written to it from now. */
+static void
+tty_block_start(struct tty *tty)
+{
+	struct client	*c = tty->client;
+	size_t		 size = EVBUFFER_LENGTH(tty->out);
+	struct timeval	 tv = { .tv_usec = TTY_BLOCK_INTERVAL };
+
+	tty->flags |= TTY_BLOCK;
+
+	log_debug("%s: can't keep up, %zu discarded", c->name, size);
+
+	evbuffer_drain(tty->out, size);
+	c->discarded += size;
+	c->redraw = 0;
+	tty->exempt = 0;
+	kgfx_client_dropped(c);
+
+	/* Lines counted as reaching the terminal may be among what went. */
+	tty_history_lost(tty);
+
 	tty->discarded = 0;
 	evtimer_add(&tty->timer, &tv);
 }
@@ -219,28 +256,53 @@ tty_block_maybe(struct tty *tty)
 {
 	struct client	*c = tty->client;
 	size_t		 size = EVBUFFER_LENGTH(tty->out);
-	struct timeval	 tv = { .tv_usec = TTY_BLOCK_INTERVAL };
 
 	if (size == 0)
 		tty->flags &= ~TTY_NOBLOCK;
 	else if (tty->flags & TTY_NOBLOCK)
 		return (0);
 
-	if (size < TTY_BLOCK_START(tty))
+	/* Images do not count: kgfx.c keeps them within a budget. */
+	if (size - kgfx_client_queued(c) < TTY_BLOCK_START(tty))
 		return (0);
 
-	if (tty->flags & TTY_BLOCK)
-		return (1);
-	tty->flags |= TTY_BLOCK;
-
-	log_debug("%s: can't keep up, %zu discarded", c->name, size);
-
-	evbuffer_drain(tty->out, size);
-	c->discarded += size;
-
-	tty->discarded = 0;
-	evtimer_add(&tty->timer, &tv);
+	if (~tty->flags & TTY_BLOCK)
+		tty_block_start(tty);
 	return (1);
+}
+
+/*
+ * A pane's output is about to be queued for a terminal. Whether a terminal is
+ * behind is found when it takes something (tty_write_callback), so one that
+ * takes nothing is never found to be: its queue would grow for as long as
+ * panes write. Discard here once the queue is far longer than a terminal
+ * taking output leaves it, not counting what is deliberately long: the redraw
+ * being waited for and the writes marked with tty_no_block.
+ */
+static void
+tty_block_limit(struct tty *tty)
+{
+	struct client	*c = tty->client;
+	size_t		 size = EVBUFFER_LENGTH(tty->out), exempt;
+
+	if (tty->flags & TTY_BLOCK)
+		return;
+	exempt = (c->redraw > tty->exempt) ? c->redraw : tty->exempt;
+	exempt += kgfx_client_queued(c);
+	if (size < exempt || size - exempt < TTY_BLOCK_LIMIT(tty))
+		return;
+	tty_block_start(tty);
+}
+
+/*
+ * What is queued for the terminal up to here is one long write that must
+ * arrive whole: it is not a sign of the terminal being behind.
+ */
+static void
+tty_no_block(struct tty *tty)
+{
+	tty->flags |= TTY_NOBLOCK;
+	tty->exempt = EVBUFFER_LENGTH(tty->out);
 }
 
 static void
@@ -255,6 +317,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 	if (nwrite == -1)
 		return;
 	log_debug("%s: wrote %d bytes (of %zu)", c->name, nwrite, size);
+	tty->exempt = (tty->exempt > (size_t)nwrite) ? tty->exempt - nwrite : 0;
 
 	if (c->redraw > 0) {
 		if ((size_t)nwrite >= c->redraw)
@@ -265,6 +328,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 		    c->redraw);
 	} else if (tty_block_maybe(tty))
 		return;
+	kgfx_client_written(c);
 
 	if (EVBUFFER_LENGTH(tty->out) != 0)
 		event_add(&tty->event_out, NULL);
@@ -306,6 +370,20 @@ tty_open(struct tty *tty, char **cause)
 	return (0);
 }
 
+/*
+ * No more answers to tmux's requests are waited for. Answers to programs held
+ * until the terminal said whether it has kitty graphics go.
+ */
+static void
+tty_all_requests(struct tty *tty)
+{
+	int	kgfx = (tty->flags & TTY_HAVEKGFX);
+
+	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	if (!kgfx)
+		kgfx_known(tty->client);
+}
+
 static void
 tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 {
@@ -316,7 +394,7 @@ tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if ((tty->flags & (TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA)) == 0)
 		tty_update_features(tty);
-	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	tty_all_requests(tty);
 
 	tty->flags &= ~(TTY_WAITBG|TTY_WAITFG);
 }
@@ -353,7 +431,7 @@ tty_start_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tio) == 0)
 		tcflush(c->fd, TCOFLUSH);
 
-	if (options_get_number(global_options, "clear-on-attach")) {
+	if (clear_on_attach) {
 		tty_putcode(tty, TTYC_SMCUP);
 		tty_putcode(tty, TTYC_CLEAR);
 	} else {
@@ -388,9 +466,16 @@ tty_start_tty(struct tty *tty)
 		tty_puts(tty, "\033[?2031h\033[?996n");
 	}
 
+	/* Stopping the terminal popped the kitty keyboard flags. */
+	if ((tty->term->flags & TERM_KKEYS) &&
+	    options_get_number(global_options, "extended-keys"))
+		tty_extended_keys(tty);
+	tty_graphemes(tty);
+
 	tty_start_start_timer(tty);
 
 	tty->flags |= TTY_STARTED;
+	tty->flags &= ~(TTY_ALTSCREEN|TTY_HISTWRITTEN);
 	tty_invalidate(tty);
 
 	if (tty->ccolour != -1)
@@ -399,6 +484,9 @@ tty_start_tty(struct tty *tty)
 	tty->mouse_drag_flag = 0;
 	tty->mouse_drag_update = NULL;
 	tty->mouse_drag_release = NULL;
+
+	/* Images made while it was stopped. */
+	kgfx_client_sync(c);
 }
 
 void
@@ -408,6 +496,14 @@ tty_send_requests(struct tty *tty)
 		return;
 
 	if (tty->term->flags & TERM_VT100LIKE) {
+		/*
+		 * The kitty graphics query goes before DA1: a terminal that
+		 * answers DA1 first does not have the protocol.
+		 */
+		if (~tty->flags & TTY_HAVEKGFX) {
+			tty_puts(tty, "\033_Gi=4294967295,s=1,v=1,a=q,t=d,"
+			    "f=24;AAAA\033\\");
+		}
 		if (~tty->flags & TTY_HAVEDA)
 			tty_puts(tty, "\033[c");
 		if (~tty->flags & TTY_HAVEDA2)
@@ -416,10 +512,17 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[>q");
 		if (~tty->flags & TTY_HAVESYNC)
 			tty_puts(tty, "\033[?2026$p");
+		if (~tty->flags & TTY_HAVEKKEYS)
+			tty_puts(tty, "\033[?u");
+		if (~tty->flags & TTY_HAVEPIXELS)
+			tty_puts(tty, "\033[?1016$p");
+		if (~tty->flags & TTY_HAVEGRAPHEMES)
+			tty_puts(tty, "\033[?2027$p");
+
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
-		tty->flags |= TTY_ALL_REQUEST_FLAGS;
+		tty_all_requests(tty);
 	tty->last_requests = time(NULL);
 }
 
@@ -454,13 +557,33 @@ tty_stop_tty(struct tty *tty)
 {
 	struct client	*c = tty->client;
 	struct winsize	 ws;
+	int		 forwarding;
 
 	if (!(tty->flags & TTY_STARTED))
 		return;
 	tty->flags &= ~TTY_STARTED;
 
+	/*
+	 * A stopped terminal is not forwarded to: stop now, so nothing writes
+	 * to it (or to its buffer, which tty_close frees) on its behalf.
+	 */
+	forwarding = (c->forward_pane != UINT_MAX);
+	c->forward_pane = UINT_MAX;
+
+	/* Whatever uses the terminal next writes to its scrollback. */
+	tty_history_lost(tty);
+	tty->hist_wrapped = 0;
+
 	evtimer_del(&tty->start_timer);
 	evtimer_del(&tty->clipboard_timer);
+
+	/*
+	 * Answers held until the terminal says whether it has kitty graphics
+	 * go now, as far as is known; the question is asked again when the
+	 * terminal starts.
+	 */
+	if (~tty->flags & TTY_HAVEKGFX)
+		kgfx_known(c);
 
 	event_del(&tty->timer);
 	tty->flags &= ~TTY_BLOCK;
@@ -478,12 +601,24 @@ tty_stop_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tty->tio) == -1)
 		return;
 
+	if (forwarding)
+		tty_raw(tty, FORWARD_RESET);
+	if (tty->flags & TTY_OWESCROLL) {
+		tty->flags &= ~TTY_OWESCROLL;
+		tty_raw(tty, "\r\n");
+	}
+	if (c->pointer != NULL) {
+		if (tty->term->flags & TERM_POINTER)
+			tty_raw(tty, "\033]22;\033\\");
+		free(c->pointer);
+		c->pointer = NULL;
+	}
 	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
 	if (tty_acs_needed(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_SGR0));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_RMKX));
-	if (options_get_number(global_options, "clear-on-attach"))
+	if (clear_on_attach)
 		tty_raw(tty, tty_term_string(tty->term, TTYC_CLEAR));
 	if (tty->cstyle != SCREEN_CURSOR_DEFAULT) {
 		if (tty_term_has(tty->term, TTYC_SE))
@@ -505,10 +640,31 @@ tty_stop_tty(struct tty *tty)
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSESC));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSFCS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	if (tty->flags & TTY_KKEYS) {
+		tty_raw(tty, "\033[<u");
+		tty->flags &= ~TTY_KKEYS;
+	}
+	if (tty->flags & TTY_MOUSEPIXELS) {
+		tty_raw(tty, "\033[?1016l");
+		tty->flags &= ~TTY_MOUSEPIXELS;
+	}
+	if (tty->flags & TTY_GRAPHEMES) {
+		tty_raw(tty, "\033[?2027l");
+		tty->flags &= ~TTY_GRAPHEMES;
+	}
 
 	if (tty_use_margin(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_DSMG));
-	if (options_get_number(global_options, "clear-on-attach"))
+
+	/*
+	 * Leave the alternate screen if a full-window pane put us there (see
+	 * server_client_check_redraw), so the terminal is not left in it.
+	 */
+	if (tty->flags & TTY_ALTSCREEN) {
+		tty_raw(tty, tty_term_string(tty->term, TTYC_RMCUP));
+		tty->flags &= ~TTY_ALTSCREEN;
+	}
+	if (clear_on_attach)
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMCUP));
 	else
 		tty_raw(tty, tty_term_string(tty->term, TTYC_CLEAR));
@@ -545,6 +701,37 @@ tty_free(struct tty *tty)
 	tty_close(tty);
 }
 
+/*
+ * Ask the terminal for extended keys: the kitty keyboard protocol if it has
+ * it (disambiguated keys, and the shifted key so shifted keys are as they are
+ * without it), pushed once and popped when the terminal is stopped;
+ * otherwise the extkeys sequence.
+ */
+static void
+tty_extended_keys(struct tty *tty)
+{
+	if (~tty->term->flags & TERM_KKEYS) {
+		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
+		return;
+	}
+	if (tty->flags & TTY_KKEYS)
+		return;
+	tty_puts(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	tty_puts(tty, "\033[>5u");
+	tty->flags |= TTY_KKEYS;
+}
+
+/* Turn grapheme cluster mode on if the terminal has it, once. */
+static void
+tty_graphemes(struct tty *tty)
+{
+	if ((tty->term->flags & TERM_GRAPHEMES) &&
+	    (~tty->flags & TTY_GRAPHEMES)) {
+		tty_puts(tty, "\033[?2027h");
+		tty->flags |= TTY_GRAPHEMES;
+	}
+}
+
 void
 tty_update_features(struct tty *tty)
 {
@@ -556,9 +743,10 @@ tty_update_features(struct tty *tty)
 	if (tty_use_margin(tty))
 		tty_putcode(tty, TTYC_ENMG);
 	if (options_get_number(global_options, "extended-keys"))
-		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
+		tty_extended_keys(tty);
 	if (options_get_number(global_options, "focus-events"))
 		tty_puts(tty, tty_term_string(tty->term, TTYC_ENFCS));
+	tty_graphemes(tty);
 	tty_puts(tty, tty_term_string(tty->term, TTYC_ENESC));
 
 	/*
@@ -664,6 +852,24 @@ tty_puts(struct tty *tty, const char *s)
 		tty_add(tty, s, strlen(s));
 }
 
+/*
+ * Write a pane's output as the program wrote it (forward.c). Where the cursor
+ * is and which region and margins are set is then up to the terminal.
+ */
+void
+tty_forward(struct tty *tty, const u_char *buf, size_t len)
+{
+	tty_block_limit(tty);
+	tty_add(tty, (const char *)buf, len);
+	/* The program's attributes are the terminal's now; tmux resets them
+	 * with tty_invalidate when it draws again (forward_stop). */
+	memcpy(&tty->cell, &grid_default_cell, sizeof tty->cell);
+	tty->flags &= ~(TTY_OWESCROLL|TTY_WRAPNEXT|TTY_WRAPPED0);
+	tty->cx = tty->cy = UINT_MAX;
+	tty->rupper = tty->rleft = UINT_MAX;
+	tty->rlower = tty->rright = UINT_MAX;
+}
+
 void
 tty_putc(struct tty *tty, u_char ch)
 {
@@ -684,8 +890,10 @@ tty_putc(struct tty *tty, u_char ch)
 	} else
 		tty_add(tty, &ch, 1);
 
+	tty->flags &= ~TTY_WRAPPED0;
 	if (ch >= 0x20 && ch != 0x7f) {
 		if (tty->cx >= tty->sx) {
+			tty->flags &= ~(TTY_OWESCROLL|TTY_WRAPNEXT);
 			tty->cx = 1;
 			if (tty->cy != tty->rlower)
 				tty->cy++;
@@ -711,12 +919,14 @@ tty_putn(struct tty *tty, const void *buf, size_t len, u_int width)
 		len = tty->sx - tty->cx - 1;
 
 	tty_add(tty, buf, len);
+	tty->flags &= ~TTY_WRAPPED0;
 	if (tty->cx + width > tty->sx) {
+		tty->flags &= ~(TTY_OWESCROLL|TTY_WRAPNEXT);
 		tty->cx = (tty->cx + width) - tty->sx;
-		if (tty->cx <= tty->sx)
-			tty->cy++;
-		else
+		if (tty->cx > tty->sx)
 			tty->cx = tty->cy = UINT_MAX;
+		else if (tty->cy != tty->rlower)
+			tty->cy++;
 	} else
 		tty->cx += width;
 }
@@ -746,6 +956,29 @@ tty_set_title(struct tty *tty, const char *title)
 	tty_putcode(tty, TTYC_TSL);
 	tty_puts(tty, title);
 	tty_putcode(tty, TTYC_FSL);
+}
+
+/* Pass a notification (the OSC string, without ESC ] and ST) on. */
+void
+tty_notify(struct tty *tty, const char *s)
+{
+	if (~tty->term->flags & TERM_NOTIFY)
+		return;
+	tty_puts(tty, "\033]");
+	tty_puts(tty, s);
+	tty_puts(tty, "\033\\");
+}
+
+/* Set the mouse pointer shape (OSC 22); NULL for the terminal's own. */
+void
+tty_set_pointer(struct tty *tty, const char *name)
+{
+	if (~tty->term->flags & TERM_POINTER)
+		return;
+	tty_puts(tty, "\033]22;");
+	if (name != NULL)
+		tty_puts(tty, name);
+	tty_puts(tty, "\033\\");
 }
 
 void
@@ -898,15 +1131,29 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 		    screen_mode_to_string(mode));
 	}
 
-	if ((changed & ALL_MOUSE_MODES) && tty_term_has(term, TTYC_KMOUS)) {
+	if ((changed & (ALL_MOUSE_MODES|MODE_MOUSE_PIXELS)) &&
+	    tty_term_has(term, TTYC_KMOUS)) {
 		/*
 		 * If the mouse modes have changed, clear then all and apply
 		 * again. There are differences in how terminals track the
-		 * various bits.
+		 * various bits. Ask for pixels if a pane wants them and the
+		 * terminal has them, and the cell size is known to find the
+		 * cell.
 		 */
 		tty_puts(tty, "\033[?1006l\033[?1000l\033[?1002l\033[?1003l");
-		if (mode & ALL_MOUSE_MODES)
+		if (tty->flags & TTY_MOUSEPIXELS) {
+			tty_puts(tty, "\033[?1016l");
+			tty->flags &= ~TTY_MOUSEPIXELS;
+		}
+		if (mode & ALL_MOUSE_MODES) {
 			tty_puts(tty, "\033[?1006h");
+			if ((mode & MODE_MOUSE_PIXELS) &&
+			    (term->flags & TERM_MOUSEPIXELS) &&
+			    tty->xpixel != 0 && tty->ypixel != 0) {
+				tty_puts(tty, "\033[?1016h");
+				tty->flags |= TTY_MOUSEPIXELS;
+			}
+		}
 		if (mode & MODE_MOUSE_ALL)
 			tty_puts(tty, "\033[?1000h\033[?1002h\033[?1003h");
 		else if (mode & MODE_MOUSE_BUTTON)
@@ -1205,6 +1452,19 @@ tty_clear_line(struct tty *tty, const struct grid_cell *defaults, u_int py,
 
 	/* If genuine BCE is available, can try escape sequences. */
 	if (!tty_fake_bce(tty, defaults, bg)) {
+		/*
+		 * The whole line the terminal is waiting to wrap at the end
+		 * of: EL 2 there, without moving the cursor, which would end
+		 * the wait - the next character may still wrap from this line.
+		 * Not while a scroll is owed: this line is not scrolled in yet.
+		 */
+		if (px == 0 && nx >= tty->sx && py == tty->cy &&
+		    tty->cx >= tty->sx && (~tty->flags & TTY_OWESCROLL) &&
+		    (tty->term->flags & TERM_VT100LIKE)) {
+			tty_puts(tty, "\033[2K");
+			return;
+		}
+
 		/* Off the end of the line, use EL if available. */
 		if (px + nx >= tty->sx && tty_term_has(tty->term, TTYC_EL)) {
 			tty_cursor(tty, px, py);
@@ -1232,6 +1492,39 @@ tty_clear_line(struct tty *tty, const struct grid_cell *defaults, u_int py,
 	tty_repeat_space(tty, nx);
 }
 
+/*
+ * The terminal is waiting to wrap at the end of the row above a line that
+ * continues it, and the line is about to be erased from its start. With the
+ * terminal keeping its own scrollback, wrap into the line with a blank (the
+ * erase replaces it) instead of moving there with a newline, so the terminal
+ * still knows the line continues the row above, as the program's own wrap
+ * told it.
+ */
+static void
+tty_wrap_into(struct tty *tty, const struct tty_ctx *ctx, u_int py)
+{
+	struct screen	*s = ctx->s;
+	struct grid	*gd;
+
+	if (s == NULL || py == 0 || clear_on_attach ||
+	    (tty->flags & TTY_ALTSCREEN) || (tty->term->flags & TERM_NOAM))
+		return;
+	if ((ctx->flags & TTY_CTX_WINDOW_BIGGER) || !tty_full_width(tty, ctx) ||
+	    ctx->xoff != 0)
+		return;
+	if (tty->cx < tty->sx || tty->cy + 1 != ctx->yoff + py ||
+	    tty->cy == tty->rlower)
+		return;
+	gd = s->grid;
+	if (~grid_get_line(gd, gd->hsize + py - 1)->flags & GRID_LINE_WRAPPED)
+		return;
+	log_debug("%s: into %u", __func__, tty->cy + 1);
+	tty_putc(tty, ' ');
+	tty_putc(tty, '\r');
+	tty->cx = 0;
+	tty->flags |= TTY_WRAPPED0;
+}
+
 /* Clear a line, adjusting to visible part of pane. */
 static void
 tty_clear_pane_line(struct tty *tty, const struct tty_ctx *ctx, u_int py,
@@ -1242,8 +1535,11 @@ tty_clear_pane_line(struct tty *tty, const struct tty_ctx *ctx, u_int py,
 
 	log_debug("%s: %s, %u at %u,%u", __func__, c->name, nx, px, py);
 
-	if (tty_clamp_line(tty, ctx, px, py, nx, &l, &x, &rx, &ry))
+	if (tty_clamp_line(tty, ctx, px, py, nx, &l, &x, &rx, &ry)) {
+		if (px == 0)
+			tty_wrap_into(tty, ctx, py);
 		tty_clear_line(tty, &ctx->defaults, ry, x, rx, bg);
+	}
 }
 
 /* Clamp area position to visible part of pane. */
@@ -1321,8 +1617,17 @@ tty_clear_area(struct tty *tty, const struct tty_ctx *ctx, u_int py,
 	const struct grid_cell	*defaults = &ctx->defaults;
 	u_int			 yy;
 	char			 tmp[64];
+	int			 scroll;
 
 	log_debug("%s: %s, %u,%u at %u,%u", __func__, c->name, nx, ny, px, py);
+
+	/*
+	 * Scrolling lines away clears them - but a terminal keeping its own
+	 * scrollback (clear-on-attach off, on its primary screen) may keep
+	 * lines scrolled off the top of a region at the top of the screen
+	 * (xterm, iTerm2), putting what was erased into its scrollback.
+	 */
+	scroll = (py != 0 || (tty->flags & TTY_ALTSCREEN) || clear_on_attach);
 
 	/* Nothing to clear. */
 	if (nx == 0 || ny == 0)
@@ -1353,7 +1658,8 @@ tty_clear_area(struct tty *tty, const struct tty_ctx *ctx, u_int py,
 		}
 
 		/* Full lines can be scrolled away to clear them. */
-		if (px == 0 &&
+		if (scroll &&
+		    px == 0 &&
 		    px + nx >= tty->sx &&
 		    ny > 2 &&
 		    tty_term_has(tty->term, TTYC_CSR) &&
@@ -1368,7 +1674,8 @@ tty_clear_area(struct tty *tty, const struct tty_ctx *ctx, u_int py,
 		 * If margins are supported, can just scroll the area off to
 		 * clear it.
 		 */
-		if (nx > 2 &&
+		if (scroll &&
+		    nx > 2 &&
 		    ny > 2 &&
 		    tty_term_has(tty->term, TTYC_CSR) &&
 		    tty_use_margin(tty) &&
@@ -1576,12 +1883,16 @@ tty_write(void (*cmdfn)(struct tty *, const struct tty_ctx *),
 	if (ctx->set_client_cb == NULL)
 		return;
 	TAILQ_FOREACH(c, &clients, entry) {
+		/* The terminal has the pane's output as written. */
+		if (ctx->wp != NULL && c->forward_pane == ctx->wp->id)
+			continue;
 		if (tty_client_ready(ctx, c)) {
 			state = ctx->set_client_cb(ctx, c);
 			if (state == -1)
 				break;
 			if (state == 0)
 				continue;
+			tty_block_limit(&c->tty);
 			cmdfn(&c->tty, ctx);
 		}
 	}
@@ -1641,6 +1952,17 @@ tty_cmd_deletecharacter(struct tty *tty, const struct tty_ctx *ctx)
 void
 tty_cmd_clearcharacter(struct tty *tty, const struct tty_ctx *ctx)
 {
+	/*
+	 * A row a scroll brought in: the terminal's scroll brought it in blank
+	 * with the same background, unless tmux must draw backgrounds itself.
+	 * Clearing it again is not what the program sent, and clearing a
+	 * whole row tells some terminals (tmux) the row above no longer
+	 * wraps into it.
+	 */
+	if ((ctx->flags & TTY_CTX_SCROLLEDIN) &&
+	    !tty_fake_bce(tty, &ctx->defaults, ctx->bg))
+		return;
+
 	tty_default_attributes(tty, ctx->bg, &ctx->style_ctx);
 
 	tty_clear_pane_line(tty, ctx, ctx->ocy, ctx->ocx, ctx->n, ctx->bg);
@@ -1804,6 +2126,37 @@ tty_cmd_scrollup(struct tty *tty, const struct tty_ctx *ctx)
 		return;
 	}
 
+	tty_count_history(tty, ctx);
+
+	/* A scroll still owed happens first. */
+	tty_pay_scroll(tty);
+	tty->flags &= ~TTY_WRAPPED0;
+
+	/*
+	 * A line wrapping from the bottom row, and the terminal is waiting to
+	 * wrap there: leave the scroll to it. The next character wraps and
+	 * scrolls, and the terminal knows the row continues the one above -
+	 * so selecting it or reflowing on resize keeps the line whole, as
+	 * without tmux. Anything else written first pays the scroll.
+	 */
+	if ((ctx->flags & TTY_CTX_WRAPPED) &&
+	    ctx->n == 1 &&
+	    ctx->bg == 8 &&
+	    tty_full_width(tty, ctx) &&
+	    (~tty->term->flags & TERM_NOAM) &&
+	    (!tty_use_margin(tty) ||
+	    (tty->rleft == 0 && tty->rright == tty->sx - 1)) &&
+	    tty->rupper == ctx->yoff + ctx->orupper - ctx->woy &&
+	    tty->rlower == ctx->yoff + ctx->orlower - ctx->woy &&
+	    tty->cy == tty->rlower &&
+	    (tty->cx >= tty->sx ||
+	    ((ctx->flags & TTY_CTX_WRAPWIDE) && tty->cx == tty->sx - 1))) {
+		log_debug("%s: scroll left to the wrap at %u", __func__,
+		    tty->cy);
+		tty->flags |= TTY_OWESCROLL;
+		return;
+	}
+
 	tty_default_attributes(tty, ctx->bg, &ctx->style_ctx);
 
 	tty_region_pane(tty, ctx, ctx->orupper, ctx->orlower);
@@ -1856,6 +2209,25 @@ tty_cmd_scrolldown(struct tty *tty, const struct tty_ctx *ctx)
 	}
 }
 
+/*
+ * Whether a clear of a whole pane goes to the terminal as the application
+ * sent it: the pane is the whole terminal and keeps its scrollback, where the
+ * terminal may move what is cleared - for some clears and not others. Lines
+ * the pane's history took from the clear then count as reaching it.
+ */
+static int
+tty_clear_as_sent(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct window_pane	*wp = ctx->wp;
+
+	if (!tty_pane_is_terminal(tty, wp) || ctx->s != &wp->base)
+		return (0);
+	if ((ctx->flags & TTY_CTX_WINDOW_BIGGER) || tty_pane_covered(wp) ||
+	    tty_fake_bce(tty, &ctx->defaults, ctx->bg))
+		return (0);
+	return (tty_term_has(tty->term, TTYC_ED));
+}
+
 void
 tty_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 {
@@ -1865,6 +2237,16 @@ tty_cmd_clearendofscreen(struct tty *tty, const struct tty_ctx *ctx)
 
 	tty_region_pane(tty, ctx, 0, ctx->sy - 1);
 	tty_margin_off(tty);
+
+	if (ctx->ocx == 0 && ctx->ocy == 0 && tty_clear_as_sent(tty, ctx)) {
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_ED);
+		tty_count_history(tty, ctx);
+		return;
+	}
+
+	if (ctx->ocx == 0)
+		tty_wrap_into(tty, ctx, ctx->ocy);
 
 	px = 0;
 	nx = ctx->sx;
@@ -1913,6 +2295,14 @@ tty_cmd_clearscreen(struct tty *tty, const struct tty_ctx *ctx)
 
 	tty_region_pane(tty, ctx, 0, ctx->sy - 1);
 	tty_margin_off(tty);
+
+	/* ED 2 itself: the clear capability may erase the scrollback too. */
+	if ((tty->term->flags & TERM_VT100LIKE) &&
+	    tty_clear_as_sent(tty, ctx)) {
+		tty_puts(tty, "\033[2J");
+		tty_count_history(tty, ctx);
+		return;
+	}
 
 	px = 0;
 	nx = ctx->sx;
@@ -2019,8 +2409,8 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 	encoded = xmalloc(size);
 
 	b64_ntop(buf, len, encoded, size);
-	tty->flags |= TTY_NOBLOCK;
 	tty_putcode_ss(tty, TTYC_MS, clip, encoded);
+	tty_no_block(tty);
 
 	free(encoded);
 }
@@ -2028,8 +2418,8 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 void
 tty_cmd_rawstring(struct tty *tty, const struct tty_ctx *ctx)
 {
-	tty->flags |= TTY_NOBLOCK;
 	tty_add(tty, ctx->data.data, ctx->data.size);
+	tty_no_block(tty);
 	tty_invalidate(tty);
 }
 
@@ -2074,8 +2464,8 @@ tty_cmd_sixelimage(struct tty *tty, const struct tty_ctx *ctx)
 		tty_margin_off(tty);
 		tty_cursor(tty, x, y);
 
-		tty->flags |= TTY_NOBLOCK;
 		tty_add(tty, data, size);
+		tty_no_block(tty);
 		tty_invalidate(tty);
 		free(data);
 	}
@@ -2097,6 +2487,9 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
     const struct tty_style_ctx *style_ctx)
 {
 	const struct grid_cell	*gcp;
+	u_int			 ocx;
+	char			 buf[TTY_SIZED_SIZE];
+	size_t			 len;
 
 	/* Skip last character if terminal is stupid. */
 	if ((tty->term->flags & TERM_NOAM) &&
@@ -2112,6 +2505,13 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 	gcp = tty_check_codeset(tty, gc);
 	tty_attributes(tty, gcp, style_ctx);
 
+	/* A character the program gave a width (OSC 66). */
+	if (gcp->attr & GRID_ATTR_SIZED) {
+		len = tty_sized_cell(tty, gcp, buf, sizeof buf);
+		tty_putn(tty, buf, len, gcp->data.width);
+		return;
+	}
+
 	/* If it is a single character, write with putc to handle ACS. */
 	if (gcp->data.size == 1) {
 		if (*gcp->data.data < 0x20 || *gcp->data.data == 0x7f)
@@ -2120,8 +2520,72 @@ tty_cell(struct tty *tty, const struct grid_cell *gc,
 		return;
 	}
 
-	/* Write the data. */
+	/*
+	 * Write the data. A wide character that does not fit in the last
+	 * column wraps whole: the cursor ends after it on the next line.
+	 */
+	ocx = tty->cx;
 	tty_putn(tty, gcp->data.data, gcp->data.size, gcp->data.width);
+	if (gcp->data.width > 1 && ocx < tty->sx &&
+	    ocx + gcp->data.width > tty->sx && tty->cx != UINT_MAX)
+		tty->cx = gcp->data.width;
+}
+
+/*
+ * The bytes for a character the program gave a width (OSC 66) in buf, which
+ * holds TTY_SIZED_SIZE: OSC 66 if the terminal has it, otherwise as much of
+ * the text as fits in the width and spaces after it, so it takes exactly
+ * that many cells either way. The text is measured as the terminal measures
+ * it: with grapheme clusters, a character joining the one before it (zero
+ * width, after a joiner, a skin tone) adds nothing, or makes a cluster of
+ * width 1 width 2 (a skin tone, variation selector 16).
+ */
+size_t
+tty_sized_cell(struct tty *tty, const struct grid_cell *gc, char *buf,
+    size_t size)
+{
+	const struct utf8_data	*ud = &gc->data;
+	struct utf8_data	 one, prev;
+	char			 text[UTF8_SIZE + 1];
+	const char		*cp = text;
+	size_t			 len = 0;
+	u_int			 used = 0, cw = 0, w;
+	int			 graphemes, join;
+
+	if (size < TTY_SIZED_SIZE)
+		fatalx("%s: buffer too small", __func__);
+	if (tty->term->flags & TERM_TEXTSIZE) {
+		return (xsnprintf(buf, size, "\033]66;w=%u;%.*s\033\\",
+		    ud->width, (int)ud->size, ud->data));
+	}
+
+	graphemes = (tty->term->flags & TERM_GRAPHEMES);
+	memcpy(text, ud->data, ud->size);
+	text[ud->size] = '\0';
+	memset(&prev, 0, sizeof prev);
+	while (*cp != '\0') {
+		if (!utf8_next(&cp, &one))
+			continue;
+		join = (graphemes && prev.size != 0 && (one.width == 0 ||
+		    utf8_is_zwj(&prev) || utf8_should_combine(&one, &prev)));
+		if (!join)
+			w = cw = one.width;	/* a new cluster */
+		else if (cw == 1 &&
+		    (utf8_should_combine(&one, &prev) || utf8_is_vs(&one))) {
+			w = 1;			/* the cluster is now 2 wide */
+			cw = 2;
+		} else
+			w = 0;
+		if (used + w > ud->width)
+			break;
+		memcpy(buf + len, one.data, one.size);
+		len += one.size;
+		used += w;
+		memcpy(&prev, &one, sizeof prev);
+	}
+	for (; used < ud->width; used++)
+		buf[len++] = ' ';
+	return (len);
 }
 
 void
@@ -2143,6 +2607,16 @@ tty_reset(struct tty *tty)
 void
 tty_invalidate(struct tty *tty)
 {
+	/*
+	 * Mouse modes are set again at once, not turned off until the next
+	 * redraw: a mouse event in between would reach tmux with the mouse
+	 * off and go to the pane as keys.
+	 */
+	int	mouse = tty->mode & (ALL_MOUSE_MODES|MODE_MOUSE_PIXELS);
+
+	if (tty->flags & TTY_STARTED)
+		tty_pay_scroll(tty);
+	tty->flags &= ~TTY_OWESCROLL;
 	memcpy(&tty->cell, &grid_default_cell, sizeof tty->cell);
 	memcpy(&tty->last_cell, &grid_default_cell, sizeof tty->last_cell);
 
@@ -2150,13 +2624,27 @@ tty_invalidate(struct tty *tty)
 	tty->rupper = tty->rleft = UINT_MAX;
 	tty->rlower = tty->rright = UINT_MAX;
 
+	/*
+	 * Forwarding (forward.c): the program's own output has the cursor,
+	 * region, margins and attributes where it wants them - on a resize,
+	 * a feature update or anything else, only forget them and set tmux's
+	 * own modes again. forward_stop sets them all when drawing resumes.
+	 */
+	if (tty->client->forward_pane != UINT_MAX) {
+		if (tty->flags & TTY_STARTED) {
+			tty->mode = ALL_MODES;
+			tty_update_mode(tty, MODE_CURSOR|mouse, NULL);
+		}
+		return;
+	}
+
 	if (tty->flags & TTY_STARTED) {
 		if (tty_use_margin(tty))
 			tty_putcode(tty, TTYC_ENMG);
 		tty_putcode(tty, TTYC_SGR0);
 
 		tty->mode = ALL_MODES;
-		tty_update_mode(tty, MODE_CURSOR, NULL);
+		tty_update_mode(tty, MODE_CURSOR|mouse, NULL);
 
 		tty_cursor(tty, 0, 0);
 		tty_region_off(tty);
@@ -2189,6 +2677,7 @@ tty_region(struct tty *tty, u_int rupper, u_int rlower)
 		return;
 	if (!tty_term_has(tty->term, TTYC_CSR))
 		return;
+	tty_pay_scroll(tty);
 
 	tty->rupper = rupper;
 	tty->rlower = rlower;
@@ -2246,6 +2735,7 @@ tty_margin(struct tty *tty, u_int rleft, u_int rright)
 		return;
 	if (tty->rleft == rleft && tty->rright == rright)
 		return;
+	tty_pay_scroll(tty);
 
 	tty_putcode_ii(tty, TTYC_CSR, tty->rupper, tty->rlower);
 
@@ -2267,16 +2757,95 @@ static void
 tty_cursor_pane_unless_wrap(struct tty *tty, const struct tty_ctx *ctx,
     u_int cx, u_int cy)
 {
+	int	next, owed;
+	u_int	width = 1;
+
+	/*
+	 * The terminal wraps when the next character does not fit: past the
+	 * last column, or a wide character in it (as xterm and tmux itself).
+	 */
+	if (ctx->cell != NULL && ctx->cell->data.width > 1)
+		width = ctx->cell->data.width;
+
+	/*
+	 * The row below, or - when tty_cmd_scrollup left the scroll to this
+	 * wrap - the bottom row itself, which the wrap scrolls up.
+	 */
+	next = (ctx->yoff + cy == tty->cy + 1 && tty->cy != tty->rlower);
+	owed = ((tty->flags & TTY_OWESCROLL) && ctx->yoff + cy == tty->cy &&
+	    tty->cy == tty->rlower);
 	if ((~ctx->flags & TTY_CTX_WRAPPED) ||
 	    !tty_full_width(tty, ctx) ||
 	    (tty->term->flags & TERM_NOAM) ||
 	    ctx->xoff + cx != 0 ||
-	    ctx->yoff + cy != tty->cy + 1 ||
-	    tty->cx < tty->sx ||
-	    tty->cy == tty->rlower)
+	    (!next && !owed) ||
+	    tty->cx + width <= tty->sx) {
+		if (!tty_rewrap(tty, ctx, cx, cy, width))
+			tty_cursor_pane(tty, ctx, cx, cy);
+	} else if (owed && ctx->cell != NULL && !COLOUR_DEFAULT(ctx->cell->bg)) {
+		/*
+		 * The terminal would fill the row the wrap scrolls in with
+		 * the character's background: scroll first (still wrapping).
+		 */
+		tty_pay_scroll(tty);
 		tty_cursor_pane(tty, ctx, cx, cy);
-	else
+	} else {
+		/* Setting the character's attributes must not pay the scroll. */
+		if (owed)
+			tty->flags |= TTY_WRAPNEXT;
 		log_debug("%s: will wrap at %u,%u", __func__, tty->cx, tty->cy);
+	}
+}
+
+/*
+ * A line continues from the row above but the terminal is not waiting to
+ * wrap at the end of that row (something else was written since, or the
+ * rows are drawn out of order). With the terminal keeping its own
+ * scrollback, where it decides how lines are selected and reflowed, write
+ * the last cell of the row above again - the same cell - so it is, and the
+ * continuation wraps there.
+ */
+static int
+tty_rewrap(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy,
+    u_int width)
+{
+	struct screen		*s = ctx->s;
+	struct grid		*gd;
+	struct grid_cell	 gc;
+	u_int			 x;
+
+	if ((~ctx->flags & TTY_CTX_WRAPPED) || s == NULL || cx != 0 || cy == 0)
+		return (0);
+	if (!tty_full_width(tty, ctx) || ctx->xoff != 0 ||
+	    (tty->term->flags & TERM_NOAM) || (tty->flags & TTY_ALTSCREEN) ||
+	    clear_on_attach)
+		return (0);
+	gd = s->grid;
+	if (~grid_get_line(gd, gd->hsize + cy - 1)->flags & GRID_LINE_WRAPPED)
+		return (0);
+	if ((tty->flags & TTY_WRAPPED0) && tty->cx == 0 &&
+	    tty->cy == ctx->yoff + cy - ctx->woy)
+		return (1);	/* the terminal wrapped into it already */
+
+	/* The last character, if it ends in the last column. */
+	x = grid_view_get_char(gd, screen_size_x(s) - 1, cy - 1, &gc);
+	if ((gc.flags & GRID_FLAG_PADDING) ||
+	    x + gc.data.width != screen_size_x(s))
+		return (0);
+	/*
+	 * The terminal's scroll region may be left from earlier output: at its
+	 * bottom the wrap would scroll it instead of moving down.
+	 */
+	tty_region_pane(tty, ctx, ctx->orupper, ctx->orlower);
+	tty_cursor_pane(tty, ctx, x, cy - 1);
+	tty_cell(tty, &gc, &ctx->style_ctx);
+	if (tty->cx + width <= tty->sx ||
+	    ctx->yoff + cy != tty->cy + 1 || tty->cy == tty->rlower) {
+		tty_cursor_pane(tty, ctx, cx, cy);	/* did not work */
+		return (1);
+	}
+	log_debug("%s: will wrap at %u,%u", __func__, tty->cx, tty->cy);
+	return (1);
 }
 
 /* Move cursor inside pane. */
@@ -2286,16 +2855,701 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
 	tty_cursor(tty, ctx->xoff + cx - ctx->wox, ctx->yoff + cy - ctx->woy);
 }
 
+/*
+ * The terminal's own scrollback (clear-on-attach off).
+ *
+ * A terminal keeps one scrollback. While one pane is the whole terminal, the
+ * scrollback is that pane's history: hist_pane is the pane and hist_seen how
+ * many of the lines pushed into its history (grid scroll_view) the terminal
+ * has. Only tty_sync_history makes a pane the terminal's, when the pane is
+ * about to be drawn whole. It stays the terminal's until tmux can no longer
+ * say what the terminal holds, and then hist_pane is UINT_MAX: the terminal
+ * stopped (a detach, a suspend, a lock), output for it was thrown away
+ * (TTY_BLOCK), something other than the one pane was drawn (several panes, a
+ * status line, a window of another size), or the pane's history was rewritten
+ * while the terminal was behind.
+ */
+
+/* What this terminal holds is no longer known to be any pane's history. */
+static void
+tty_history_lost(struct tty *tty)
+{
+	struct window_pane	*old;
+	struct grid		*gd;
+
+	if (tty->hist_pane == UINT_MAX)
+		return;
+	log_debug("%s: %s loses %%%u", __func__, tty->client->name,
+	    tty->hist_pane);
+
+	/*
+	 * The terminal's scrollback ends with the last history line of the
+	 * pane it followed until now; remember whether that line wraps on to
+	 * the screen, for tty_forget_wraps.
+	 */
+	old = window_pane_find_by_id(tty->hist_pane);
+	gd = (old != NULL) ? old->base.grid : NULL;
+	tty->hist_wrapped = (gd != NULL && gd->hsize != 0 &&
+	    (grid_get_line(gd, gd->hsize - 1)->flags & GRID_LINE_WRAPPED));
+	tty->hist_pane = UINT_MAX;
+	tty->hist_shown = UINT_MAX;
+}
+
+/* Follow a pane's history from where it is now. */
+static void
+tty_history_adopt(struct tty *tty, struct window_pane *wp)
+{
+	struct grid	*gd = wp->base.grid;
+
+	tty_history_lost(tty);
+	log_debug("%s: %s follows %%%u", __func__, tty->client->name, wp->id);
+	tty->hist_pane = wp->id;
+	tty->hist_seen = gd->scroll_view;
+	tty->hist_gen = gd->scroll_generation;
+	tty->hist_cleared = gd->scroll_cleared;
+	tty->flags |= TTY_HISTWRITTEN;
+}
+
+/*
+ * Bring the count of the lines of the pane this terminal follows up to date
+ * with the pane's grid, of whose pushes n are about to be counted. Returns 0
+ * if what the terminal holds can no longer be told from the grid.
+ *
+ * After the grid reflowed its lines once (grid_reflow) while this terminal
+ * was behind, the terminal has reflowed what it had too - the pane's lines up
+ * to the end of the screen it last drew, a prefix of the pane's - and, as
+ * tmux does, kept the end of that on its screen, perhaps pulling rows back
+ * from its scrollback: those rows of the pane's history (hist_shown, up to
+ * that end) are at the top of its screen already and are only scrolled into
+ * its scrollback, not painted over. A terminal that was not behind reflowed
+ * the same lines as the grid, however often. After anything else - the lines
+ * it lacks rewritten more than once or beyond the reflow's record, the
+ * history cleared without it - the terminal's lines are no longer the
+ * grid's.
+ */
+static int
+tty_history_step(struct tty *tty, struct window_pane *wp, u_int n)
+{
+	struct grid	*gd = wp->base.grid;
+	u_int		 m, b, end, top;
+
+	if (tty->hist_cleared != gd->scroll_cleared)
+		return (0);
+	if (tty->hist_gen == gd->scroll_generation)
+		return (1);
+	tty->hist_shown = UINT_MAX;
+	if (tty->hist_gen + 1 == gd->scroll_generation &&
+	    gd->reflow_gen == gd->scroll_generation) {
+		m = gd->reflow_view - tty->hist_seen;
+		if ((int)m > 0) {
+			b = (m <= gd->reflow_hsize) ? gd->reflow_hsize - m : 0;
+			if (m > gd->reflow_hsize || b < gd->reflow_first ||
+			    gd->reflow_map == NULL)
+				return (0);
+			/*
+			 * Its last row was where the cursor was, which the
+			 * pane may have written since: one row of its own,
+			 * and not known to be the pane's (painted, not only
+			 * scrolled).
+			 */
+			end = gd->reflow_map[b + gd->reflow_osy - 1 -
+			    gd->reflow_first] + 1;
+			top = (end > tty->sy) ? end - tty->sy : 0;
+			log_debug("%s: %u lines behind, end %u top %u",
+			    __func__, m, end, top);
+			if (top < gd->reflow_newh) {
+				tty->hist_seen = gd->reflow_view -
+				    (gd->reflow_newh - top);
+				tty->hist_shown = end - 1;
+			} else
+				tty->hist_seen = gd->reflow_view;
+		}
+	} else if (tty->hist_seen + n != gd->scroll_view)
+		return (0);
+	tty->hist_gen = gd->scroll_generation;
+	return (1);
+}
+
+/*
+ * A pane's scroll or clear, which pushed ctx->n lines into its history, is
+ * about to be written to this terminal: if the terminal's scrollback is the
+ * pane's history, count them as reaching it (see tty_catch_up_history) - it
+ * does with them what it does, keeps them in its scrollback or not. Not when
+ * the output is being thrown away (TTY_BLOCK) or the terminal is on its
+ * alternate screen.
+ */
+static void
+tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct window_pane	*wp = ctx->wp;
+	struct grid		*gd;
+
+	if (wp == NULL || ctx->s != &wp->base || SCREEN_IS_ALTERNATE(&wp->base))
+		return;
+	if (tty->hist_pane != wp->id)
+		return;
+	if (tty->flags & (TTY_BLOCK|TTY_ALTSCREEN))
+		return;
+	gd = wp->base.grid;
+	if (!tty_history_step(tty, wp, ctx->n)) {
+		tty_history_lost(tty);
+		server_redraw_client(tty->client);
+		return;
+	}
+	tty->hist_seen += ctx->n;
+	if ((int)(gd->scroll_view - tty->hist_seen) < 0)
+		tty->hist_seen = gd->scroll_view;
+}
+
+/* Catch up on a pane's history, from screen_write_flush_dirty. */
+void
+tty_cmd_history(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct window_pane	*wp = ctx->wp;
+	int			 ours;
+
+	ours = (wp != NULL && tty->hist_pane == wp->id);
+	if (ours && !tty_catch_up_history(tty, wp))
+		server_redraw_client(tty->client);
+	tty_forget_wraps(tty, wp, ours);	/* every row is drawn next */
+}
+
+/*
+ * The pane's history was cleared (clear-history, or ED 3 from the program):
+ * a terminal whose scrollback is that history clears it too.
+ */
+void
+tty_cmd_clearhistory(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct window_pane	*wp = ctx->wp;
+	struct grid		*gd;
+
+	if (wp == NULL || ctx->s != &wp->base || tty->hist_pane != wp->id)
+		return;
+	gd = wp->base.grid;
+	if ((tty->flags & (TTY_BLOCK|TTY_ALTSCREEN)) ||
+	    !tty_term_has(tty->term, TTYC_E3) ||
+	    tty->hist_cleared + 1 != gd->scroll_cleared)
+		return;		/* tty_history_step finds it was not cleared */
+	tty_putcode(tty, TTYC_E3);
+	tty->hist_seen = gd->scroll_view;
+	tty->hist_gen = gd->scroll_generation;
+	tty->hist_cleared = gd->scroll_cleared;
+	tty->hist_shown = UINT_MAX;
+}
+
+/*
+ * Paint history lines first to last from row y down, a line that wrapped as
+ * one so the terminal wraps it itself and keeps it one line.
+ *
+ * Which rows the terminal joins is what matters here. Erasing a whole row
+ * tells some terminals (tmux) it no longer continues the row above, and
+ * that the row above no longer continues into it, so: a row that does not
+ * continue the line before is erased whole first, which also ends whatever
+ * the row above had wrapped into it before; a row that does - the rest of a
+ * wrapped line, or the top row continuing the last line in the terminal's
+ * scrollback - is only written over. After the text, only the rest of the
+ * row is erased; a row wrapping on, or full, is written to its end, spaces
+ * too (an erase at the end of a full row would take its last cell on some,
+ * such as xterm). And the row after the last is erased whole, unless the
+ * last line wraps on to it.
+ */
+static void
+tty_paint_history(struct tty *tty, struct window_pane *wp, u_int first,
+    u_int last, u_int y)
+{
+	struct grid		*gd = wp->base.grid;
+	struct grid_line	*gl;
+	struct grid_cell	 gc, defaults;
+	struct tty_style_ctx	 style_ctx;
+	u_int			 k, row, x;
+	int			 full, cont, bg;
+
+	/* The pane's own style, palette and links, as when it is drawn. */
+	tty_default_colours(&defaults, wp, &style_ctx.dim);
+	style_ctx.defaults = &defaults;
+	style_ctx.palette = &wp->palette;
+	style_ctx.hyperlinks = wp->base.hyperlinks;
+
+	tty_reset(tty);
+	for (k = first; k <= last; k++) {
+		row = y + k - first;
+		gl = grid_get_line(gd, k);
+		if (k != first)
+			cont = (grid_get_line(gd, k - 1)->flags & GRID_LINE_WRAPPED);
+		else {
+			cont = (row == 0 && k != 0 &&
+			    (grid_get_line(gd, k - 1)->flags & GRID_LINE_WRAPPED));
+		}
+		if (!cont) {
+			tty_default_attributes(tty, 8, &style_ctx);
+			tty_cursor(tty, 0, row);
+			tty_putcode(tty, TTYC_EL);
+		} else if (k == first)
+			tty_cursor(tty, 0, row);
+
+		full = ((gl->flags & GRID_LINE_WRAPPED) || gl->cellused >= gd->sx);
+		for (x = 0; x < gd->sx && (full || x < gl->cellused); x++) {
+			grid_get_cell(gd, x, k, &gc);
+			if (gc.flags & GRID_FLAG_PADDING)
+				continue;
+			if (x + gc.data.width > gd->sx) {
+				/* Overhanging the row (a reflow): blanks. */
+				bg = gc.bg;
+				memcpy(&gc, &grid_default_cell, sizeof gc);
+				gc.bg = bg;
+				for (; x < gd->sx; x++)
+					tty_cell(tty, &gc, &style_ctx);
+				break;
+			}
+			tty_cell(tty, &gc, &style_ctx);
+		}
+		if (!full) {
+			tty_default_attributes(tty, 8, &style_ctx);
+			tty_putcode(tty, TTYC_EL);
+		}
+	}
+	gl = grid_get_line(gd, last);
+	row = y + last - first + 1;
+	if ((~gl->flags & GRID_LINE_WRAPPED) && row < tty->sy) {
+		tty_default_attributes(tty, 8, &style_ctx);
+		tty_cursor(tty, 0, row);
+		tty_putcode(tty, TTYC_EL);
+	}
+	tty_reset(tty);
+	tty->cx = tty->cy = UINT_MAX;
+}
+
+/* The last line of the wrapped line at i, before end and within n rows. */
+static u_int
+tty_history_wrapped(struct grid *gd, u_int i, u_int end, u_int n)
+{
+	u_int	j;
+
+	for (j = i; j + 1 < end && j - i + 1 < n; j++) {
+		if (~grid_get_line(gd, j)->flags & GRID_LINE_WRAPPED)
+			break;
+	}
+	return (j);
+}
+
+/*
+ * Give the terminal history lines i to i + n - 1 as they went into the
+ * pane's history (a grid_push): painted where they were and scrolled off a
+ * region or the screen, or cleared, so the terminal keeps them in its
+ * scrollback exactly when it would have.
+ */
+static void
+tty_replay_push(struct tty *tty, struct window_pane *wp, u_int type,
+    u_int upper, u_int lower, u_int i, u_int n)
+{
+	struct grid	*gd = wp->base.grid;
+	u_int		 j, k, m, end = i + n;
+
+	if ((type == GRID_PUSH_CLEAR || type == GRID_PUSH_CLEARBELOW) &&
+	    (n > tty->sy || !tty_term_has(tty->term, TTYC_ED)))
+		type = GRID_PUSH_SCROLL;
+	if (type == GRID_PUSH_REGION &&
+	    (lower >= tty->sy || upper >= lower ||
+	    !tty_term_has(tty->term, TTYC_CSR)))
+		type = GRID_PUSH_SCROLL;
+
+	switch (type) {
+	case GRID_PUSH_SCROLL:
+		for (k = i; k < end; k = j + 1) {
+			j = tty_history_wrapped(gd, k, end, tty->sy - 1);
+			tty_region_off(tty);
+			tty_paint_history(tty, wp, k, j, 0);
+			/*
+			 * The line goes on in the next row (the next line
+			 * painted, or the top of the screen): wrap into it
+			 * with a blank the next write covers, so the terminal
+			 * joins them.
+			 */
+			if (grid_get_line(gd, j)->flags & GRID_LINE_WRAPPED)
+				tty_puts(tty, " ");
+			tty_cursor(tty, 0, tty->sy - 1);
+			for (m = k; m <= j; m++)
+				tty_putc(tty, '\n');
+		}
+		break;
+	case GRID_PUSH_REGION:
+		for (k = i; k < end; k++) {
+			tty_region_off(tty);
+			tty_paint_history(tty, wp, k, k, upper);
+			tty_region(tty, upper, lower);
+			tty_cursor(tty, 0, lower);
+			tty_putc(tty, '\n');
+		}
+		tty_region_off(tty);
+		break;
+	case GRID_PUSH_CLEAR:
+	case GRID_PUSH_CLEARBELOW:
+		tty_region_off(tty);
+		for (k = i; k < end; k = j + 1) {
+			j = tty_history_wrapped(gd, k, end, tty->sy - (k - i));
+			tty_paint_history(tty, wp, k, j, k - i);
+		}
+		if (n < tty->sy) {
+			tty_cursor(tty, 0, n);
+			tty_putcode(tty, TTYC_ED);
+		}
+		if (type == GRID_PUSH_CLEAR &&
+		    (tty->term->flags & TERM_VT100LIKE))
+			tty_puts(tty, "\033[2J");
+		else {
+			tty_cursor(tty, 0, 0);
+			tty_putcode(tty, TTYC_ED);
+		}
+		break;
+	}
+}
+
+/*
+ * Whether a floating pane is over a pane: drawn over rows that painting it
+ * whole, erasing or scrolling it, would take away.
+ */
+int
+tty_pane_covered(struct window_pane *wp)
+{
+	struct window_pane	*loop = wp;
+
+	while ((loop = TAILQ_PREV(loop, window_panes, zentry)) != NULL) {
+		if (window_pane_is_floating(loop))
+			return (1);
+	}
+	return (0);
+}
+
+/*
+ * Whether a pane is the whole of this terminal, which keeps its own scrollback
+ * (clear-on-attach off): where the pane's rows scroll is where the terminal's
+ * scroll.
+ */
+int
+tty_pane_is_terminal(struct tty *tty, struct window_pane *wp)
+{
+	if (wp == NULL || !screen_write_passthrough(wp))
+		return (0);
+	return (wp->xoff == 0 && wp->yoff == 0 && wp->sx == tty->sx &&
+	    wp->sy == tty->sy);
+}
+
+/*
+ * Write history lines first to first + n - 1 of a pane that is the whole
+ * terminal to the terminal's scrollback, as they went into the history when
+ * the pane scrolled. The caller redraws the pane over the rows this leaves.
+ */
+static void
+tty_replay_history(struct tty *tty, struct window_pane *wp, u_int first,
+    u_int n)
+{
+	if (n == 0)
+		return;
+	tty_region_off(tty);
+	tty_margin_off(tty);
+	tty_replay_push(tty, wp, GRID_PUSH_SCROLL, 0, 0, first, n);
+}
+
+/*
+ * Lines pushed into the history of the pane this terminal follows without
+ * reaching the terminal - thrown away while the output was held back (sync
+ * mode, a full redraw pending, a floating pane over the pane) - are given to
+ * it now the way they went into the history (see tty_replay_push); lines
+ * older than the grid's record of pushes as full-screen scrolls. The caller
+ * redraws the whole pane over the rows this leaves. Returns 0 if the
+ * terminal's lines are no longer the pane's (tty_history_step), and the
+ * terminal then follows no pane.
+ */
+static int
+tty_catch_up_history(struct tty *tty, struct window_pane *wp)
+{
+	struct grid		*gd = wp->base.grid;
+	struct grid_push	*gp;
+	u_int			 i, j, k, n, left, e, skip = 0, count;
+
+	if (SCREEN_IS_ALTERNATE(&wp->base))
+		return (1);
+	if (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK))
+		return (1);
+	/*
+	 * The painting would scroll a floating pane over this one away: wait
+	 * for the redraw after it has gone.
+	 */
+	if (tty_pane_covered(wp))
+		return (1);
+	if (!tty_history_step(tty, wp, 0) || !tty_pane_is_terminal(tty, wp)) {
+		tty_history_lost(tty);
+		return (0);
+	}
+	n = gd->scroll_view - tty->hist_seen;
+	if ((int)n <= 0)
+		return (1);
+	tty->hist_seen = gd->scroll_view;
+	if (n > gd->hsize)
+		n = gd->hsize;
+	log_debug("%s: %%%u %u lines", __func__, wp->id, n);
+
+	/*
+	 * History rows the terminal has at the top of its screen after it
+	 * reflowed (see tty_history_step): scroll them into its scrollback.
+	 */
+	tty_margin_off(tty);
+	i = gd->hsize - n;
+	if (tty->hist_shown != UINT_MAX && i < tty->hist_shown) {
+		k = ((tty->hist_shown < gd->hsize) ? tty->hist_shown :
+		    gd->hsize) - i;
+		log_debug("%s: %u lines on the screen", __func__, k);
+		tty_region_off(tty);
+		tty_cursor(tty, 0, tty->sy - 1);
+		for (j = 0; j < k; j++)
+			tty_putc(tty, '\n');
+		n -= k;
+	}
+	tty->hist_shown = UINT_MAX;
+
+	/* The latest pushes, back to the first of the n lines. */
+	left = n;
+	e = gd->npushes;
+	while (left != 0 && e != 0 && gd->npushes - e < GRID_PUSHES) {
+		gp = &gd->pushes[(e - 1) % GRID_PUSHES];
+		e--;
+		if (gp->n >= left) {
+			skip = gp->n - left;
+			left = 0;
+			break;
+		}
+		left -= gp->n;
+	}
+
+	i = gd->hsize - n;
+	if (left != 0) {
+		tty_replay_push(tty, wp, GRID_PUSH_SCROLL, 0, 0, i, left);
+		i += left;
+	}
+	for (; e != gd->npushes; e++) {
+		gp = &gd->pushes[e % GRID_PUSHES];
+		count = gp->n - skip;
+		skip = 0;
+		log_debug("%s: %u lines, push %u %u-%u", __func__, count,
+		    gp->type, gp->upper, gp->lower);
+		tty_replay_push(tty, wp, gp->type, gp->upper, gp->lower, i,
+		    count);
+		i += count;
+	}
+	return (1);
+}
+
+/*
+ * The active pane of the window this terminal shows is about to be drawn
+ * whole: make the terminal's scrollback that pane's history if the pane is
+ * the whole terminal, and note that it is no pane's if not.
+ *
+ * A terminal already following the pane is given the lines it lacks. One
+ * following another pane or none has its scrollback written again from the
+ * pane's history, up to scroll-replay lines of it, after erasing what tmux
+ * wrote there before (E3; what the terminal held before tmux started is kept
+ * until then). Without scroll-replay, or without E3 to erase with, the pane
+ * is followed from here and the scrollback keeps what it has.
+ *
+ * Returns whether the scrollback is this pane's history, so the top row may
+ * continue its last line (tty_forget_wraps).
+ */
+int
+tty_sync_history(struct tty *tty, struct window_pane *wp)
+{
+	struct grid	*gd;
+	u_int		 lines, n, first;
+
+	if (clear_on_attach || wp == NULL)
+		return (0);
+	/*
+	 * A floating pane sits over the pane the terminal's scrollback belongs
+	 * to; it does not take the scrollback over.
+	 */
+	if (window_pane_is_floating(wp))
+		return (0);
+	if (!tty_pane_is_terminal(tty, wp)) {
+		/* What is drawn now may scroll into the scrollback. */
+		tty_history_lost(tty);
+		tty->flags |= TTY_HISTWRITTEN;
+		return (0);
+	}
+	/*
+	 * Nothing reaches the scrollback from the alternate screen, and
+	 * painting would scroll a floating pane over this one away: wait for
+	 * the redraw after.
+	 */
+	if (SCREEN_IS_ALTERNATE(&wp->base) ||
+	    (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK)) || tty_pane_covered(wp))
+		return (tty->hist_pane == wp->id);
+	if (tty->hist_pane == wp->id && tty_catch_up_history(tty, wp))
+		return (1);
+
+	lines = options_get_number(wp->window->options, "scroll-replay");
+	if (lines == 0 || ((tty->flags & TTY_HISTWRITTEN) &&
+	    !tty_term_has(tty->term, TTYC_E3))) {
+		tty_history_adopt(tty, wp);
+		return (0);
+	}
+	gd = wp->base.grid;
+	n = gd->hsize;
+	first = (n > lines) ? n - lines : 0;
+	log_debug("%s: %s %%%u %u lines%s", __func__, tty->client->name,
+	    wp->id, n - first, (tty->flags & TTY_HISTWRITTEN) ? ", erased" : "");
+
+	tty_region_off(tty);
+	tty_margin_off(tty);
+	tty_reset(tty);
+	if (tty->flags & TTY_HISTWRITTEN) {
+		tty_putcode(tty, TTYC_CLEAR);
+		tty_putcode(tty, TTYC_E3);
+	} else if (tty_term_has(tty->term, TTYC_ED)) {
+		/* Erase the screen without the terminal keeping it. */
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_ED);
+	} else
+		tty_putcode(tty, TTYC_CLEAR);
+
+	/*
+	 * The history goes to the scrollback as it went there when the pane
+	 * scrolled (wrapped lines kept whole); the redraw that follows paints
+	 * the visible rows.
+	 */
+	tty_replay_history(tty, wp, first, n - first);
+	tty_invalidate(tty);
+
+	tty_history_adopt(tty, wp);
+	tty->hist_wrapped = 0;
+	return (1);
+}
+
+/* A pane's history is no longer what terminals following it hold. */
+void
+tty_forget_history(struct window_pane *wp)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->tty.hist_pane == wp->id)
+			tty_history_lost(&c->tty);
+	}
+}
+
+/*
+ * Before the whole of a pane that is the whole terminal is drawn again: which
+ * of the terminal's rows continue the row above is what earlier output left
+ * (perhaps output since thrown away), and drawing over the rows does not
+ * change it. Clear them first, so the terminal joins only the rows the drawing
+ * wraps - except the top row when it continues the last line of the history,
+ * which is in the terminal's scrollback and is not drawn again, if that is
+ * this pane's history (ours). Not under a floating pane.
+ */
+void
+tty_forget_wraps(struct tty *tty, struct window_pane *wp, int ours)
+{
+	struct grid	*gd;
+
+	if (wp == NULL || SCREEN_IS_ALTERNATE(&wp->base))
+		return;
+	if (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK))
+		return;
+	if (!tty_pane_is_terminal(tty, wp) || !tty_term_has(tty->term, TTYC_ED))
+		return;
+	gd = wp->base.grid;
+
+	if (tty_pane_covered(wp))
+		return;
+
+	tty_region_off(tty);
+	tty_margin_off(tty);
+	tty_reset(tty);
+	/*
+	 * Another pane's line ends the terminal's scrollback and wraps on to
+	 * the top row. Most terminals keep that wrap when the row is only
+	 * erased, which would join the line to what is drawn there next: erase
+	 * the row and scroll it in after the line instead, so the line ends on
+	 * a blank row.
+	 */
+	if (!ours && tty->hist_wrapped && tty->sy > 1) {
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_EL);
+		tty_cursor(tty, 0, tty->sy - 1);
+		tty_putc(tty, '\n');
+	}
+	tty->hist_wrapped = 0;
+	if (!ours || gd->hsize == 0 ||
+	    (~grid_get_line(gd, gd->hsize - 1)->flags & GRID_LINE_WRAPPED)) {
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_EL);
+	}
+	if (tty->sy > 1) {
+		tty_cursor(tty, 0, 1);
+		tty_putcode(tty, TTYC_ED);
+	}
+}
+
+/*
+ * Emit a scroll tty_cmd_scrollup left to a wrap that has not happened: the
+ * terminal is waiting to wrap at the end of the bottom row. Something other
+ * than a character is written to the new row first (an erase, a cursor
+ * move), so wrap with a blank - the row scrolls in blank - and return to its
+ * start: the terminal still knows the row continues the one above, as the
+ * program's own wrap told it. A wide character that did not fit left the
+ * cursor on the last column instead, where a blank would not wrap; a newline
+ * scrolls then.
+ */
+static void
+tty_pay_scroll(struct tty *tty)
+{
+	if (~tty->flags & TTY_OWESCROLL)
+		return;
+	tty->flags &= ~(TTY_OWESCROLL|TTY_WRAPNEXT);
+	log_debug("%s: at %u", __func__, tty->cy);
+	tty_reset(tty);
+	if (tty->cx >= tty->sx) {
+		tty_add(tty, " \r", 2);
+		tty->flags |= TTY_WRAPPED0;
+	} else
+		tty_add(tty, "\r\n", 2);
+	tty->cx = 0;
+}
+
 /* Move cursor to absolute position. */
+/*
+ * Whether tty_cursor moves relative to the cursor: the terminal keeps its own
+ * scrollback (clear-on-attach off), the cursor position is known, and the
+ * scroll region and margins are the whole screen.
+ */
+static int
+tty_move_relative(struct tty *tty, u_int thisy)
+{
+	struct tty_term	*term = tty->term;
+
+	if (options_get_number(global_options, "clear-on-attach"))
+		return (0);
+	if (thisy == UINT_MAX || tty->cx == UINT_MAX)
+		return (0);
+	if (tty->rupper != 0 || tty->rlower != tty->sy - 1)
+		return (0);
+	if (tty_use_margin(tty) &&
+	    (tty->rleft != 0 || tty->rright != tty->sx - 1))
+		return (0);
+	return (tty_term_has(term, TTYC_CUU) && tty_term_has(term, TTYC_HPA));
+}
+
 void
 tty_cursor(struct tty *tty, u_int cx, u_int cy)
 {
 	struct tty_term	*term = tty->term;
 	u_int		 thisx, thisy;
-	int		 change;
+	int		 change, row;
 
 	if (tty->flags & TTY_BLOCK)
 		return;
+	tty_pay_scroll(tty);
+	if (cx != tty->cx || cy != tty->cy)
+		tty->flags &= ~TTY_WRAPPED0;
 
 	thisx = tty->cx;
 	thisy = tty->cy;
@@ -2315,9 +3569,67 @@ tty_cursor(struct tty *tty, u_int cx, u_int cy)
 	if (cx == thisx && cy == thisy)
 		return;
 
-	/* Currently at the very end of the line - use absolute movement. */
-	if (thisx > tty->sx - 1)
-		goto absolute;
+	/*
+	 * Currently at the very end of the line, so a wrap is pending. Moving
+	 * relative to the cursor (see tty_move_relative) starts from column 0
+	 * after a CR, which also clears the pending wrap; otherwise use
+	 * absolute movement.
+	 */
+	if (thisx > tty->sx - 1) {
+		if (!tty_move_relative(tty, thisy))
+			goto absolute;
+		tty_putc(tty, '\r');
+		thisx = tty->cx = 0;
+		if (cx == 0 && cy == thisy)
+			goto out;
+	}
+
+	/*
+	 * With clear-on-attach off the terminal keeps its own scrollback and
+	 * can move its screen against it without tmux knowing: a phone
+	 * keyboard that grows and shrinks the terminal faster than the new
+	 * size is reported pulls rows back from scrollback and moves the
+	 * cursor down with them. An application drawing straight to the
+	 * terminal moves relative to the cursor and stays in line; absolute
+	 * movement would draw over the wrong rows. So move relative to the
+	 * cursor too, down by line feeds (which scroll such a terminal back
+	 * into line rather than stopping at its last row).
+	 */
+	if (tty_move_relative(tty, thisy)) {
+		row = (cy != thisy);
+		if (cy < thisy) {
+			if (thisy - cy == 1 && tty_term_has(term, TTYC_CUU1))
+				tty_putcode(tty, TTYC_CUU1);
+			else
+				tty_putcode_i(tty, TTYC_CUU, thisy - cy);
+		} else {
+			for (; thisy < cy; thisy++)
+				tty_putc(tty, '\n');
+		}
+		if (cx == thisx)
+			goto out;
+		/*
+		 * After a change of row the column is set absolutely, as
+		 * absolute movement would: moving across a character the
+		 * terminal draws wider or narrower than tmux (an emoji
+		 * sequence) would carry the difference along. On the same
+		 * row, move as absolute movement does too.
+		 */
+		change = thisx - cx;
+		if (cx == 0)
+			tty_putc(tty, '\r');
+		else if (row || (u_int)abs(change) > cx ||
+		    !tty_term_has(term, TTYC_CUB) ||
+		    !tty_term_has(term, TTYC_CUF))
+			tty_putcode_i(tty, TTYC_HPA, cx);
+		else if (change > 0)
+			tty_putcode_i(tty, TTYC_CUB, change);
+		else
+			tty_putcode_i(tty, TTYC_CUF, -change);
+		thisy = cy;
+		tty->cy = cy;
+		goto out;
+	}
 
 	/* Move to home position (0, 0). */
 	if (cx == 0 && cy == 0 && tty_term_has(term, TTYC_HOME)) {
@@ -2482,6 +3794,14 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 	struct colour_palette	*palette;
 	int			 changed;
 
+	/*
+	 * A scroll left to a wrap is paid before attributes are set for what
+	 * follows, which paying would reset - unless what follows is the
+	 * character that wraps.
+	 */
+	if ((tty->flags & (TTY_OWESCROLL|TTY_WRAPNEXT)) == TTY_OWESCROLL)
+		tty_pay_scroll(tty);
+
 	/* Use default style if not given. */
 	if (style_ctx == NULL)
 		style_ctx = &tty_default_style_ctx;
@@ -2489,6 +3809,7 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 
 	/* Copy cell and update default colours. */
 	memcpy(&gc2, gc, sizeof gc2);
+	gc2.attr &= ~GRID_ATTR_SIZED;	/* not an attribute the terminal has */
 	if (~gc->flags & GRID_FLAG_NOPALETTE) {
 		if (gc2.fg == 8)
 			gc2.fg = style_ctx->defaults->fg;
@@ -2570,7 +3891,12 @@ tty_attributes(struct tty *tty, const struct grid_cell *gc,
 	if (changed & GRID_ATTR_ITALICS)
 		tty_set_italics(tty);
 	if (changed & GRID_ATTR_ALL_UNDERSCORE) {
-		if (changed & GRID_ATTR_UNDERSCORE)
+		/*
+		 * A terminal without styled underlines still gets an
+		 * underline, rather than none at all.
+		 */
+		if ((changed & GRID_ATTR_UNDERSCORE) ||
+		    !tty_term_has(tty->term, TTYC_SMULX))
 			tty_putcode(tty, TTYC_SMUL);
 		else if (changed & GRID_ATTR_UNDERSCORE_2)
 			tty_putcode_i(tty, TTYC_SMULX, 2);

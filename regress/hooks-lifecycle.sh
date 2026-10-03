@@ -36,29 +36,40 @@ wait_for()
 {
 	option=$1
 	expected=$2
-	i=0
+	_i=0
 
-	while [ $i -lt 30 ]; do
+	while [ $_i -lt 400 ]; do
 		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
 		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	fail "expected $option to be '$expected' but got '$value'"
 }
 
+# Check an option still has its value. Call it only once something has
+# happened after any further change would have: hooks for one destruction are
+# all queued together, so a command after wait_for sees them all.
 assert_unchanged()
 {
 	option=$1
 	expected=$2
-	i=0
 
-	while [ $i -lt 10 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] || \
-			fail "expected $option to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.2
+	value=$($TMUX show -gqv "$option" 2>/dev/null || true)
+	[ "$value" = "$expected" ] || \
+		fail "expected $option to remain '$expected' but got '$value'"
+}
+
+# Wait until the processes $@ have exited and been reaped by the server.
+wait_gone()
+{
+	for _pid in "$@"; do
+		_i=0
+		while kill -0 "$_pid" 2>/dev/null; do
+			_i=$((_i + 1))
+			[ $_i -lt 400 ] || fail "process $_pid still running"
+			sleep 0.05
+		done
 	done
 }
 
@@ -115,8 +126,13 @@ $TMUX set-hook -g pane-exited \
 $TMUX set -g @log '' || fail "reset @log failed"
 $TMUX new -d -s doomed2 -n dwin2 || fail "new-session doomed2 failed"
 $TMUX splitw -d -t doomed2:0 || fail "split-window doomed2 failed"
+pids=$($TMUX list-panes -t doomed2:0 -F '#{pane_pid}') ||
+	fail "list-panes doomed2 failed"
 $TMUX kill-window -t doomed2:0 || fail "kill-window failed"
 wait_for @log '|session-closed:doomed2|window-unlinked:doomed2:dwin2'
+# Once the killed panes' processes have been reaped, a pane-exited hook for
+# them would have been queued.
+wait_gone $pids
 assert_unchanged @log '|session-closed:doomed2|window-unlinked:doomed2:dwin2'
 $TMUX has -t main || fail "server died after kill-window chain"
 
@@ -169,8 +185,8 @@ $TMUX kill-session -t main || fail "kill-session main failed"
 i=0
 while $TMUX has 2>/dev/null; do
 	i=$((i + 1))
-	[ $i -lt 30 ] || fail "server still running after last session killed"
-	sleep 0.2
+	[ $i -lt 400 ] || fail "server still running after last session killed"
+	sleep 0.05
 done
 
 exit 0

@@ -42,13 +42,39 @@ alive() {
 }
 
 wait_clients() {
-	n=0
-	while [ $n -lt 50 ]; do
+	_n=0
+	while [ $_n -lt 100 ]; do
 		[ "$($TMUX lsc 2>/dev/null | wc -l)" -ge $1 ] && return
-		sleep 0.1
-		n=$((n + 1))
+		sleep 0.05
+		_n=$((_n + 1))
 	done
 	echo "control clients did not attach"; exit 1
+}
+
+# Wait for a pane's screen to show $2, or for the server to die (the caller
+# checks with alive).
+wait_pane() {
+	_n=0
+	while [ $_n -lt 400 ]; do
+		kill -0 "$SERVER" 2>/dev/null || return
+		$TMUX capturep -p -t "$1" 2>/dev/null | grep -q "$2" && return
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	echo "pane $1 did not show $2"; exit 1
+}
+
+# Wait for a pane's history to grow by $2 lines.
+wait_history() {
+	_h0=$($TMUX display -p -t "$1" '#{history_size}') || exit 1
+	_n=0
+	while [ $_n -lt 400 ]; do
+		_h=$($TMUX display -p -t "$1" '#{history_size}') || exit 1
+		[ "$_h" -ge $((_h0 + $2)) ] && return
+		sleep 0.05
+		_n=$((_n + 1))
+	done
+	echo "pane $1 history did not grow"; exit 1
 }
 
 # A detached session with a pane that writes a line every 10 milliseconds.
@@ -65,10 +91,12 @@ exec 8<"$FIFO"
 wait_clients 2
 
 # Let the first client fall behind, then respawn the pane. The new process
-# writes at once and the server must survive reading it.
+# writes at once and the server must survive reading it. The backlog builds
+# with the pane's output over time and no format shows a control client's
+# backlog, so this is a fixed wait.
 sleep 3
 $TMUX respawn-pane -k -t rt:0 'echo respawned; sleep 60' || exit 1
-sleep 1
+wait_pane rt:0 respawned
 alive "respawn-pane with a lagging control client"
 
 # Now a pane whose window is moved out of the session both clients view: their
@@ -76,12 +104,12 @@ alive "respawn-pane with a lagging control client"
 $TMUX neww -d -t rt \
 	'while :; do echo yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy; sleep 0.01; done' ||
 	exit 1
-sleep 1
+wait_pane rt:1 yyyy
 $TMUX new -d -s other || exit 1
 $TMUX movew -d -s rt:1 -t other: || exit 1
-sleep 2
+wait_history other:1 10
 $TMUX respawn-pane -k -t other:1 'echo respawned; sleep 60' || exit 1
-sleep 1
+wait_pane other:1 respawned
 alive "respawn-pane on a window moved out of the clients' session"
 
 exit 0

@@ -2,6 +2,18 @@
 
 . ./input-common.inc
 
+# Wait for a pane program to end its output with OSC 7 "done": everything it
+# wrote before has been read.
+wait_done()
+{
+	_i=0
+	while [ "$($TMUX display -p -t "$1:" '#{pane_path}')" != done ]; do
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && { echo "$1 did not finish"; exit 1; }
+		sleep 0.05
+	done
+}
+
 start_pane hyperlink 20 3 '\033]8;id=1;https://example.com\033\\link\033]8;;\033\\ plain\n'
 check_capture hyperlink 'link plain'
 check_flags hyperlink 'HX link plain'
@@ -24,21 +36,26 @@ check_capture apc-title 'X'
 
 cmd='i=0; while [ "$i" -lt 12 ]; do '
 cmd="${cmd}printf '\\033[22;0t'; i=\$((i + 1)); done; "
-cmd="${cmd}printf X; sleep 2"
+cmd="${cmd}printf 'X$INPUT_DONE'; sleep 2"
 start_cmd title-stack 20 3 "$cmd"
 check_capture title-stack 'X'
 $TMUX respawn-pane -k -t title-stack: \
-    "printf '\\033[22;0tY'; sleep 2" || exit 1
-sleep 0.3
+    "printf '\\033[22;0tY\\033]7;done\\007'; sleep 2" || exit 1
+wait_done title-stack
 check_capture title-stack 'Y'
 
 $TMUX kill-server 2>/dev/null
-sleep 0.1
+i=0
+while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "server did not exit"; exit 1; }
+	sleep 0.05
+done
 $TMUX new-session -d -x 20 -y 3 -s osc52 "sleep 2" || exit 1
 $TMUX set-option -s set-clipboard on || exit 1
 $TMUX respawn-pane -k -t osc52: \
-    "printf '\033]52;c;SGVsbG8=\007'; sleep 2" || exit 1
-sleep 0.3
+    "printf '\033]52;c;SGVsbG8=\007\033]7;done\007'; sleep 2" || exit 1
+wait_done osc52
 $TMUX save-buffer -b buffer0 - >"$TMP"
 printf "Hello" >"$EXP"
 cmp "$TMP" "$EXP" || fail "osc52"

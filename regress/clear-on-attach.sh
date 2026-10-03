@@ -34,11 +34,11 @@ trap cleanup 0 1 15
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$current_inner list-clients 2>/dev/null | grep -q . && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "inner client did not attach"
 }
@@ -47,7 +47,7 @@ capture_attach()
 {
 	setting=$1
 	output=$2
-	go=$DIR/go-$setting
+	go=go-$setting
 	if [ "$setting" = on ]; then
 		current_inner=$INNER_ON
 		current_outer=$OUTER_ON
@@ -61,12 +61,21 @@ capture_attach()
 	$current_inner set-option -g status off || exit 1
 	$current_inner set-option -g clear-on-attach "$setting" || exit 1
 	$current_outer new-session -d -s outer -x40 -y10 \
-	    "while [ ! -e '$go' ]; do sleep 0.01; done; exec $current_inner attach-session -t inner" || exit 1
+	    "$current_outer wait-for $go; exec $current_inner attach-session -t inner" || exit 1
 	$current_outer set-option -g status off || exit 1
 	$current_outer pipe-pane -O "cat >'$output'" || exit 1
-	touch "$go"
+	$current_outer wait-for -S $go || exit 1
 	wait_for_client
-	sleep 0.5
+
+	# The pane echoes the typed marker, so once it reaches the output file
+	# everything the client wrote when attaching is there before it.
+	$current_inner send-keys -l =END= || exit 1
+	_i=0
+	while ! grep -Fq =END= "$output" 2>/dev/null; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 400 ] || fail "$setting: attached client output not seen"
+		sleep 0.05
+	done
 	$current_outer pipe-pane -O || exit 1
 }
 

@@ -19,7 +19,15 @@ new -stest
 EOF
 
 $TMUX -f$TMP start || exit 1
-sleep 1 && $TMUX has -t=test: || exit 1
+i=0
+until $TMUX has -t=test: 2>/dev/null; do
+	i=$((i + 1))
+	if [ $i -ge 400 ]; then
+		echo "session test was not created"
+		exit 1
+	fi
+	sleep 0.05
+done
 $TMUX kill-server 2>/dev/null
 
 exit 0

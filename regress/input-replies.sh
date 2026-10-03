@@ -7,7 +7,11 @@ TERM=screen
 TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 
 $TMUX kill-server 2>/dev/null
-sleep 0.5
+_i=0
+while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file' && [ "$_i" -lt 400 ]; do
+	sleep 0.05
+	_i=$((_i + 1))
+done
 
 TMP=$(mktemp)
 EXP=$(mktemp)
@@ -18,9 +22,19 @@ $TMUX new-session -d -x 80 -y 24 -s replies \; \
 $TMUX set-option -s set-clipboard on || exit 1
 $TMUX set-option -s get-clipboard buffer || exit 1
 printf Hello | $TMUX load-buffer -
-sleep 0.5
 
 exit_status=0
+
+# Wait for the program in the pane to finish (remain-on-exit keeps the pane).
+finished()
+{
+	_i=0
+	until [ "$($TMUX display -p -t replies:0 '#{pane_dead}')" = 1 ]; do
+		_i=$((_i + 1))
+		[ "$_i" -gt 400 ] && { echo "FAIL: $1: no reply"; return 1; }
+		sleep 0.05
+	done
+}
 
 fail()
 {
@@ -39,7 +53,7 @@ query()
 
 	$TMUX respawn-window -k -t replies:0 \
 	    "stty raw -echo min 1 time 20; printf '$setup'; printf '$seq'; dd bs=1 count=$count 2>/dev/null | cat -v >$TMP"
-	sleep 0.5
+	finished "$name" || exit_status=1
 	printf "%s" "$expected" >"$EXP"
 	cmp "$TMP" "$EXP" || fail "$name"
 }
@@ -53,14 +67,19 @@ query_timeout()
 
 	$TMUX respawn-window -k -t replies:0 \
 	    "stty raw -echo min 0 time 5; printf '$setup'; printf '$seq'; sleep 0.1; dd bs=1 count=128 2>/dev/null | cat -v >$TMP"
-	sleep 1
+	finished "$name" || exit_status=1
 	printf "%s" "$expected" >"$EXP"
 	cmp "$TMP" "$EXP" || fail "$name"
 }
 
 query "dsr-ok" '^[[0n' '\033[5n' 4 ''
 query "dsr-cursor" '^[[1;1R' '\033[6n' 6 ''
-query "da-primary" '^[[?1;2c' '\033[c' 7 ''
+# Primary device attributes include 4 (sixel) when tmux is built with it.
+if [ "$($TMUX display -p '#{sixel_support}')" = 1 ]; then
+	query "da-primary" '^[[?1;2;4c' '\033[c' 9 ''
+else
+	query "da-primary" '^[[?1;2c' '\033[c' 7 ''
+fi
 query "da-secondary" '^[[>84;0;0c' '\033[>c' 10 ''
 query "decrqm-irm-reset" '^[[4;2$y' '\033[4$p' 7 ''
 query "decrqm-irm-set" '^[[4;1$y' '\033[4$p' 7 '\033[4h'
@@ -79,8 +98,12 @@ query "decrqm-mouse-all-set" '^[[?1003;1$y' '\033[?1003$p' 11 '\033[?1003h'
 query "decrqm-focus-set" '^[[?1004;1$y' '\033[?1004$p' 11 '\033[?1004h'
 query "decrqm-mouse-utf8-set" '^[[?1005;1$y' '\033[?1005$p' 11 '\033[?1005h'
 query "decrqm-mouse-sgr-set" '^[[?1006;1$y' '\033[?1006$p' 11 '\033[?1006h'
+query "decrqm-mouse-pixels-reset" '^[[?1016;2$y' '\033[?1016$p' 11 ''
+query "decrqm-mouse-pixels-set" '^[[?1016;1$y' '\033[?1016$p' 11 '\033[?1016h'
 query "decrqm-bracket-paste-set" '^[[?2004;1$y' '\033[?2004$p' 11 '\033[?2004h'
 query "decrqm-theme-updates-set" '^[[?2031;1$y' '\033[?2031$p' 11 '\033[?2031h'
+query "decrqm-grapheme-clusters" '^[[?2027;3$y' '\033[?2027$p' 11 ''
+query "decrqm-grapheme-clusters-reset" '^[[?2027;3$y' '\033[?2027$p' 11 '\033[?2027l'
 query "decrqss-cursor-style" '^[P1$r q0 q^[\' '\033P$q q\033\\' 12 ''
 
 query_timeout "osc-10-query" '^[]10;rgb:ffff/0000/0000^G' '\033]10;?\007' '\033]10;red\007'

@@ -39,64 +39,68 @@ trap cleanup EXIT
 
 wait_for()
 {
-	option=$1
-	expected=$2
-	i=0
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.5
+	while [ $_i -lt 300 ]; do
+		_value=$($TMUX show -gqv "$1" 2>/dev/null || true)
+		[ "$_value" = "$2" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $option to be '$expected' but got '$value'"
+	fail "expected $1 to be '$2' but got '$_value'"
+}
+
+# The alert check runs from a zero timeout queued when output (or a selection)
+# is seen, and the hooks it fires run before the next client command. So once
+# the output has been read (bell and activity wait for that), a round trip
+# means any alert has already happened.
+quiesce()
+{
+	$TMUX display -p x >/dev/null || fail "server round trip failed"
 }
 
 assert_unchanged()
 {
-	option=$1
-	expected=$2
-	i=0
-
-	while [ $i -lt 10 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] || \
-			fail "expected $option to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.5
-	done
+	quiesce
+	_value=$($TMUX show -gqv "$1" 2>/dev/null || true)
+	[ "$_value" = "$2" ] || \
+		fail "expected $1 to remain '$2' but got '$_value'"
 }
 
 wait_for_fmt()
 {
-	target=$1
-	fmt=$2
-	expected=$3
-	i=0
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		value=$($TMUX display -pt "$target" "$fmt" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.5
+	while [ $_i -lt 300 ]; do
+		_value=$($TMUX display -pt "$1" "$2" 2>/dev/null || true)
+		[ "$_value" = "$3" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $fmt for $target to be '$expected' but got '$value'"
+	fail "expected $2 for $1 to be '$3' but got '$_value'"
 }
 
 assert_fmt_unchanged()
 {
-	target=$1
-	fmt=$2
-	expected=$3
-	i=0
+	quiesce
+	_value=$($TMUX display -pt "$1" "$2" 2>/dev/null || true)
+	[ "$_value" = "$3" ] || \
+		fail "expected $2 for $1 to remain '$3' but got '$_value'"
+}
 
-	while [ $i -lt 10 ]; do
-		value=$($TMUX display -pt "$target" "$fmt" 2>/dev/null || true)
-		[ "$value" = "$expected" ] || \
-			fail "expected $fmt for $target to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.5
+# wait_output <target> <format> <before>: wait until the pane has read the
+# output that moves <format> away from <before>.
+wait_output()
+{
+	_i=0
+
+	while [ $_i -lt 400 ]; do
+		_value=$($TMUX display -pt "$1" "$2" 2>/dev/null || true)
+		[ "$_value" != "$3" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
+	fail "no output in $1 ($2 still '$3')"
 }
 
 flags_have()
@@ -142,14 +146,24 @@ flags_lack()
 	esac
 }
 
+# The echo is ^G and a newline, then cat writes the BEL and a newline back:
+# wait until both lines are there.
 bell()
 {
+	_lines='#{e|+:#{history_size},#{cursor_y}}'
+	_before=$($TMUX display -pt "$1" "$_lines") ||
+		fail "display lines failed"
 	$TMUX send-keys -t "$1" -H 07 0a || fail "send-keys bell failed"
+	wait_output "$1" "#{e|<:$_lines,$((_before + 2))}" 1
 }
 
+# The x is echoed: wait until it is there.
 activity()
 {
+	_before=$($TMUX display -pt "$1" '#{cursor_x}') ||
+		fail "display cursor_x failed"
 	$TMUX send-keys -t "$1" -l x || fail "send-keys activity failed"
+	wait_output "$1" '#{cursor_x}' "$_before"
 }
 
 $TMUX new -d -s mon -n w0 cat || fail "new-session mon failed"
@@ -307,6 +321,7 @@ wait_for @log '|alert-silence:mon:silw'
 wait_for_fmt mon:silw '#{window_silence_flag}' 1
 assert_session_flag silence 1 silw
 flags_have mon:silw '~'
+sleep 2		# the 1s silence timer expires again
 assert_unchanged @log '|alert-silence:mon:silw'
 $TMUX set -wt mon:silw monitor-silence 0 ||
 	fail "reset monitor-silence failed"
@@ -324,6 +339,9 @@ $TMUX set -wt mon:silreset monitor-silence 10 ||
 	fail "set monitor-silence silreset failed"
 sleep 3
 activity mon:silreset
+# Past the original deadline (10s after monitor-silence was set) but well
+# before the new one (10s after the activity): no alert yet.
+sleep 8
 assert_unchanged @log ''
 wait_for @log '|alert-silence:mon:silreset'
 wait_for_fmt mon:silreset '#{window_silence_flag}' 1

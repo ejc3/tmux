@@ -35,18 +35,17 @@ trap cleanup EXIT
 
 wait_for()
 {
-	pattern=$1
-	i=0
+	_i=0
 
-	while [ "$i" -lt 50 ]; do
-		grep -F -- "$pattern" "$OUT" >/dev/null 2>&1 && return 0
+	while [ "$_i" -lt 100 ]; do
+		grep -F -- "$1" "$OUT" >/dev/null 2>&1 && return 0
 		if [ -n "$PID" ] && ! kill -0 "$PID" 2>/dev/null; then
-			fail "control client exited waiting for: $pattern"
+			fail "control client exited waiting for: $1"
 		fi
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "missing: $pattern"
+	fail "missing: $1"
 }
 
 send()

@@ -317,7 +317,9 @@ const struct options_table_entry options_table[] = {
 	  .text = "Whether to use the alternate screen and clear it when "
 		  "a client is attached. When disabled, tmux does not "
 		  "enter the alternate screen on attach so terminal "
-		  "content before tmux remains in scrollback."
+		  "content before tmux remains in scrollback. A full-window "
+		  "pane in its own alternate screen switches the terminal to "
+		  "its alternate screen."
 	},
 
 	{ .name = "command-alias",
@@ -430,6 +432,15 @@ const struct options_table_entry options_table[] = {
 	  .choices = options_table_extended_keys_format_list,
 	  .default_num = 1,
 	  .text = "The format of emitted extended key sequences."
+	},
+
+	{ .name = "forward-output",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "With clear-on-attach off, whether a pane that is the whole "
+		  "terminal of a client is shown by writing its output to the "
+		  "terminal as the program wrote it."
 	},
 
 	{ .name = "focus-events",
@@ -558,7 +569,9 @@ const struct options_table_entry options_table[] = {
 	  .flags = OPTIONS_TABLE_IS_ARRAY,
 	  .default_str = "xterm*:clipboard:ccolour:cstyle:focus:title,"
 			 "screen*:title,"
-			 "rxvt*:ignorefkeys",
+			 "rxvt*:ignorefkeys,"
+			 "xterm-kitty:kittygraphics:notify:textsize,"
+			 "xterm-ghostty:kittygraphics:notify",
 	  .separator = ",",
 	  .text = "List of terminal features, used if they cannot be "
 		  "automatically detected."
@@ -1714,6 +1727,18 @@ const struct options_table_entry options_table[] = {
 	  .default_num = 1,
 	  .text = "Whether the contents of the screen should be scrolled into"
 		  "history when clearing the whole screen."
+	},
+
+	{ .name = "scroll-replay",
+	  .type = OPTIONS_TABLE_NUMBER,
+	  .scope = OPTIONS_TABLE_WINDOW,
+	  .minimum = 0,
+	  .maximum = 100000,
+	  .default_num = 0,
+	  .text = "Number of lines of history to write to the client's terminal, "
+		  "after clearing its saved lines, when a window becomes current. "
+		  "Only with clear-on-attach off and the pane filling the "
+		  "terminal. Zero disables."
 	},
 
 	{ .name = "switch-mode-match-style",

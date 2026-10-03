@@ -2054,6 +2054,18 @@ format_cb_mouse_sgr_flag(struct format_tree *ft)
 	return (NULL);
 }
 
+/* Callback for mouse_pixels_flag. */
+static void *
+format_cb_mouse_pixels_flag(struct format_tree *ft)
+{
+	if (ft->wp != NULL) {
+		if (ft->wp->base.mode & MODE_MOUSE_PIXELS)
+			return (xstrdup("1"));
+		return (xstrdup("0"));
+	}
+	return (NULL);
+}
+
 /* Callback for mouse_standard_flag. */
 static void *
 format_cb_mouse_standard_flag(struct format_tree *ft)
@@ -2490,7 +2502,15 @@ format_cb_pane_unseen_changes(struct format_tree *ft)
 static void *
 format_cb_pane_key_mode(struct format_tree *ft)
 {
+	char	*value;
+	u_int	 flags;
+
 	if (ft->wp != NULL && ft->wp->screen != NULL) {
+		flags = screen_kkeys_flags(ft->wp->screen);
+		if (flags != 0) {
+			xasprintf(&value, "Kitty %u", flags);
+			return (value);
+		}
 		switch (ft->wp->screen->mode & EXTENDED_KEY_MODES) {
 		case MODE_KEYS_EXTENDED:
 			return (xstrdup("Ext 1"));
@@ -3782,6 +3802,9 @@ static const struct format_table_entry format_table[] = {
 	},
 	{ "mouse_pane", FORMAT_TABLE_STRING,
 	  format_cb_mouse_pane
+	},
+	{ "mouse_pixels_flag", FORMAT_TABLE_STRING,
+	  format_cb_mouse_pixels_flag
 	},
 	{ "mouse_sgr_flag", FORMAT_TABLE_STRING,
 	  format_cb_mouse_sgr_flag
@@ -5803,6 +5826,21 @@ format_loop_clients(struct format_expand_state *es, const char *fmt)
 	return (value);
 }
 
+/*
+ * Truncate a value to an integer, failing if it has none (not a number, as
+ * from 0 % 0 or nan) or is too big for one.
+ */
+static int
+format_truncate_integer(double *v)
+{
+	/* A long long holds -2^63 up to (not including) 2^63. */
+	if (isnan(*v) || *v >= 9223372036854775808.0 ||
+	    *v < -9223372036854775808.0)
+		return (-1);
+	*v = (long long)*v;
+	return (0);
+}
+
 static char *
 format_replace_expression(struct format_modifier *mexp,
     struct format_expand_state *es, const char *copy)
@@ -5888,9 +5926,10 @@ format_replace_expression(struct format_modifier *mexp,
 		goto fail;
 	}
 
-	if (!use_fp) {
-		mleft = (long long)mleft;
-		mright = (long long)mright;
+	if (!use_fp && (format_truncate_integer(&mleft) != 0 ||
+	    format_truncate_integer(&mright) != 0)) {
+		format_log(es, "expression side is not an integer");
+		goto fail;
 	}
 	format_log(es, "expression left side is: %.*f", prec, mleft);
 	format_log(es, "expression right side is: %.*f", prec, mright);
@@ -5932,8 +5971,13 @@ format_replace_expression(struct format_modifier *mexp,
 	}
 	if (use_fp)
 		xasprintf(&value, "%.*f", prec, result);
-	else
-		xasprintf(&value, "%.*f", prec, (double)(long long)result);
+	else {
+		if (format_truncate_integer(&result) != 0) {
+			format_log(es, "expression result is not an integer");
+			goto fail;
+		}
+		xasprintf(&value, "%.*f", prec, result);
+	}
 	format_log(es, "expression result is %s", value);
 
 	free(right);

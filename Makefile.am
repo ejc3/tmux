@@ -167,6 +167,7 @@ dist_tmux_SOURCES = \
 	events.c \
 	file.c \
 	format-draw.c \
+	forward.c \
 	format.c \
 	fuzzy.c \
 	grid-reader.c \
@@ -179,6 +180,7 @@ dist_tmux_SOURCES = \
 	job.c \
 	json.c \
 	key-bindings.c \
+	kgfx.c \
 	key-string.c \
 	layout-custom.c \
 	layout-set.c \

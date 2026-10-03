@@ -26,9 +26,16 @@ cleanup()
 trap cleanup 0 1 15
 
 $TMUX new-session -d -x30 -y6 \
-	"printf 'alpha\nbeta\ngamma\ndelta\n'; exec sleep 100" || exit 1
+	"printf 'alpha\nbeta\ngamma\ndelta\n\033]7;done\007'; exec sleep 100" ||
+	exit 1
 $TMUX set-option -g window-size manual || exit 1
-sleep 1
+# The pane path is set by the OSC 7 after the text, so it is all read.
+_i=0
+while [ "$($TMUX display -p '#{pane_path}')" != done ]; do
+	_i=$((_i + 1))
+	[ $_i -lt 400 ] || fail "pane output was not read"
+	sleep 0.05
+done
 
 # A valid regular-expression search creates marks. Replacing it with an
 # invalid expression, growing the mode, and scrolling must not leave an old

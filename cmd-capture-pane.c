@@ -419,13 +419,17 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
 	struct args		*args = cmd_get_args(self);
 	struct client		*c = cmdq_get_client(item);
 	struct window_pane	*wp = cmdq_get_target(item)->wp;
+	struct screen_write_ctx	 ctx;
 	char			*buf, *cause;
 	const char		*bufname;
 	size_t			 len;
 
 	if (cmd_get_entry(self) == &cmd_clear_history_entry) {
 		window_pane_reset_mode_all(wp);
-		grid_clear_history(wp->base.grid);
+		forward_stop_pane(wp);
+		screen_write_start_pane(&ctx, wp, &wp->base);
+		screen_write_clearhistory(&ctx);
+		screen_write_stop(&ctx);
 		if (args_has(args, 'H'))
 			screen_reset_hyperlinks(wp->screen);
 		server_redraw_window(wp->window);

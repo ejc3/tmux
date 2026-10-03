@@ -41,6 +41,7 @@ struct environ	*global_environ;
 struct timeval	 start_time;
 const char	*socket_path;
 int		 ptm_fd = -1;
+int		 clear_on_attach;	/* clear-on-attach, read often */
 const char	*shell_command;
 
 static __dead void	 usage(int);
@@ -574,6 +575,7 @@ main(int argc, char **argv)
 		if (oe->scope & OPTIONS_TABLE_WINDOW)
 			options_default(global_w_options, oe);
 	}
+	clear_on_attach = options_get_number(global_options, "clear-on-attach");
 
 	/*
 	 * The default shell comes from SHELL or from the user's passwd entry

@@ -57,6 +57,7 @@ struct format_tree;
 struct hyperlinks_uri;
 struct hyperlinks;
 struct input_ctx;
+struct kgfx_client;
 struct input_request;
 struct input_requests;
 struct job;
@@ -420,6 +421,9 @@ enum {
 	KEYC_REPORT_COLOURS,
 	KEYC_REPORT_PALETTE,
 	KEYC_REPORT_WINSZ,
+	KEYC_REPORT_NOTIFY,
+	KEYC_REPORT_KGFX,
+	KEYC_REPORT_KKEYS,
 
 	/* Mouse state. */
 	KEYC_MOUSE, /* unclassified mouse event */
@@ -708,6 +712,8 @@ enum tty_code_code {
 #define MODE_KEYS_EXTENDED_2 0x40000
 #define MODE_THEME_UPDATES 0x80000
 #define MODE_SYNC 0x100000
+#define MODE_INBAND_RESIZE 0x200000
+#define MODE_MOUSE_PIXELS 0x400000
 
 #define ALL_MODES 0xffffff
 #define ALL_MOUSE_MODES (MODE_MOUSE_STANDARD|MODE_MOUSE_BUTTON|MODE_MOUSE_ALL)
@@ -730,6 +736,15 @@ typedef u_int utf8_char;
  * characters are stored.
  */
 #define UTF8_SIZE 32
+
+/* The most bytes a grid cell keeps (what the packed size field holds). */
+#define UTF8_MAXSIZE (UTF8_SIZE - 1)
+
+/* The widest a character can be (one given a width with OSC 66). */
+#define UTF8_MAXWIDTH 6
+
+/* The most bytes a terminal is sent for one such character (OSC 66). */
+#define TTY_SIZED_SIZE (UTF8_SIZE + 16)
 struct utf8_data {
 	u_char	data[UTF8_SIZE];
 
@@ -800,6 +815,10 @@ struct colour_palette {
 #define GRID_ATTR_UNDERSCORE_5 0x1000
 #define GRID_ATTR_OVERLINE 0x2000
 #define GRID_ATTR_NOATTR 0x4000
+#define GRID_ATTR_SIZED 0x8000	/* width given by the program (OSC 66) */
+
+/* Attributes about what a cell holds, kept when a style replaces the rest. */
+#define GRID_ATTR_CONTENT (GRID_ATTR_CHARSET|GRID_ATTR_SIZED)
 
 /* All underscore attributes. */
 #define GRID_ATTR_ALL_UNDERSCORE \
@@ -928,6 +947,24 @@ struct grid_line {
 	u_short			 flags;
 };
 
+/*
+ * How lines went into a grid's history, so a terminal that missed them can be
+ * given them the same way: a scroll of the whole screen or of a region (its
+ * top line), or a clear moving the screen there (ED 2, or ED 0 from the top
+ * left).
+ */
+#define GRID_PUSH_SCROLL 0
+#define GRID_PUSH_REGION 1
+#define GRID_PUSH_CLEAR 2
+#define GRID_PUSH_CLEARBELOW 3
+struct grid_push {
+	u_int			 type;
+	u_int			 upper;
+	u_int			 lower;
+	u_int			 n;
+};
+#define GRID_PUSHES 32
+
 /* Entire grid of cells. */
 struct grid {
 	int			 flags;
@@ -941,8 +978,28 @@ struct grid {
 	u_int			 hlimit;
 
 	u_int			 scroll_added;
+	u_int			 scroll_view;	/* lines pushed into history */
+	struct grid_push	 pushes[GRID_PUSHES]; /* the latest, how */
+	u_int			 npushes;
+	int			 rpush_wrapped;	/* last push, from a region */
+	u_int			 rpush_upper;
+	u_int			 rpush_lower;
+
+	/*
+	 * The last reflow: where each old row (from reflow_first, to the end
+	 * of the screen and one past) went, the pushes, history rows and
+	 * screen rows then, and history rows after.
+	 */
+	u_int			*reflow_map;
+	u_int			 reflow_first;
+	u_int			 reflow_view;
+	u_int			 reflow_hsize;
+	u_int			 reflow_osy;
+	u_int			 reflow_newh;
+	u_int			 reflow_gen;
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
+	u_int			 scroll_cleared;	/* times history was cleared */
 
 	struct grid_line	*linedata;
 };
@@ -1081,6 +1138,29 @@ struct progress_bar {
 /* Virtual screen. */
 struct screen_sel;
 struct screen_titles;
+/*
+ * Kitty keyboard protocol progressive enhancement flags. A program pushes and
+ * pops them; the entry on top is in effect.
+ */
+#define KKEYS_DISAMBIGUATE 0x1
+#define KKEYS_EVENTS 0x2
+#define KKEYS_ALTERNATES 0x4
+#define KKEYS_ALL 0x8
+#define KKEYS_TEXT 0x10
+#define KKEYS_MASK 0x7f
+#define KKEYS_DEPTH 8
+struct screen_kkeys {
+	u_char				 flags[KKEYS_DEPTH];
+	u_int				 n;
+};
+
+/* A stack of mouse pointer shapes (OSC 22). */
+#define SCREEN_POINTERS 16
+struct screen_pointers {
+	char				*shape[SCREEN_POINTERS];
+	u_int				 n;
+};
+
 struct screen {
 	char				*title;
 	char				*path;
@@ -1108,6 +1188,7 @@ struct screen {
 	struct grid			*saved_grid;
 	struct grid_cell		 saved_cell;
 	int				 saved_flags;
+	int				 saved_hwrap;
 
 	bitstr_t			*tabs;
 	struct screen_sel		*sel;
@@ -1118,9 +1199,13 @@ struct screen {
 #endif
 
 	struct screen_write_cline	*write_list;
+	u_int				 write_wrap;	/* row + 1 */
 
 	struct hyperlinks		*hyperlinks;
 	struct progress_bar		 progress_bar;
+
+	struct screen_kkeys		 kkeys[2]; /* main, alternate screen */
+	struct screen_pointers		 pointers[2]; /* main, alternate */
 };
 
 /* Screen write context. */
@@ -1140,6 +1225,7 @@ struct screen_write_ctx {
 
 	struct screen_write_citem	*item;
 	u_int				 scrolled;
+	int				 scroll_wrapped;
 	u_int				 bg;
 };
 
@@ -1254,6 +1340,8 @@ struct window_mode_entry {
 enum input_request_type {
 	INPUT_REQUEST_PALETTE,
 	INPUT_REQUEST_CLIPBOARD,
+	INPUT_REQUEST_KGFX,
+	INPUT_REQUEST_NOTIFY,
 	INPUT_REQUEST_QUEUE
 };
 
@@ -1313,11 +1401,18 @@ struct visible_ranges {
 	u_int			 size;    /* allocated capacity of ranges */
 };
 
+/* Notifications a pane waits to hear back about (server-client.c). */
+struct notify_item;
+TAILQ_HEAD(notify_items, notify_item);
+
 /* Child window structure. */
 struct window_pane {
 	u_int		 id;
 	int		 references;
 	u_int		 active_point;
+	u_int		 notify_anon;	/* OSC 99 without an identifier */
+	struct notify_items notifies;	/* OSC 99 awaiting reports */
+	u_int		 nnotifies;
 
 	struct window	*window;
 	struct options	*options;
@@ -1356,6 +1451,7 @@ struct window_pane {
 #define PANE_FLOATOVERZOOM 0x200000
 #define PANE_CLOSEONCANCEL 0x400000
 #define PANE_UTMP 0x800000
+#define PANE_KGFX 0x1000000
 
 	bitstr_t	*sync_dirty;
 	u_int		 sync_dirty_size;
@@ -1398,8 +1494,15 @@ struct window_pane {
 	struct window_pane_resizes resize_queue;
 	struct event	 resize_timer;
 	struct event	 sync_timer;
+	u_int		 sync_view;	/* grid scroll_view at sync start */
 
 	struct input_ctx *ictx;
+
+	/* Output written to the terminal as it came (forward.c). */
+	enum { FWD_GROUND, FWD_ESC, FWD_CSI, FWD_STRING, FWD_STRING_ESC }
+			 fwd_state;
+	u_char		 fwd_buf[512];
+	size_t		 fwd_len;
 
 	struct grid_cell cached_gc;
 	struct grid_cell cached_active_gc;
@@ -1732,6 +1835,12 @@ struct mouse_event {
 
 	u_int		sgr_type;
 	u_int		sgr_b;
+
+	int		pixels;	/* px and py are from the terminal */
+	u_int		px;
+	u_int		py;
+	u_int		xpixel;	/* the terminal's cell size */
+	u_int		ypixel;
 };
 
 /* Key event. */
@@ -1764,6 +1873,13 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_NOTIFY 0x200
+#define TERM_POINTER 0x400
+#define TERM_KKEYS 0x800
+#define TERM_MOUSEPIXELS 0x1000
+#define TERM_KGFX 0x2000
+#define TERM_TEXTSIZE 0x4000
+#define TERM_GRAPHEMES 0x8000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1822,6 +1938,7 @@ struct tty {
 	size_t		 discarded;
 
 	size_t		 sync_offset;
+	size_t		 exempt;	/* queued bytes TTY_BLOCK ignores */
 
 	struct termios	 tio;
 
@@ -1845,9 +1962,37 @@ struct tty {
 #define TTY_WAITBG 0x4000
 #define TTY_BRACKETPASTE 0x8000
 #define TTY_HAVESYNC 0x10000
+#define TTY_ALTSCREEN 0x20000
+#define TTY_OWESCROLL 0x40000
+#define TTY_WRAPNEXT 0x80000
+#define TTY_WRAPPED0 0x100000
+#define TTY_HAVEKKEYS 0x200000
+#define TTY_KKEYS 0x400000
+#define TTY_HAVEPIXELS 0x800000
+#define TTY_MOUSEPIXELS 0x1000000
+#define TTY_HAVEKGFX 0x2000000
+#define TTY_HAVEGRAPHEMES 0x4000000
+#define TTY_GRAPHEMES 0x8000000
+#define TTY_PIXELSFROM0 0x10000000
+#define TTY_HISTWRITTEN 0x20000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
+	 TTY_HAVEPIXELS|TTY_HAVEKGFX|TTY_HAVEGRAPHEMES)
 	int		 flags;
+
+	/*
+	 * The pane whose history this terminal's scrollback is (UINT_MAX if
+	 * none), and how many of the lines pushed into its history (grid
+	 * scroll_view) have reached it: see tty_sync_history. TTY_HISTWRITTEN
+	 * is set once tmux has written to the scrollback since the terminal
+	 * started.
+	 */
+	u_int		 hist_pane;
+	u_int		 hist_seen;
+	u_int		 hist_gen;	/* grid scroll_generation of hist_seen */
+	u_int		 hist_cleared;	/* grid scroll_cleared of hist_seen */
+	u_int		 hist_shown;	/* history rows on the screen to end */
+	int		 hist_wrapped;	/* scrollback ends wrapping on to row 0 */
 
 	struct tty_term	*term;
 
@@ -1879,6 +2024,7 @@ struct tty_ctx {
 	tty_ctx_redraw_cb	 redraw_cb;
 	tty_ctx_set_client_cb	 set_client_cb;
 	void			*arg;
+	struct window_pane	*wp;	/* the pane written, not an overlay's */
 
 	const struct grid_cell	*cell;
 	int                      flags;
@@ -1888,6 +2034,8 @@ struct tty_ctx {
 #define TTY_CTX_SYNC 0x8
 #define TTY_CTX_CELL_INVALIDATE 0x20
 #define TTY_CTX_PANE_OBSCURED 0x40
+#define TTY_CTX_WRAPWIDE 0x80
+#define TTY_CTX_SCROLLEDIN 0x100
 
 	union {
 		u_int			 n;
@@ -2253,11 +2401,15 @@ struct client {
 	int			 term_features;
 	int		 	 term_nofeatures;
 	char			*term_type;
+	char			*pointer;	/* shape set, or NULL */
+
+	struct kgfx_client	*kgfx;		/* kitty graphics given */
 	char		       **term_caps;
 	u_int			 term_ncaps;
 
 	char			*ttyname;
 	struct tty		 tty;
+	u_int			 forward_pane;	/* pane forwarded, forward.c */
 
 	size_t			 written;
 	size_t			 discarded;
@@ -2595,6 +2747,7 @@ extern struct timeval	 start_time;
 extern const char	*socket_path;
 extern const char	*shell_command;
 extern int		 ptm_fd;
+extern int		 clear_on_attach;
 extern const char	*shell_command;
 int		 checkshell(const char *);
 void		 setblocking(int, int);
@@ -2954,6 +3107,7 @@ void	tty_putcode_s(struct tty *, enum tty_code_code, const char *);
 void	tty_putcode_ss(struct tty *, enum tty_code_code, const char *,
 	    const char *);
 void	tty_puts(struct tty *, const char *);
+size_t	tty_sized_cell(struct tty *, const struct grid_cell *, char *, size_t);
 void	tty_putc(struct tty *, u_char);
 void	tty_putn(struct tty *, const void *, size_t, u_int);
 void	tty_cell(struct tty *, const struct grid_cell *,
@@ -2962,12 +3116,15 @@ int	tty_init(struct tty *, struct client *);
 void	tty_resize(struct tty *);
 void	tty_set_size(struct tty *, u_int, u_int, u_int, u_int);
 void	tty_invalidate(struct tty *);
+void	tty_forward(struct tty *, const u_char *, size_t);
 void	tty_start_tty(struct tty *);
 void	tty_send_requests(struct tty *);
 void	tty_repeat_requests(struct tty *, int);
 void	tty_stop_tty(struct tty *);
 void	tty_set_title(struct tty *, const char *);
 void	tty_set_path(struct tty *, const char *);
+void	tty_notify(struct tty *, const char *);
+void	tty_set_pointer(struct tty *, const char *);
 void	tty_set_progress_bar(struct tty *, struct progress_bar *);
 void	tty_default_attributes(struct tty *, u_int,
 	    const struct tty_style_ctx *);
@@ -3000,6 +3157,13 @@ void	tty_cmd_insertcharacter(struct tty *, const struct tty_ctx *);
 void	tty_cmd_insertline(struct tty *, const struct tty_ctx *);
 void	tty_cmd_linefeed(struct tty *, const struct tty_ctx *);
 void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
+void	tty_cmd_history(struct tty *, const struct tty_ctx *);
+void	tty_cmd_clearhistory(struct tty *, const struct tty_ctx *);
+int	tty_sync_history(struct tty *, struct window_pane *);
+void	tty_forget_history(struct window_pane *);
+int	tty_pane_is_terminal(struct tty *, struct window_pane *);
+int	tty_pane_covered(struct window_pane *);
+void	tty_forget_wraps(struct tty *, struct window_pane *, int);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);
@@ -3010,6 +3174,29 @@ void	tty_draw_images(struct client *, struct window_pane *);
 #endif
 void	tty_cmd_syncstart(struct tty *, const struct tty_ctx *);
 void	tty_default_colours(struct grid_cell *, struct window_pane *, u_int *);
+
+/* forward.c */
+/* What a forwarded program may have left set on the terminal. */
+#define FORWARD_RESET "\033[?7h\033[?6l\033[4l\033(B\017"
+int	 forward_eligible(struct client *, struct window_pane *);
+void	 forward_pane_output(struct window_pane *, const u_char *, size_t);
+void	 forward_pane_parsed(struct window_pane *);
+void	 forward_stop(struct client *);
+void	 forward_stop_pane(struct window_pane *);
+
+/* kgfx.c */
+void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,
+	     struct bufferevent *, const u_char *, size_t);
+void	 kgfx_pane_free(struct window_pane *);
+void	 kgfx_client_free(struct client *);
+void	 kgfx_client_sync(struct client *);
+void	 kgfx_client_written(struct client *);
+void	 kgfx_client_dropped(struct client *);
+size_t	 kgfx_client_queued(struct client *);
+void	 kgfx_known(struct client *);
+void	 kgfx_placeholder(struct window_pane *, struct grid_cell *, u_int);
+int	 kgfx_diacritic(const struct utf8_data *);
+void	 forward_check(void);
 
 /* tty-term.c */
 extern struct tty_terms tty_terms;
@@ -3226,6 +3413,7 @@ struct cmdq_item *cmdq_append(struct client *, struct cmdq_item *);
 void printflike(4, 5) cmdq_insert_hook(struct session *, struct cmdq_item *,
 		     struct cmd_find_state *, const char *, ...);
 void		 cmdq_continue(struct cmdq_item *);
+void		 cmdq_flush_lost(struct client *);
 u_int		 cmdq_next(struct client *);
 struct cmdq_item *cmdq_running(struct client *);
 void		 cmdq_guard(struct cmdq_item *, const char *, int);
@@ -3328,6 +3516,13 @@ u_int	 server_client_how_many(void);
 void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
+void	 server_client_notify(struct window_pane *, const char *);
+void	 server_client_notify_free(struct window_pane *);
+char	*server_client_notify_rewrite(struct window_pane *, const char *);
+int	 server_client_notify_is_query(const char *);
+int	 server_client_notify_reply(struct client *, const char *, size_t,
+	     const char *);
+const char *window_pane_pointer(struct window_pane *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);
 int	 server_client_handle_key(struct client *, struct key_event *);
@@ -3441,20 +3636,26 @@ void	 input_reset(struct input_ctx *, int);
 struct evbuffer *input_pending(struct input_ctx *);
 void	 input_parse_pane(struct window_pane *);
 void	 input_parse_buffer(struct window_pane *, const u_char *, size_t);
+int	 input_is_ground(struct input_ctx *);
+int	 input_cell_is_default(struct input_ctx *);
 void	 input_parse_screen(struct input_ctx *, struct screen *,
 	     screen_write_init_ctx_cb, void *, const u_char *, size_t);
 void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 	     const char *, char);
 void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
+void	 input_kgfx_request(struct input_ctx *, struct client *, const char *);
+void	 input_kgfx_known(struct client *, int);
 void	 input_cancel_requests(struct client *);
+const char *input_sized_parse(const char *, u_int *);
+int	 input_sized_data(const char *, u_int, struct utf8_data *);
 
 /* input-key.c */
 void	 input_key_build(void);
 int	 input_key_pane(struct window_pane *, key_code, struct mouse_event *);
 int	 input_key(struct screen *, struct bufferevent *, key_code);
 int	 input_key_get_mouse(struct screen *, struct mouse_event *, u_int,
-	     u_int, const char **, size_t *);
+	     u_int, u_int, u_int, const char **, size_t *);
 
 /* colour.c */
 int	 colour_find_rgb(u_char, u_char, u_char);
@@ -3505,6 +3706,7 @@ time_t	 grid_line_time(const struct grid_line *);
 void	 grid_collect_history(struct grid *, int);
 void	 grid_remove_history(struct grid *, u_int );
 void	 grid_scroll_history(struct grid *, u_int);
+void	 grid_add_push(struct grid *, u_int, u_int, u_int, u_int);
 void	 grid_scroll_history_region(struct grid *, u_int, u_int, u_int);
 void	 grid_clear_history(struct grid *);
 const struct grid_line *grid_peek_line(struct grid *, u_int);
@@ -3514,6 +3716,8 @@ void	 grid_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_set_cells(struct grid *, u_int, u_int, const struct grid_cell *,
 	     const char *, size_t);
 struct grid_line *grid_get_line(struct grid *, u_int);
+void	 grid_trim_overhang(struct grid *, u_int);
+int	 grid_line_overhangs(struct grid *, u_int);
 void	 grid_adjust_lines(struct grid *, u_int);
 void	 grid_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_clear_lines(struct grid *, u_int, u_int, u_int);
@@ -3524,7 +3728,8 @@ char	*grid_string_cells(struct grid *, u_int, u_int, u_int,
 void	 grid_duplicate_lines(struct grid *, u_int, struct grid *, u_int,
 	     u_int);
 void	 grid_reflow(struct grid *, u_int);
-void	 grid_wrap_position(struct grid *, u_int, u_int, u_int *, u_int *);
+void	 grid_wrap_position(struct grid *, u_int, u_int, u_int, u_int *,
+	     u_int *);
 void	 grid_unwrap_position(struct grid *, u_int *, u_int *, u_int, u_int);
 u_int	 grid_line_length(struct grid *, u_int);
 u_int	 grid_line_limit(struct grid *, u_int);
@@ -3555,13 +3760,16 @@ void	 grid_reader_cursor_back_to_indentation(struct grid_reader *);
 
 /* grid-view.c */
 void	 grid_view_get_cell(struct grid *, u_int, u_int, struct grid_cell *);
+u_int	 grid_view_get_char(struct grid *, u_int, u_int, struct grid_cell *);
+void	 grid_view_get_extent(struct grid *, u_int, u_int, u_int *, u_int *);
+int	 grid_view_splits(struct grid *, u_int, u_int);
 void	 grid_view_set_cell(struct grid *, u_int, u_int,
 	     const struct grid_cell *);
 void	 grid_view_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_view_set_cells(struct grid *, u_int, u_int,
 	     const struct grid_cell *, const char *, size_t);
-void	 grid_view_clear_history(struct grid *, u_int);
-void	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
+u_int	 grid_view_clear_history(struct grid *, u_int);
+int	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_view_scroll_region_up(struct grid *, u_int, u_int, u_int);
 void	 grid_view_scroll_region_down(struct grid *, u_int, u_int, u_int);
 void	 grid_view_insert_lines(struct grid *, u_int, u_int, u_int);
@@ -3570,13 +3778,16 @@ void	 grid_view_insert_lines_region(struct grid *, u_int, u_int, u_int,
 void	 grid_view_delete_lines(struct grid *, u_int, u_int, u_int);
 void	 grid_view_delete_lines_region(struct grid *, u_int, u_int, u_int,
 	     u_int);
-void	 grid_view_insert_cells(struct grid *, u_int, u_int, u_int, u_int);
-void	 grid_view_delete_cells(struct grid *, u_int, u_int, u_int, u_int);
+int	 grid_view_insert_cells(struct grid *, u_int, u_int, u_int, u_int);
+int	 grid_view_delete_cells(struct grid *, u_int, u_int, u_int, u_int);
 char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 
 /* screen-write.c */
 void	 screen_write_make_list(struct screen *);
+void	 screen_write_flush(struct screen_write_ctx *);
 void	 screen_write_free_list(struct screen *);
+int	 screen_write_full_window(struct window_pane *);
+int	 screen_write_passthrough(struct window_pane *);
 void	 screen_write_start_pane(struct screen_write_ctx *,
 	     struct window_pane *, struct screen *);
 void	 screen_write_start(struct screen_write_ctx *, struct screen *);
@@ -3619,6 +3830,7 @@ void	 screen_write_cursorup(struct screen_write_ctx *, u_int);
 void	 screen_write_cursordown(struct screen_write_ctx *, u_int);
 void	 screen_write_cursorright(struct screen_write_ctx *, u_int);
 void	 screen_write_cursorleft(struct screen_write_ctx *, u_int);
+void	 screen_write_wrapnext(struct screen_write_ctx *, int);
 void	 screen_write_alignmenttest(struct screen_write_ctx *);
 void	 screen_write_insertcharacter(struct screen_write_ctx *, u_int, u_int);
 void	 screen_write_deletecharacter(struct screen_write_ctx *, u_int, u_int);
@@ -3684,6 +3896,16 @@ int	 screen_set_path(struct screen *, const char *, int);
 void	 screen_push_title(struct screen *);
 void	 screen_pop_title(struct screen *);
 void	 screen_set_progress_bar(struct screen *, enum progress_bar_state, int);
+u_int	 screen_kkeys_flags(struct screen *);
+void	 screen_kkeys_push(struct screen *, u_int);
+void	 screen_kkeys_pop(struct screen *, u_int);
+void	 screen_kkeys_set(struct screen *, u_int, u_int);
+const char *screen_pointer(struct screen *);
+void	 screen_pointer_set(struct screen *, const char *);
+void	 screen_pointer_push(struct screen *, const char *);
+void	 screen_pointer_pop(struct screen *);
+void	 screen_pointer_reset(struct screen *);
+void	 screen_kkeys_reset(struct screen *);
 void	 screen_resize(struct screen *, u_int, u_int, int);
 void	 screen_resize_cursor(struct screen *, u_int, u_int, int, int, int);
 void	 screen_set_selection(struct screen *, u_int, u_int, u_int, u_int,
@@ -3748,6 +3970,7 @@ void		 window_redraw_active_switch(struct window *,
 struct window_pane *window_add_pane(struct window *, struct window_pane *,
 		     u_int, int);
 void		 window_resize(struct window *, u_int, u_int, int, int);
+void		 window_pane_report_size(struct window_pane *, u_int, u_int);
 void		 window_pane_send_resize(struct window_pane *, u_int, u_int);
 int		 window_zoom(struct window_pane *);
 int		 window_unzoom(struct window *, int);
@@ -4136,6 +4359,7 @@ void		 utf8_set(struct utf8_data *, u_char);
 void		 utf8_copy(struct utf8_data *, const struct utf8_data *);
 enum utf8_state	 utf8_open(struct utf8_data *, u_char);
 enum utf8_state	 utf8_append(struct utf8_data *, u_char);
+int		 utf8_next(const char **, struct utf8_data *);
 int		 utf8_isvalid(const char *);
 size_t		 utf8_strvis(char *, const char *, size_t, int);
 size_t		 utf8_stravis(char **, const char *, int);
