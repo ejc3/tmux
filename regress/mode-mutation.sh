@@ -19,7 +19,15 @@ cleanup_servers()
 {
 	$TMUX kill-server 2>/dev/null
 	$TMUX2 kill-server 2>/dev/null
-	sleep 0.5
+	_i=0
+	while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file' || ! $TMUX2 ls 2>&1 | grep -qE 'no server running|No such file'; do
+		_i=$((_i + 1))
+		if [ "$_i" -ge 400 ]; then
+			echo "servers did not exit" >&2
+			exit 1
+		fi
+		sleep 0.05
+	done
 }
 
 cleanup()
@@ -49,54 +57,54 @@ assert_alive()
 
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "expected $1 clients, have $c"
+	fail "expected $1 clients, have $_c"
 }
 
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		capture | grep -F -q "$1" && return 0
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1'"
 }
 
 wait_mode()
 {
-	t=$1
-	want=$2
+	_t=$1
+	_want=$2
 
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t "$t" '#{pane_in_mode}' \
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t "$_t" '#{pane_in_mode}' \
 		    2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane $t mode state is $got, expected $want"
+	fail "pane $_t mode state is $_got, expected $_want"
 }
 
 repeat_key()
 {
-	t=$1
-	key=$2
-	count=$3
+	_t=$1
+	_key=$2
+	_count=$3
 
-	i=0
-	while [ "$i" -lt "$count" ]; do
-		$TMUX send-keys -t "$t" "$key" || \
-			fail "failed to send $key to $t"
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt "$_count" ]; do
+		$TMUX send-keys -t "$_t" "$_key" || \
+			fail "failed to send $_key to $_t"
+		_i=$((_i + 1))
 	done
 }
 

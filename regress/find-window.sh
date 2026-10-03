@@ -36,15 +36,14 @@ capture()
 
 wait_mode()
 {
-	want=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($INNER display-message -p -t find:base.0 '#{pane_mode}' 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_got=$($INNER display-message -p -t find:base.0 '#{pane_mode}' 2>/dev/null)
+		[ "$_got" = "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane mode is '$got', expected '$want'"
+	fail "pane mode is '$_got', expected '$1'"
 }
 
 run_find()
@@ -54,14 +53,14 @@ run_find()
 	shift 2
 	$INNER find-window -t find:base.0 "$@" || fail "$label failed"
 	wait_mode tree-mode
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		captured=$(capture)
 		printf '%s\n' "$captured" | grep -Fq "$expected" && break
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	[ "$i" -lt 50 ] || fail "$label did not show '$expected'"
+	[ "$_i" -lt 100 ] || fail "$label did not show '$expected'"
 	$INNER send-keys -t find:base.0 q || exit 1
 	wait_mode ''
 }
@@ -80,16 +79,25 @@ $INNER set-option -g window-size manual || exit 1
 $OUTER new-session -d -s outer -x80 -y24 "$INNER attach -t find:base" || exit 1
 $OUTER set-option -g status off || exit 1
 $OUTER set-option -g window-size manual || exit 1
-sleep 1
+
+# Wait until the inner client has attached and answered tmux's queries.
+i=0
+while [ "$i" -lt 400 ]; do
+	[ -n "$($INNER list-clients -F '#{client_termtype}' 2>/dev/null)" ] &&
+		break
+	sleep 0.05
+	i=$((i + 1))
+done
+[ "$i" -lt 400 ] || fail "inner client did not attach"
 
 # Wait until the body text is in the pane history before searching it.
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 100 ]; do
 	$INNER capture-pane -p -t find:body.0 | grep -Fq BodyNeedle && break
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "pane content was not ready"
+[ "$i" -lt 100 ] || fail "pane content was not ready"
 
 # No flags means C+N+T. Then cover all three pairs and all three singletons.
 run_find default NameNeedle NameNeedle
