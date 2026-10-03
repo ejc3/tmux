@@ -75,7 +75,7 @@ go() {
 }
 
 program 'aaaaaaaaaaaaaaaaaaaaaaaaaaa\033]66;w=3;xyz\007bb\033[1;1HQ\033[3;1H'
-start 'set -s clear-on-attach off\nset -s forward-output off\n'
+start 'set -s clear-on-attach off\nset -sq forward-output off\n'
 go
 [ "$($OUTER capturep -pJ | head -1)" = Qaaaaaaaaaaaaaaaaaaaaaaaaaaxyzbb ] ||
     fail "the line is '$($OUTER capturep -pJ | head -1)'"

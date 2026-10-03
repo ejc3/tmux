@@ -37,8 +37,9 @@ wait_is() {
 $TMUX new -d -s inner -x 10 -y 4 \
     "printf 'ab\\033]66;w=6;Y\\007cdef\\r\\n1\\r\\n2\\r\\n3\\r\\n4\\r\\n5\\033]7;done\\007'; exec cat" \; \
     set -g status off \; set -s clear-on-attach off \; \
-    set -s forward-output off \; set -g window-size manual \; \
-    set -gw scroll-replay 100 || exit 1
+    set -g window-size manual \; set -gw scroll-replay 100 || exit 1
+$TMUX show -s forward-output >/dev/null 2>&1 &&
+    { $TMUX set -s forward-output off || exit 1; }
 wait_is "$TMUX display -p '#{pane_path}'" done
 $TMUX resize-window -x 4 || exit 1
 $OUTER new -d -s keep \; set -g default-terminal xterm-256color \; \
