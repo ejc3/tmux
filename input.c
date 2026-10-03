@@ -182,6 +182,7 @@ static void	input_enter_osc(struct input_ctx *);
 static void	input_exit_osc(struct input_ctx *);
 static void	input_enter_apc(struct input_ctx *);
 static void	input_exit_apc(struct input_ctx *);
+static int	input_is_kitty_graphics(const u_char *);
 static void	input_enter_rename(struct input_ctx *);
 static void	input_exit_rename(struct input_ctx *);
 
@@ -2798,12 +2799,38 @@ input_exit_apc(struct input_ctx *ictx)
 		return;
 	log_debug("%s: \"%s\"", __func__, ictx->input_buf);
 
+	/* A kitty graphics command, not a title. */
+	if (input_is_kitty_graphics(ictx->input_buf))
+		return;
+
 	if (wp != NULL &&
 	    options_get_number(wp->options, "allow-set-title") &&
 	    screen_set_title(sctx->s, ictx->input_buf, 1)) {
 		input_fire_pane_title_changed(wp, ictx->input_buf);
 		server_redraw_window_borders(wp->window);
 		server_status_window(wp->window);
+	}
+}
+
+/*
+ * Whether an APC string is a kitty graphics command: G, then single-letter
+ * keys with values (a=T,f=100,...) up to a ; before the payload or the end.
+ */
+static int
+input_is_kitty_graphics(const u_char *s)
+{
+	if (*s++ != 'G')
+		return (0);
+	for (;;) {
+		if (*s == '\0' || *s == ';')
+			return (1);
+		if (!isalpha(s[0]) || s[1] != '=')
+			return (0);
+		s += 2;
+		while (*s != '\0' && *s != ',' && *s != ';')
+			s++;
+		if (*s == ',')
+			s++;
 	}
 }
 
