@@ -190,26 +190,26 @@ paste_line()
 {
 	$TMUX kill-window -t B:9 2>/dev/null
 	check_ok new-window -d -t B:9 'stty raw -echo && exec cat -v'
-	i=0
+	_i=0
 	while [ "$($TMUX display-message -p -t B:9.0 \
 	    '#{pane_current_command}')" != "cat" ]; do
-		i=$((i + 1))
-		[ $i -gt 50 ] && { echo "cat did not start."; exit 1; }
-		sleep 0.1
+		_i=$((_i + 1))
+		[ $_i -gt 100 ] && { echo "cat did not start."; exit 1; }
+		sleep 0.05
 	done
 	check_ok set-buffer -b paste "$1"
 	check_ok paste-buffer $2 -b paste -t B:9.0
-	i=0
-	while out=$($TMUX capture-pane -p -t B:9.0 | sed -n 1p) && \
-	    [ "$out" != "$3" ]; do
-		i=$((i + 1))
-		if [ $i -gt 50 ]; then
+	_i=0
+	while _out=$($TMUX capture-pane -p -t B:9.0 | sed -n 1p) && \
+	    [ "$_out" != "$3" ]; do
+		_i=$((_i + 1))
+		if [ $_i -gt 100 ]; then
 			echo "Paste of '$1' ($2) wrong."
 			echo "Expected: '$3'"
-			echo "But got:  '$out'"
+			echo "But got:  '$_out'"
 			exit 1
 		fi
-		sleep 0.1
+		sleep 0.05
 	done
 }
 

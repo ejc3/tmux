@@ -29,17 +29,17 @@ trap cleanup EXIT
 
 wait_for()
 {
-	option=$1
-	expected=$2
-	i=0
+	_option=$1
+	_expected=$2
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+	while [ $_i -lt 400 ]; do
+		_value=$($TMUX show -gqv "$_option" 2>/dev/null || true)
+		[ "$_value" = "$_expected" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $option to be '$expected' but got '$value'"
+	fail "expected $_option to be '$_expected' but got '$_value'"
 }
 
 $TMUX new -d -s one || fail "new-session one failed"

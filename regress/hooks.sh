@@ -29,32 +29,37 @@ trap cleanup EXIT
 
 wait_for()
 {
-	option=$1
-	expected=$2
-	i=0
+	_option=$1
+	_expected=$2
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+	while [ $_i -lt 120 ]; do
+		_value=$($TMUX show -gqv "$_option" 2>/dev/null || true)
+		[ "$_value" = "$_expected" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $option to be '$expected' but got '$value'"
+	fail "expected $_option to be '$_expected' but got '$_value'"
+}
+
+# Fire a user hook and wait for it to run: hooks for events before it have
+# run by then.
+_sync=0
+sync_hooks()
+{
+	_sync=$((_sync + 1))
+	$TMUX set-hook -g @sync "set -g @synced $_sync" ||
+		fail "set-hook @sync failed"
+	$TMUX set-hook -E @sync || fail "set-hook -E @sync failed"
+	wait_for @synced $_sync
 }
 
 assert_unchanged()
 {
-	option=$1
-	expected=$2
-	i=0
-
-	while [ $i -lt 10 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] || \
-			fail "expected $option to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.2
-	done
+	sync_hooks
+	_value=$($TMUX show -gqv "$1" 2>/dev/null || true)
+	[ "$_value" = "$2" ] || \
+		fail "expected $1 to remain '$2' but got '$_value'"
 }
 
 $TMUX new -d -s one || fail "new-session one failed"
