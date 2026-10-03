@@ -199,6 +199,7 @@ static void	input_csi_dispatch_sm(struct input_ctx *);
 static void	input_csi_dispatch_sm_private(struct input_ctx *);
 static void	input_csi_dispatch_sm_graphics(struct input_ctx *);
 static void	input_csi_dispatch_winops(struct input_ctx *);
+static void	input_csi_dispatch_kkeys(struct input_ctx *, int);
 static void	input_soft_reset(struct input_ctx *);
 static void	input_csi_dispatch_sgr_256(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr_rgb(struct input_ctx *, int, u_int *);
@@ -284,6 +285,10 @@ enum input_csi_type {
 	INPUT_CSI_MODSET,
 	INPUT_CSI_QUERY,
 	INPUT_CSI_QUERY_PRIVATE,
+	INPUT_CSI_KKEYS_POP,
+	INPUT_CSI_KKEYS_PUSH,
+	INPUT_CSI_KKEYS_QUERY,
+	INPUT_CSI_KKEYS_SET,
 	INPUT_CSI_RCP,
 	INPUT_CSI_REP,
 	INPUT_CSI_RM,
@@ -346,7 +351,11 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'r', "",  INPUT_CSI_DECSTBM },
 	{ 's', "",  INPUT_CSI_SCP },
 	{ 't', "",  INPUT_CSI_WINOPS },
-	{ 'u', "",  INPUT_CSI_RCP }
+	{ 'u', "",  INPUT_CSI_RCP },
+	{ 'u', "<", INPUT_CSI_KKEYS_POP },
+	{ 'u', "=", INPUT_CSI_KKEYS_SET },
+	{ 'u', ">", INPUT_CSI_KKEYS_PUSH },
+	{ 'u', "?", INPUT_CSI_KKEYS_QUERY }
 };
 
 /* Input transition. */
@@ -1824,6 +1833,12 @@ input_csi_dispatch(struct input_ctx *ictx)
 	case INPUT_CSI_RCP:
 		input_restore_state(ictx);
 		break;
+	case INPUT_CSI_KKEYS_PUSH:
+	case INPUT_CSI_KKEYS_POP:
+	case INPUT_CSI_KKEYS_SET:
+	case INPUT_CSI_KKEYS_QUERY:
+		input_csi_dispatch_kkeys(ictx, entry->type);
+		break;
 	case INPUT_CSI_RM:
 		input_csi_dispatch_rm(ictx);
 		break;
@@ -2127,7 +2142,8 @@ input_csi_dispatch_sm_graphics(__unused struct input_ctx *ictx)
  * Soft reset (DECSTR), as xterm: the cursor shown, insert and origin modes
  * off, wrapping on, cursor keys and keypad normal, no scroll region,
  * attributes and character sets at their defaults and the saved cursor at
- * the top left. The screen and the cursor position stay.
+ * the top left. Also, as kitty, no kitty keyboard flags. The screen and the
+ * cursor position stay.
  */
 static void
 input_soft_reset(struct input_ctx *ictx)
@@ -2142,6 +2158,41 @@ input_soft_reset(struct input_ctx *ictx)
 	screen_write_scrollregion(sctx, 0, screen_size_y(s) - 1);
 	screen_write_cursormove(sctx, cx, cy, 0);
 	input_reset_cell(ictx);
+	screen_kkeys_reset(s);
+}
+
+/*
+ * Kitty keyboard protocol: push, pop, set or query the progressive
+ * enhancement flags. With extended-keys off, tmux does not take part: no
+ * answer to the query and the flags stay 0.
+ */
+static void
+input_csi_dispatch_kkeys(struct input_ctx *ictx, int type)
+{
+	struct screen	*s = ictx->ctx.s;
+	int		 n, m;
+
+	if (options_get_number(global_options, "extended-keys") == 0)
+		return;
+	switch (type) {
+	case INPUT_CSI_KKEYS_PUSH:
+		if ((n = input_get(ictx, 0, 0, 0)) != -1)
+			screen_kkeys_push(s, n);
+		break;
+	case INPUT_CSI_KKEYS_POP:
+		if ((n = input_get(ictx, 0, 1, 1)) != -1)
+			screen_kkeys_pop(s, n);
+		break;
+	case INPUT_CSI_KKEYS_SET:
+		n = input_get(ictx, 0, 0, 0);
+		m = input_get(ictx, 1, 1, 1);
+		if (n != -1 && m != -1)
+			screen_kkeys_set(s, n, m);
+		break;
+	case INPUT_CSI_KKEYS_QUERY:
+		input_reply(ictx, 1, "\033[?%uu", screen_kkeys_flags(s));
+		break;
+	}
 }
 
 /* Handle CSI window operations. */
