@@ -1019,6 +1019,87 @@ def leak_parse_error(g, i):
         g.server.cmd('source-file', '-q', path, check=False)
 
 
+
+# --- The terminal's scrollback ----------------------------------------------
+
+HISTORY = b''.join(b'line %04d of the history\r\n' % k for k in range(800))
+
+
+def scrollback_setup(g):
+    # Windows made from here keep a history, which the terminal's scrollback
+    # is written from (clear-on-attach off, the forward mode).
+    g.server.cmd('set', '-g', 'history-limit', '500')
+    g.server.cmd('set', '-gw', 'scroll-replay', '300')
+
+
+def scrollback_grid_setup(g):
+    # The same with the pane drawn from the grid.
+    scrollback_setup(g)
+    g.server.cmd('set', '-s', 'forward-output', 'off')
+
+
+def scrollback_window(g):
+    fifo = os.path.join(g.tmp, 'sbfifo')
+    if not os.path.exists(fifo):
+        os.mkfifo(fifo)
+    pane = g.server.cmd('new-window', '-P', '-F', '#{pane_id}',
+                        g.feeder_for(fifo)).strip()
+    g.extra[pane] = os.open(fifo, os.O_RDWR)
+    return pane
+
+
+def scrollback_close(g, pane):
+    g.server.cmd('kill-window', '-t', pane)
+    os.close(g.extra.pop(pane))
+
+
+def scrollback_switch(g, i):
+    # A window with history is switched from and to, split, zoomed, has its
+    # history cleared by the program and by tmux, and is killed.
+    pane = scrollback_window(g)
+    g.pane(HISTORY, target=pane)
+    g.server.cmd('last-window')
+    g.settle()
+    g.server.cmd('last-window')
+    g.settle()
+    other = g.split()
+    g.pane(b'beside\r\n' * 30, target=other)
+    g.server.cmd('resize-pane', '-Z', '-t', pane)
+    g.settle()
+    g.server.cmd('resize-pane', '-Z', '-t', pane)
+    g.unsplit(other)
+    g.settle()
+    g.pane(b'\033[3J', target=pane)
+    g.pane(HISTORY[:4096], target=pane)
+    g.server.cmd('clear-history', '-t', pane)
+    g.server.cmd('send-keys', '-R', '-t', pane)
+    g.settle()
+    scrollback_close(g, pane)
+
+
+def scrollback_attach_setup(g):
+    scrollback_setup(g)
+    g.sbpane = scrollback_window(g)
+    g.pane(HISTORY, target=g.sbpane)
+
+
+def scrollback_attach(g, i):
+    # A second terminal attaches to a window with history, is suspended and
+    # resumed, sizes the window while it is the smaller, and goes.
+    t = Terminal(g.server, rows=20 + i % 5, cols=60 + 20 * (i % 2))
+    g.terms.append(t)
+    g.settle()
+    g.server.cmd('suspend-client', '-t', t.tty())
+    wait(lambda: stopped(t.pid), 'client to stop')
+    g.pane(HISTORY[:2048], target=g.sbpane)
+    os.kill(t.pid, signal.SIGCONT)
+    g.settle()
+    g.terms.remove(t)
+    t.close()
+    wait(lambda: len(g.server.cmd('list-clients').splitlines()) == 1,
+         'second client to go')
+    g.settle()
+
 SCENARIOS = [
     ('keys-legacy', keys_setup, keys_legacy),
     ('keys-kitty', keys_setup, keys_kitty),
@@ -1040,6 +1121,9 @@ SCENARIOS = [
     ('gfx-query', None, gfx_query),
     ('gfx-animation', None, gfx_animation),
     ('gfx-evict', gfx_evict_setup, gfx_evict),
+    ('scrollback-switch', scrollback_setup, scrollback_switch),
+    ('scrollback-grid', scrollback_grid_setup, scrollback_switch),
+    ('scrollback-attach', scrollback_attach_setup, scrollback_attach),
     ('lifecycle-attach', None, lifecycle_attach),
     ('lifecycle-suspend', None, lifecycle_suspend),
     ('lifecycle-panes', None, lifecycle_panes),
@@ -1115,11 +1199,41 @@ def bound_queries(g, limit):
     return peak
 
 
+def bound_stalled_terminal(g, limit):
+    """A terminal that takes nothing while a pane writes 48 MB."""
+    g.term.rate = 1
+    chunk = (b'flood ' * 13 + b'\r\n') * 800
+    g.server.heap()
+    for n in range(750):
+        g.pane(chunk)
+    return g.server.heap()[2]
+
+
+def bound_replay_slow(g, limit):
+    """A terminal reading 64 KB/s while 5000 lines of history are written
+    to its scrollback at each window switch and the pane goes on writing."""
+    g.server.cmd('set', '-g', 'history-limit', '5000')
+    g.server.cmd('set', '-gw', 'scroll-replay', '5000')
+    pane = scrollback_window(g)
+    wide = b''.join(b'%04d %s\r\n' % (k, b'x' * 70) for k in range(6000))
+    g.pane(wide, target=pane)
+    g.term.rate = 64 * 1024
+    chunk = (b'flood ' * 13 + b'\r\n') * 800
+    g.server.heap()
+    for n in range(40):
+        g.server.cmd('last-window')
+        for m in range(8):
+            g.pane(chunk, target=pane)
+    return g.server.heap()[2]
+
+
 BOUNDS = [
     ('bound-slow-terminal', bound_slow_terminal, 20 * MB),
     ('bound-pending', bound_pending, 400 * MB),
     ('bound-placements', bound_placements, 64 * MB),
     ('bound-queries', bound_queries, 32 * MB),
+    ('bound-stalled-terminal', bound_stalled_terminal, 16 * MB),
+    ('bound-replay-slow', bound_replay_slow, 32 * MB),
 ]
 
 
