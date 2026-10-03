@@ -57,6 +57,7 @@ struct format_tree;
 struct hyperlinks_uri;
 struct hyperlinks;
 struct input_ctx;
+struct kgfx_client;
 struct input_request;
 struct input_requests;
 struct job;
@@ -420,6 +421,7 @@ enum {
 	KEYC_REPORT_COLOURS,
 	KEYC_REPORT_PALETTE,
 	KEYC_REPORT_WINSZ,
+	KEYC_REPORT_KGFX,
 
 	/* Mouse state. */
 	KEYC_MOUSE, /* unclassified mouse event */
@@ -1254,6 +1256,7 @@ struct window_mode_entry {
 enum input_request_type {
 	INPUT_REQUEST_PALETTE,
 	INPUT_REQUEST_CLIPBOARD,
+	INPUT_REQUEST_KGFX,
 	INPUT_REQUEST_QUEUE
 };
 
@@ -1356,6 +1359,7 @@ struct window_pane {
 #define PANE_FLOATOVERZOOM 0x200000
 #define PANE_CLOSEONCANCEL 0x400000
 #define PANE_UTMP 0x800000
+#define PANE_KGFX 0x1000000
 
 	bitstr_t	*sync_dirty;
 	u_int		 sync_dirty_size;
@@ -1764,6 +1768,7 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_KGFX 0x2000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1846,8 +1851,9 @@ struct tty {
 #define TTY_WAITBG 0x4000
 #define TTY_BRACKETPASTE 0x8000
 #define TTY_HAVESYNC 0x10000
+#define TTY_HAVEKGFX 0x2000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKGFX)
 	int		 flags;
 
 	struct tty_term	*term;
@@ -2254,6 +2260,8 @@ struct client {
 	int			 term_features;
 	int		 	 term_nofeatures;
 	char			*term_type;
+
+	struct kgfx_client	*kgfx;		/* kitty graphics given */
 	char		       **term_caps;
 	u_int			 term_ncaps;
 
@@ -3012,6 +3020,19 @@ void	tty_draw_images(struct client *, struct window_pane *);
 void	tty_cmd_syncstart(struct tty *, const struct tty_ctx *);
 void	tty_default_colours(struct grid_cell *, struct window_pane *, u_int *);
 
+/* kgfx.c */
+void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,
+	     struct bufferevent *, const u_char *, size_t);
+void	 kgfx_pane_free(struct window_pane *);
+void	 kgfx_client_free(struct client *);
+void	 kgfx_client_sync(struct client *);
+void	 kgfx_client_written(struct client *);
+void	 kgfx_client_dropped(struct client *);
+size_t	 kgfx_client_queued(struct client *);
+void	 kgfx_known(struct client *);
+void	 kgfx_placeholder(struct window_pane *, struct grid_cell *, u_int);
+int	 kgfx_diacritic(const struct utf8_data *);
+
 /* tty-term.c */
 extern struct tty_terms tty_terms;
 u_int		 tty_term_ncodes(void);
@@ -3448,6 +3469,8 @@ void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 	     const char *, char);
 void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
+void	 input_kgfx_request(struct input_ctx *, struct client *, const char *);
+void	 input_kgfx_known(struct client *, int);
 void	 input_cancel_requests(struct client *);
 
 /* input-key.c */
@@ -3577,6 +3600,7 @@ char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 
 /* screen-write.c */
 void	 screen_write_make_list(struct screen *);
+void	 screen_write_flush(struct screen_write_ctx *);
 void	 screen_write_free_list(struct screen *);
 void	 screen_write_start_pane(struct screen_write_ctx *,
 	     struct window_pane *, struct screen *);
