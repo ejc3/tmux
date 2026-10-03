@@ -6,11 +6,25 @@ TERM=screen
 [ -z "$TEST_TMUX" ] && TEST_TMUX=$(readlink -f ../tmux)
 TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 $TMUX kill-server 2>/dev/null
-sleep 1
+# Wait for any old server to be gone: a dying server can still accept a
+# connection and drop it, so only a refused connection (or no socket) will do.
+i=0
+until $TMUX ls 2>&1 |
+    grep -q -e 'no server running' -e 'No such file or directory'; do
+	i=$((i + 1))
+	[ $i -lt 400 ] || { echo "old server did not exit"; exit 1; }
+	sleep 0.05
+done
 $TMUX -f/dev/null new -x20 -y2 -d \; set -g escape-time 0 || exit 1
-sleep 1
-W=$($TMUX new-window -P -- sh -c 'stty raw -echo && cat -tv')
-sleep 1
+# The pane sets its path (OSC 7) once the terminal is raw.
+W=$($TMUX new-window -P -- sh -c \
+    'stty raw -echo && printf "\033]7;ready\007" && exec cat -tv')
+i=0
+until [ "$($TMUX display -p -t$W '#{pane_path}')" = ready ]; do
+	i=$((i + 1))
+	[ $i -lt 400 ] || { echo "pane did not become raw"; exit 1; }
+	sleep 0.05
+done
 
 exit_status=0
 
@@ -24,14 +38,14 @@ assert_key () {
 
 	# cat echoes the keys back asynchronously, so wait for the EOL marker
 	# to reach the pane instead of capturing straight away.
-	i=0
-	while [ $i -lt 50 ]; do
+	_i=0
+	while [ $_i -lt 100 ]; do
 		screen=$($TMUX capturep -pt$W)
 		case "$screen" in
 		*EOL*) break ;;
 		esac
-		i=$((i + 1))
-		sleep 0.1
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 
 	actual_code=$(printf '%s\n' "$screen" | \

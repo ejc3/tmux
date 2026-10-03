@@ -36,24 +36,42 @@ trap cleanup 0 1 15
 
 wait_for_file()
 {
-	i=0
-	while [ "$i" -lt 50 ] && [ ! -e "$1" ]; do
-		sleep 0.1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 100 ] && [ ! -e "$1" ]; do
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	[ -e "$1" ] || fail "$2"
 }
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$INNER list-clients -F '#{client_termfeatures}' 2>/dev/null |
 		    grep -q 'sync' && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "sync-capable client did not attach"
+}
+
+# Wait for the outer cursor to be at $1 and, if $2 is given, for $3 lines of
+# the outer pane to match it.
+wait_for_outer()
+{
+	_i=0
+	while :; do
+		_c=$($OUTER display -p -t outer:0.0 '#{cursor_x},#{cursor_y}')
+		if [ "$_c" = "$1" ]; then
+			[ -z "$2" ] && return 0
+			_n=$($OUTER capture-pane -p -t outer:0.0 | grep -c "$2")
+			[ "$_n" -eq "$3" ] && return 0
+		fi
+		_i=$((_i + 1))
+		[ "$_i" -lt 400 ] || fail "$4"
+		sleep 0.05
+	done
 }
 
 cat >"$EMITTER" <<'PERL'
@@ -104,10 +122,12 @@ $OUTER set-option -g window-size manual || exit 1
 wait_for_client
 
 wait_for_file "$DIR/painted" "application did not paint"
-sleep 1
+wait_for_outer 0,0 '^ROW[0-9][0-9]_x*$' 24 "painted screen did not reach outer"
 : >"$CONTROL"
 wait_for_file "$DIR/done" "application did not finish"
-sleep 1
+# The update ends with the cursor on the last row: once the outer cursor is
+# there, everything drawn before it has been read.
+wait_for_outer 0,23 '' 0 "synchronized update did not reach outer"
 
 $OUTER capture-pane -p -t outer:0.0 >"$DIR/screen" || exit 1
 sed -n 2p "$DIR/screen" | grep -q '^NEW02_#' || fail "row 2 not redrawn"
