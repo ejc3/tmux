@@ -479,8 +479,9 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_usstyle,
 	&tty_feature_utf8,
 	/*
-	 * Added in this fork, after the others: tmux -T sends features as a
-	 * mask of their places here, so the others keep their bits.
+	 * Newer features go after the others, not in name order: tmux -T
+	 * sends features as a mask of their places here, so the others keep
+	 * their bits.
 	 */
 	&tty_feature_graphemes,
 	&tty_feature_kittygraphics,
