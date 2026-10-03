@@ -5230,6 +5230,15 @@ Supports SIXEL graphics.
 Supports the strikethrough SGR escape sequence.
 .It sync
 Supports synchronized updates.
+.It textsize
+Supports the width part of the kitty text sizing protocol (OSC 66).
+A program can give text a width in cells (up to 7; 7 is kept as 6 cells and
+a blank one), which
+.Nm
+keeps as one character and gives this terminal as OSC 66; other terminals get
+the text in that many cells, padded.
+The scale part is not supported.
+Assumed for kitty.
 .It title
 Supports
 .Xr xterm 1
