@@ -1071,6 +1071,22 @@ struct progress_bar {
 /* Virtual screen. */
 struct screen_sel;
 struct screen_titles;
+/*
+ * Kitty keyboard protocol progressive enhancement flags. A program pushes and
+ * pops them; the entry on top is in effect.
+ */
+#define KKEYS_DISAMBIGUATE 0x1
+#define KKEYS_EVENTS 0x2
+#define KKEYS_ALTERNATES 0x4
+#define KKEYS_ALL 0x8
+#define KKEYS_TEXT 0x10
+#define KKEYS_MASK 0x7f
+#define KKEYS_DEPTH 8
+struct screen_kkeys {
+	u_char				 flags[KKEYS_DEPTH];
+	u_int				 n;
+};
+
 struct screen {
 	char				*title;
 	char				*path;
@@ -1111,6 +1127,8 @@ struct screen {
 
 	struct hyperlinks		*hyperlinks;
 	struct progress_bar		 progress_bar;
+
+	struct screen_kkeys		 kkeys[2]; /* main, alternate screen */
 };
 
 /* Screen write context. */
@@ -3669,6 +3687,11 @@ int	 screen_set_path(struct screen *, const char *, int);
 void	 screen_push_title(struct screen *);
 void	 screen_pop_title(struct screen *);
 void	 screen_set_progress_bar(struct screen *, enum progress_bar_state, int);
+u_int	 screen_kkeys_flags(struct screen *);
+void	 screen_kkeys_push(struct screen *, u_int);
+void	 screen_kkeys_pop(struct screen *, u_int);
+void	 screen_kkeys_set(struct screen *, u_int, u_int);
+void	 screen_kkeys_reset(struct screen *);
 void	 screen_resize(struct screen *, u_int, u_int, int);
 void	 screen_resize_cursor(struct screen *, u_int, u_int, int, int, int);
 void	 screen_set_selection(struct screen *, u_int, u_int, u_int, u_int,

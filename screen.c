@@ -138,6 +138,85 @@ screen_reinit(struct screen *s, int check)
 
 	screen_set_progress_bar(s, PROGRESS_BAR_HIDDEN, 0);
 	screen_reset_hyperlinks(s);
+	screen_kkeys_reset(s);
+}
+
+/* The kitty keyboard flags stack of the main or alternate screen, in use. */
+static struct screen_kkeys *
+screen_kkeys(struct screen *s)
+{
+	return (&s->kkeys[SCREEN_IS_ALTERNATE(s) ? 1 : 0]);
+}
+
+/* The kitty keyboard flags in effect. */
+u_int
+screen_kkeys_flags(struct screen *s)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	if (kk->n == 0)
+		return (0);
+	return (kk->flags[kk->n - 1]);
+}
+
+/* Push kitty keyboard flags. A full stack loses its oldest entry. */
+void
+screen_kkeys_push(struct screen *s, u_int flags)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	if (kk->n == KKEYS_DEPTH) {
+		memmove(kk->flags, kk->flags + 1, KKEYS_DEPTH - 1);
+		kk->n--;
+	}
+	kk->flags[kk->n++] = flags & KKEYS_MASK;
+}
+
+/* Pop kitty keyboard flags. */
+void
+screen_kkeys_pop(struct screen *s, u_int n)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	kk->n = (n >= kk->n) ? 0 : kk->n - n;
+}
+
+/*
+ * Change the kitty keyboard flags in effect: mode 1 sets them, 2 adds to
+ * them, 3 removes from them. An empty stack gets an entry.
+ */
+void
+screen_kkeys_set(struct screen *s, u_int flags, u_int mode)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+	u_char			*f;
+
+	if (mode < 1 || mode > 3)
+		return;
+	if (kk->n == 0) {
+		kk->flags[0] = 0;
+		kk->n = 1;
+	}
+	f = &kk->flags[kk->n - 1];
+	switch (mode) {
+	case 1:
+		*f = flags;
+		break;
+	case 2:
+		*f |= flags;
+		break;
+	case 3:
+		*f &= ~flags;
+		break;
+	}
+	*f &= KKEYS_MASK;
+}
+
+/* Empty both kitty keyboard flags stacks. */
+void
+screen_kkeys_reset(struct screen *s)
+{
+	memset(s->kkeys, 0, sizeof s->kkeys);
 }
 
 /* Reset hyperlinks of a screen. */
