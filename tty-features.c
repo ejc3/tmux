@@ -271,6 +271,16 @@ static const struct tty_feature tty_feature_graphemes = {
 	TERM_GRAPHEMES
 };
 
+/*
+ * Terminal has the width part of the text sizing protocol (OSC 66 w=): tmux
+ * gives it characters programs gave a width.
+ */
+static const struct tty_feature tty_feature_textsize = {
+	"textsize",
+	NULL,
+	TERM_TEXTSIZE
+};
+
 /* Terminal supports DECSLRM margins. */
 static const char *const tty_feature_margins_capabilities[] = {
 	"Enmg=\\E[?69h",
@@ -429,7 +439,8 @@ static const struct tty_feature *const tty_features[] = {
 	 * sends features as a mask of their places here, so the others keep
 	 * their bits.
 	 */
-	&tty_feature_graphemes
+	&tty_feature_graphemes,
+	&tty_feature_textsize
 };
 
 /* Parse features for client. */
