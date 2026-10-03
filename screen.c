@@ -50,7 +50,8 @@ struct screen_title_entry {
 TAILQ_HEAD(screen_titles, screen_title_entry);
 
 static void	screen_resize_y(struct screen *, u_int, int, u_int *);
-static void	screen_reflow(struct screen *, u_int, u_int *, u_int *, int);
+static void	screen_reflow(struct screen *, u_int, u_int, u_int *,
+		    u_int *, int);
 
 /* Free titles stack. */
 static void
@@ -355,6 +356,7 @@ screen_resize_cursor(struct screen *s, u_int sx, u_int sy, int reflow,
     int eat_empty, int cursor)
 {
 	u_int	cx = s->cx, cy = s->grid->hsize + s->cy;
+	u_int	ox = screen_size_x(s);
 
 	if (s->write_list != NULL)
 		screen_write_free_list(s);
@@ -382,7 +384,7 @@ screen_resize_cursor(struct screen *s, u_int sx, u_int sy, int reflow,
 #endif
 
 	if (reflow)
-		screen_reflow(s, sx, &cx, &cy, cursor);
+		screen_reflow(s, ox, sx, &cx, &cy, cursor);
 
 	if (cy >= s->grid->hsize) {
 		s->cx = cx;
@@ -654,7 +656,7 @@ screen_select_cell(struct screen *s, struct grid_cell *dst,
 	dst->flags = src->flags;
 
 	if (dst->attr & GRID_ATTR_NOATTR)
-		dst->attr |= (src->attr & GRID_ATTR_CHARSET);
+		dst->attr |= (src->attr & GRID_ATTR_CONTENT);
 	else
 		dst->attr |= src->attr;
 	return (1);
@@ -662,12 +664,13 @@ screen_select_cell(struct screen *s, struct grid_cell *dst,
 
 /* Reflow wrapped lines. */
 static void
-screen_reflow(struct screen *s, u_int new_x, u_int *cx, u_int *cy, int cursor)
+screen_reflow(struct screen *s, u_int old_x, u_int new_x, u_int *cx, u_int *cy,
+    int cursor)
 {
 	u_int	wx, wy;
 
 	if (cursor) {
-		grid_wrap_position(s->grid, *cx, *cy, &wx, &wy);
+		grid_wrap_position(s->grid, old_x, *cx, *cy, &wx, &wy);
 		log_debug("%s: cursor %u,%u is %u,%u", __func__, *cx, *cy, wx,
 		    wy);
 	}
@@ -750,14 +753,22 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 			memcpy(gc, &s->saved_cell, sizeof *gc);
 	}
 
+	/*
+	 * The cursor was saved by the last alternate screen to save it, which
+	 * may be before a resize (1049h, 47l, resize, 47h): keep it inside the
+	 * screen it is restored to, which the resize back reflows with it. One
+	 * past the last column is where a full line leaves it (the next
+	 * character wraps), so that stays; further out is a column from a wider
+	 * screen, which goes to the last one.
+	 */
+	if (s->cx > screen_size_x(s))
+		s->cx = screen_size_x(s) - 1;
+	if (s->cy > screen_size_y(s) - 1)
+		s->cy = screen_size_y(s) - 1;
+
 	/* If not in the alternate screen, do nothing more. */
-	if (!SCREEN_IS_ALTERNATE(s)) {
-		if (s->cx > screen_size_x(s) - 1)
-			s->cx = screen_size_x(s) - 1;
-		if (s->cy > screen_size_y(s) - 1)
-			s->cy = screen_size_y(s) - 1;
+	if (!SCREEN_IS_ALTERNATE(s))
 		return 0;
-	}
 
 	/* Restore the saved grid. */
 	grid_duplicate_lines(s->grid, screen_hsize(s), s->saved_grid, 0,

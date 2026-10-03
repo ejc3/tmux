@@ -12,7 +12,15 @@ $TMUX set -g remain-on-exit on
 
 do_test() {
 	$TMUX splitw "printf '$1'"
-	sleep 0.25
+	_i=0
+	until [ "$($TMUX display -p '#{pane_dead}')" = 1 ]; do
+		_i=$((_i + 1))
+		if [ $_i -ge 400 ]; then
+			echo "pane printing $1 did not exit"
+			return 1
+		fi
+		sleep 0.05
+	done
 	c="$($TMUX display -p '#{pane_bg}')"
 	$TMUX kill-pane
 	[ "$c" != "$2" ] && return 1

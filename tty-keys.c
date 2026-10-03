@@ -1544,28 +1544,34 @@ tty_keys_device_attributes(struct tty *tty, const char *buf, size_t len,
 }
 
 /*
- * Handle a synchronized update mode response. Returns 0 for success, -1 for
- * failure, 1 for partial.
+ * Handle a DECRPM response for a mode tmux asks about: 2026 (synchronized
+ * output) or 2027 (grapheme clusters). Returns 0 for success, -1 for failure,
+ * 1 for partial.
  */
 static int
 tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 {
-	struct client		*c = tty->client;
-	static const char	 prefix[] = "\033[?2026;";
-	size_t			 i;
-	int			 status;
+	struct client	*c = tty->client;
+	size_t		 i;
+	u_int		 mode = 0;
+	int		 status;
 
 	*size = 0;
-	if (tty->flags & TTY_HAVESYNC)
-		return (-1);
 
-	/* The response is always \033[?2026;Ps$y. */
-	for (i = 0; i < (sizeof prefix) - 1; i++) {
+	/* The response is \033[?Pd;Ps$y. */
+	for (i = 0; i < 3; i++) {
 		if (i == len)
 			return (1);
-		if (buf[i] != prefix[i])
+		if (buf[i] != "\033[?"[i])
 			return (-1);
 	}
+	for (; i < len && i < 8 && isdigit((u_char)buf[i]); i++)
+		mode = mode * 10 + (buf[i] - '0');
+	if (i == len)
+		return (1);
+	if (buf[i++] != ';' ||
+	    (mode != 2026 && mode != 2027))
+		return (-1);
 	if (i == len)
 		return (1);
 	if (buf[i] < '0' || buf[i] > '4')
@@ -1580,14 +1586,23 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 	if (buf[i++] != 'y')
 		return (-1);
 	*size = i;
-
-	if (status == 1 || status == 2 || status == 3) {
-		tty_parse_client_features(c, "sync", ",");
-		tty_update_features(tty);
-	}
 	log_debug("%s: received DECRPM %.*s", c->name, (int)*size, buf);
-	tty->flags |= TTY_HAVESYNC;
 
+	if (mode == 2026 && (~tty->flags & TTY_HAVESYNC)) {
+		tty->flags |= TTY_HAVESYNC;
+		if (status == 1 || status == 2 || status == 3) {
+			tty_parse_client_features(c, "sync", ",");
+			tty_update_features(tty);
+		}
+	}
+	/* Grapheme clusters: reset means the terminal has them, but off. */
+	if (mode == 2027 && (~tty->flags & TTY_HAVEGRAPHEMES)) {
+		tty->flags |= TTY_HAVEGRAPHEMES;
+		if (status == 2) {
+			tty_parse_client_features(c, "graphemes", ",");
+			tty_update_features(tty);
+		}
+	}
 	return (0);
 }
 

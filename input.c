@@ -108,6 +108,12 @@ struct input_ctx {
 	u_int				old_cy;
 	int				old_mode;
 
+	/* The other screen's saved state (DECSC is per screen). */
+	struct input_cell		alt_old_cell;
+	u_int				alt_old_cx;
+	u_int				alt_old_cy;
+	int				alt_old_mode;
+
 	u_char				interm_buf[4];
 	size_t				interm_len;
 
@@ -164,6 +170,7 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
+static void	input_osc_66(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
 static void	input_osc_11(struct input_ctx *, const char *);
 static void	input_osc_12(struct input_ctx *, const char *);
@@ -182,6 +189,7 @@ static void	input_enter_osc(struct input_ctx *);
 static void	input_exit_osc(struct input_ctx *);
 static void	input_enter_apc(struct input_ctx *);
 static void	input_exit_apc(struct input_ctx *);
+static int	input_is_kitty_graphics(const u_char *);
 static void	input_enter_rename(struct input_ctx *);
 static void	input_exit_rename(struct input_ctx *);
 
@@ -199,6 +207,7 @@ static void	input_csi_dispatch_sm(struct input_ctx *);
 static void	input_csi_dispatch_sm_private(struct input_ctx *);
 static void	input_csi_dispatch_sm_graphics(struct input_ctx *);
 static void	input_csi_dispatch_winops(struct input_ctx *);
+static void	input_soft_reset(struct input_ctx *);
 static void	input_csi_dispatch_sgr_256(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr_rgb(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr(struct input_ctx *);
@@ -269,6 +278,7 @@ enum input_csi_type {
 	INPUT_CSI_DCH,
 	INPUT_CSI_DECSCUSR,
 	INPUT_CSI_DECSTBM,
+	INPUT_CSI_DECSTR,
 	INPUT_CSI_DL,
 	INPUT_CSI_DSR,
 	INPUT_CSI_DSR_PRIVATE,
@@ -276,6 +286,7 @@ enum input_csi_type {
 	INPUT_CSI_ED,
 	INPUT_CSI_EL,
 	INPUT_CSI_HPA,
+	INPUT_CSI_HPR,
 	INPUT_CSI_ICH,
 	INPUT_CSI_IL,
 	INPUT_CSI_MODOFF,
@@ -321,6 +332,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'X', "",  INPUT_CSI_ECH },
 	{ 'Z', "",  INPUT_CSI_CBT },
 	{ '`', "",  INPUT_CSI_HPA },
+	{ 'a', "",  INPUT_CSI_HPR },
 	{ 'b', "",  INPUT_CSI_REP },
 	{ 'c', "",  INPUT_CSI_DA },
 	{ 'c', ">", INPUT_CSI_DA_TWO },
@@ -336,6 +348,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'n', "",  INPUT_CSI_DSR },
 	{ 'n', ">", INPUT_CSI_MODOFF },
 	{ 'n', "?", INPUT_CSI_DSR_PRIVATE },
+	{ 'p', "!",  INPUT_CSI_DECSTR },
 	{ 'p', "$",  INPUT_CSI_QUERY },
 	{ 'p', "?$", INPUT_CSI_QUERY_PRIVATE },
 	{ 'q', " ", INPUT_CSI_DECSCUSR },
@@ -841,6 +854,39 @@ input_reset_cell(struct input_ctx *ictx)
 	memcpy(&ictx->old_cell, &ictx->cell, sizeof ictx->old_cell);
 	ictx->old_cx = 0;
 	ictx->old_cy = 0;
+	ictx->old_mode = 0;
+
+	memcpy(&ictx->alt_old_cell, &ictx->cell, sizeof ictx->alt_old_cell);
+	ictx->alt_old_cx = 0;
+	ictx->alt_old_cy = 0;
+	ictx->alt_old_mode = 0;
+}
+
+/*
+ * Switch the saved state to the other screen's: as in xterm, each screen has
+ * its own, and 1049 saves and restores the main screen's.
+ */
+static void
+input_swap_state(struct input_ctx *ictx)
+{
+	struct input_cell	cell;
+	u_int			cx, cy;
+	int			mode;
+
+	memcpy(&cell, &ictx->old_cell, sizeof cell);
+	cx = ictx->old_cx;
+	cy = ictx->old_cy;
+	mode = ictx->old_mode;
+
+	memcpy(&ictx->old_cell, &ictx->alt_old_cell, sizeof ictx->old_cell);
+	ictx->old_cx = ictx->alt_old_cx;
+	ictx->old_cy = ictx->alt_old_cy;
+	ictx->old_mode = ictx->alt_old_mode;
+
+	memcpy(&ictx->alt_old_cell, &cell, sizeof ictx->alt_old_cell);
+	ictx->alt_old_cx = cx;
+	ictx->alt_old_cy = cy;
+	ictx->alt_old_mode = mode;
 }
 
 /* Save screen state. */
@@ -868,6 +914,8 @@ input_restore_state(struct input_ctx *ictx)
 	else
 		screen_write_mode_clear(sctx, MODE_ORIGIN);
 	screen_write_cursormove(sctx, ictx->old_cx, ictx->old_cy, 0);
+	if (ictx->old_cx == screen_size_x(sctx->s))
+		screen_write_wrapnext(sctx, 1);
 }
 
 /* Initialise input parser. */
@@ -1324,6 +1372,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case '\010':	/* BS */
+		screen_write_wrapnext(sctx, 0);
 		screen_write_backspace(sctx);
 		break;
 	case '\011':	/* HT */
@@ -1360,6 +1409,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 	case '\012':	/* LF */
 	case '\013':	/* VT */
 	case '\014':	/* FF */
+		screen_write_wrapnext(sctx, 0);
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
 		if (s->mode & MODE_CRLF)
 			screen_write_carriagereturn(sctx);
@@ -1409,6 +1459,7 @@ input_esc_dispatch(struct input_ctx *ictx)
 		screen_write_fullredraw(sctx);
 		break;
 	case INPUT_ESC_IND:
+		screen_write_wrapnext(sctx, 0);
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
 		break;
 	case INPUT_ESC_NEL:
@@ -1502,6 +1553,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		s->cx = cx;
 		break;
 	case INPUT_CSI_CUB:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursorleft(sctx, n);
@@ -1512,6 +1564,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_cursordown(sctx, n);
 		break;
 	case INPUT_CSI_CUF:
+	case INPUT_CSI_HPR:
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursorright(sctx, n);
@@ -1606,14 +1659,19 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ECH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_clearcharacter(sctx, n, bg);
 		break;
 	case INPUT_CSI_DCH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_deletecharacter(sctx, n, bg);
+		break;
+	case INPUT_CSI_DECSTR:
+		input_soft_reset(ictx);
 		break;
 	case INPUT_CSI_DECSTBM:
 		n = input_get(ictx, 0, 1, 1);
@@ -1622,9 +1680,14 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_scrollregion(sctx, n - 1, m - 1);
 		break;
 	case INPUT_CSI_DL:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
-		if (n != -1)
+		if (n != -1) {
 			screen_write_deleteline(sctx, n, bg);
+			/* Inside the region, the cursor goes to the margin. */
+			if (s->cy >= s->rupper && s->cy <= s->rlower)
+				screen_write_carriagereturn(sctx);
+		}
 		break;
 	case INPUT_CSI_DSR_PRIVATE:
 		switch (input_get(ictx, 0, 0, 0)) {
@@ -1708,6 +1771,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 		case 2026:	/* synchronized output */
 			n = (s->mode & MODE_SYNC) ? 1 : 2;
 			break;
+		case 2027:	/* grapheme clusters: always, see utf8-combined.c */
+			n = 3;
+			break;
 		case 2031:	/* theme update notifications */
 			n = (s->mode & MODE_THEME_UPDATES) ? 1 : 2;
 			break;
@@ -1735,6 +1801,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ED:
+		screen_write_wrapnext(sctx, 0);
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
 			break;
@@ -1762,6 +1829,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_EL:
+		screen_write_wrapnext(sctx, 0);
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
 			break;
@@ -1785,21 +1853,32 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_cursormove(sctx, n - 1, -1, 1);
 		break;
 	case INPUT_CSI_ICH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_insertcharacter(sctx, n, bg);
 		break;
 	case INPUT_CSI_IL:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
-		if (n != -1)
+		if (n != -1) {
 			screen_write_insertline(sctx, n, bg);
+			/* Inside the region, the cursor goes to the margin. */
+			if (s->cy >= s->rupper && s->cy <= s->rlower)
+				screen_write_carriagereturn(sctx);
+		}
 		break;
 	case INPUT_CSI_REP:
 		n = input_get(ictx, 0, 1, 1);
 		if (n == -1)
 			break;
 
-		m = screen_size_x(s) - s->cx;
+		/*
+		 * Repeat as if written again, wrapping at the end of the line
+		 * as xterm and others do; more than a screenful changes
+		 * nothing more that can be seen, so stop there.
+		 */
+		m = screen_size_x(s) * screen_size_y(s);
 		if (n > m)
 			n = m;
 
@@ -1866,6 +1945,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_VPA:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursormove(sctx, -1, n - 1, 1);
@@ -1925,6 +2005,7 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct grid_cell	*gc = &ictx->cell.cell;
 	u_int			 i;
+	int			 alt;
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		switch (input_get(ictx, i, 0, -1)) {
@@ -1942,6 +2023,7 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			screen_write_cursormove(sctx, 0, 0, 1);
 			break;
 		case 7:		/* DECAWM */
+			screen_write_wrapnext(sctx, 0);
 			screen_write_mode_clear(sctx, MODE_WRAP);
 			break;
 		case 12:
@@ -1968,10 +2050,25 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			break;
 		case 47:
 		case 1047:
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateoff(sctx, gc, 0);
+			if (alt && !SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			break;
+		case 1048:
+			input_restore_state(ictx);
 			break;
 		case 1049:
-			screen_write_alternateoff(sctx, gc, 1);
+			/* Restore the cursor even if not in the alternate screen. */
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
+			if (alt)
+				screen_write_alternateoff(sctx, gc, 1);
+			if (alt && !SCREEN_IS_ALTERNATE(sctx->s)) {
+				input_swap_state(ictx);
+				memcpy(&ictx->cell, &ictx->old_cell,
+				    sizeof ictx->cell);
+			} else
+				input_restore_state(ictx);
 			break;
 		case 2004:
 			screen_write_mode_clear(sctx, MODE_BRACKETPASTE);
@@ -2022,6 +2119,7 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct grid_cell	*gc = &ictx->cell.cell;
 	u_int			 i;
+	int			 alt;
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		switch (input_get(ictx, i, 0, -1)) {
@@ -2071,10 +2169,24 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 			break;
 		case 47:
 		case 1047:
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateon(sctx, gc, 0);
+			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			break;
+		case 1048:
+			input_save_state(ictx);
 			break;
 		case 1049:
+			input_save_state(ictx);
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateon(sctx, gc, 1);
+			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			else if (alt) {
+				/* Already there: clear it, as xterm does. */
+				screen_write_clearscreen(sctx, gc->bg);
+			}
 			break;
 		case 2004:
 			screen_write_mode_set(sctx, MODE_BRACKETPASTE);
@@ -2115,6 +2227,27 @@ input_csi_dispatch_sm_graphics(__unused struct input_ctx *ictx)
 	} else
 		input_reply(ictx, 1, "\033[?%d;3;%dS", n, o);
 #endif
+}
+
+/*
+ * Soft reset (DECSTR), as xterm: the cursor shown, insert and origin modes
+ * off, wrapping on, cursor keys and keypad normal, no scroll region,
+ * attributes and character sets at their defaults and the saved cursor at
+ * the top left. The screen and the cursor position stay.
+ */
+static void
+input_soft_reset(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	u_int			 cx = s->cx, cy = s->cy;
+
+	screen_write_mode_set(sctx, MODE_CURSOR|MODE_WRAP);
+	screen_write_mode_clear(sctx,
+	    MODE_INSERT|MODE_ORIGIN|MODE_KCURSOR|MODE_KKEYPAD);
+	screen_write_scrollregion(sctx, 0, screen_size_y(s) - 1);
+	screen_write_cursormove(sctx, cx, cy, 0);
+	input_reset_cell(ictx);
 }
 
 /* Handle CSI window operations. */
@@ -2743,6 +2876,9 @@ input_exit_osc(struct input_ctx *ictx)
 	case 9:
 		input_osc_9(ictx, p);
 		break;
+	case 66:
+		input_osc_66(ictx, p);
+		break;
 	case 10:
 		input_osc_10(ictx, p);
 		break;
@@ -2798,12 +2934,38 @@ input_exit_apc(struct input_ctx *ictx)
 		return;
 	log_debug("%s: \"%s\"", __func__, ictx->input_buf);
 
+	/* A kitty graphics command, not a title. */
+	if (input_is_kitty_graphics(ictx->input_buf))
+		return;
+
 	if (wp != NULL &&
 	    options_get_number(wp->options, "allow-set-title") &&
 	    screen_set_title(sctx->s, ictx->input_buf, 1)) {
 		input_fire_pane_title_changed(wp, ictx->input_buf);
 		server_redraw_window_borders(wp->window);
 		server_status_window(wp->window);
+	}
+}
+
+/*
+ * Whether an APC string is a kitty graphics command: G, then single-letter
+ * keys with values (a=T,f=100,...) up to a ; before the payload or the end.
+ */
+static int
+input_is_kitty_graphics(const u_char *s)
+{
+	if (*s++ != 'G')
+		return (0);
+	for (;;) {
+		if (*s == '\0' || *s == ';')
+			return (1);
+		if (!isalpha(s[0]) || s[1] != '=')
+			return (0);
+		s += 2;
+		while (*s != '\0' && *s != ',' && *s != ';')
+			s++;
+		if (*s == ',')
+			s++;
 	}
 }
 
@@ -3021,6 +3183,96 @@ input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
 		server_redraw_window_borders(ictx->wp->window);
 		server_status_window(ictx->wp->window);
 	}
+}
+
+/*
+ * Handle the OSC 66 sequence (kitty's text sizing protocol), metadata;text:
+ * the width part only. With w=0 (the default), the text is written as any
+ * other; with w=1 to 7, all of it is one character that many cells wide
+ * (tmux keeps it in at most 6 and a blank cell). The scale (s) and the
+ * fractional scale (n, d, v, h) are not supported, so a program asking (with
+ * CPR) finds the width part and not the scale part.
+ */
+static void
+input_osc_66(struct input_ctx *ictx, const char *p)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct grid_cell	 gc;
+	const char		*text;
+	u_int			 w, sx = screen_size_x(sctx->s);
+
+	if ((text = input_sized_parse(p, &w)) == NULL)
+		return;
+	if (w > sx)
+		return;		/* too wide for the screen: discarded */
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (w == 0) {
+		/* The text as if written: a character at a time. */
+		while (*text != '\0') {
+			if (utf8_next(&text, &gc.data))
+				screen_write_collect_add(sctx, &gc);
+		}
+		return;
+	}
+
+	/* All of the text, as much as a cell holds, as one character. */
+	if (!input_sized_data(text, w, &gc.data))
+		return;
+	gc.attr |= GRID_ATTR_SIZED;
+	screen_write_collect_add(sctx, &gc);
+	if (w > UTF8_MAXWIDTH) {
+		memcpy(&gc, &ictx->cell.cell, sizeof gc);
+		utf8_set(&gc.data, ' ');
+		screen_write_collect_add(sctx, &gc);
+	}
+}
+
+/*
+ * The width (0 to 7, 0 if not given) from OSC 66 metadata;text and the text
+ * after it, or NULL if there is no text.
+ */
+const char *
+input_sized_parse(const char *p, u_int *w)
+{
+	const char	*text, *key;
+
+	*w = 0;
+	if ((text = strchr(p, ';')) == NULL)
+		return (NULL);
+	for (key = p; key < text; key += strcspn(key, ":;") + 1) {
+		if (key[0] == 'w' && key[1] == '=' && key[2] >= '0' &&
+		    key[2] <= '7' && (key[3] == ':' || key[3] == ';'))
+			*w = key[2] - '0';
+		if (key[strcspn(key, ":;")] == ';')
+			break;
+	}
+	return (text + 1);
+}
+
+/*
+ * All of the text given width w (1 to 7) as one character in ud: its valid
+ * characters, as many as a cell keeps. Returns 0 if there are none.
+ */
+int
+input_sized_data(const char *text, u_int w, struct utf8_data *ud)
+{
+	struct utf8_data	one;
+
+	memset(ud, 0, sizeof *ud);
+	while (*text != '\0') {
+		if (!utf8_next(&text, &one))
+			continue;
+		if (ud->size + one.size > UTF8_MAXSIZE)
+			break;
+		memcpy(ud->data + ud->size, one.data, one.size);
+		ud->size += one.size;
+	}
+	if (ud->size == 0)
+		return (0);
+	ud->have = ud->size;
+	ud->width = (w > UTF8_MAXWIDTH) ? UTF8_MAXWIDTH : w;
+	return (1);
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */

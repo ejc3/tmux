@@ -720,6 +720,15 @@ typedef u_int utf8_char;
  * characters are stored.
  */
 #define UTF8_SIZE 32
+
+/* The most bytes a grid cell keeps (what the packed size field holds). */
+#define UTF8_MAXSIZE (UTF8_SIZE - 1)
+
+/* The widest a character can be (one given a width with OSC 66). */
+#define UTF8_MAXWIDTH 6
+
+/* The most bytes a terminal is sent for one such character (OSC 66). */
+#define TTY_SIZED_SIZE (UTF8_SIZE + 16)
 struct utf8_data {
 	u_char	data[UTF8_SIZE];
 
@@ -790,6 +799,10 @@ struct colour_palette {
 #define GRID_ATTR_UNDERSCORE_5 0x1000
 #define GRID_ATTR_OVERLINE 0x2000
 #define GRID_ATTR_NOATTR 0x4000
+#define GRID_ATTR_SIZED 0x8000	/* width given by the program (OSC 66) */
+
+/* Attributes about what a cell holds, kept when a style replaces the rest. */
+#define GRID_ATTR_CONTENT (GRID_ATTR_CHARSET|GRID_ATTR_SIZED)
 
 /* All underscore attributes. */
 #define GRID_ATTR_ALL_UNDERSCORE \
@@ -1753,6 +1766,8 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_TEXTSIZE 0x4000
+#define TERM_GRAPHEMES 0x8000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1811,6 +1826,7 @@ struct tty {
 	size_t		 discarded;
 
 	size_t		 sync_offset;
+	size_t		 exempt;	/* queued bytes TTY_BLOCK ignores */
 
 	struct termios	 tio;
 
@@ -1835,8 +1851,11 @@ struct tty {
 #define TTY_BRACKETPASTE 0x8000
 #define TTY_HAVESYNC 0x10000
 #define TTY_ALTSCREEN 0x20000
+#define TTY_HAVEGRAPHEMES 0x4000000
+#define TTY_GRAPHEMES 0x8000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC| \
+	 TTY_HAVEGRAPHEMES)
 	int		 flags;
 
 	struct tty_term	*term;
@@ -2942,6 +2961,7 @@ void	tty_putcode_s(struct tty *, enum tty_code_code, const char *);
 void	tty_putcode_ss(struct tty *, enum tty_code_code, const char *,
 	    const char *);
 void	tty_puts(struct tty *, const char *);
+size_t	tty_sized_cell(struct tty *, const struct grid_cell *, char *, size_t);
 void	tty_putc(struct tty *, u_char);
 void	tty_putn(struct tty *, const void *, size_t, u_int);
 void	tty_cell(struct tty *, const struct grid_cell *,
@@ -3214,6 +3234,7 @@ struct cmdq_item *cmdq_append(struct client *, struct cmdq_item *);
 void printflike(4, 5) cmdq_insert_hook(struct session *, struct cmdq_item *,
 		     struct cmd_find_state *, const char *, ...);
 void		 cmdq_continue(struct cmdq_item *);
+void		 cmdq_flush_lost(struct client *);
 u_int		 cmdq_next(struct client *);
 struct cmdq_item *cmdq_running(struct client *);
 void		 cmdq_guard(struct cmdq_item *, const char *, int);
@@ -3436,6 +3457,8 @@ void	 input_reply_clipboard(struct bufferevent *, const char *, size_t,
 void	 input_set_buffer_size(size_t);
 void	 input_request_reply(struct client *, enum input_request_type, void *);
 void	 input_cancel_requests(struct client *);
+const char *input_sized_parse(const char *, u_int *);
+int	 input_sized_data(const char *, u_int, struct utf8_data *);
 
 /* input-key.c */
 void	 input_key_build(void);
@@ -3502,6 +3525,8 @@ void	 grid_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_set_cells(struct grid *, u_int, u_int, const struct grid_cell *,
 	     const char *, size_t);
 struct grid_line *grid_get_line(struct grid *, u_int);
+void	 grid_trim_overhang(struct grid *, u_int);
+int	 grid_line_overhangs(struct grid *, u_int);
 void	 grid_adjust_lines(struct grid *, u_int);
 void	 grid_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_clear_lines(struct grid *, u_int, u_int, u_int);
@@ -3512,7 +3537,8 @@ char	*grid_string_cells(struct grid *, u_int, u_int, u_int,
 void	 grid_duplicate_lines(struct grid *, u_int, struct grid *, u_int,
 	     u_int);
 void	 grid_reflow(struct grid *, u_int);
-void	 grid_wrap_position(struct grid *, u_int, u_int, u_int *, u_int *);
+void	 grid_wrap_position(struct grid *, u_int, u_int, u_int, u_int *,
+	     u_int *);
 void	 grid_unwrap_position(struct grid *, u_int *, u_int *, u_int, u_int);
 u_int	 grid_line_length(struct grid *, u_int);
 u_int	 grid_line_limit(struct grid *, u_int);
@@ -3541,13 +3567,16 @@ void	 grid_reader_cursor_back_to_indentation(struct grid_reader *);
 
 /* grid-view.c */
 void	 grid_view_get_cell(struct grid *, u_int, u_int, struct grid_cell *);
+u_int	 grid_view_get_char(struct grid *, u_int, u_int, struct grid_cell *);
+void	 grid_view_get_extent(struct grid *, u_int, u_int, u_int *, u_int *);
+int	 grid_view_splits(struct grid *, u_int, u_int);
 void	 grid_view_set_cell(struct grid *, u_int, u_int,
 	     const struct grid_cell *);
 void	 grid_view_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_view_set_cells(struct grid *, u_int, u_int,
 	     const struct grid_cell *, const char *, size_t);
 void	 grid_view_clear_history(struct grid *, u_int);
-void	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
+int	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_view_scroll_region_up(struct grid *, u_int, u_int, u_int);
 void	 grid_view_scroll_region_down(struct grid *, u_int, u_int, u_int);
 void	 grid_view_insert_lines(struct grid *, u_int, u_int, u_int);
@@ -3556,8 +3585,8 @@ void	 grid_view_insert_lines_region(struct grid *, u_int, u_int, u_int,
 void	 grid_view_delete_lines(struct grid *, u_int, u_int, u_int);
 void	 grid_view_delete_lines_region(struct grid *, u_int, u_int, u_int,
 	     u_int);
-void	 grid_view_insert_cells(struct grid *, u_int, u_int, u_int, u_int);
-void	 grid_view_delete_cells(struct grid *, u_int, u_int, u_int, u_int);
+int	 grid_view_insert_cells(struct grid *, u_int, u_int, u_int, u_int);
+int	 grid_view_delete_cells(struct grid *, u_int, u_int, u_int, u_int);
 char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 
 /* screen-write.c */
@@ -3605,6 +3634,7 @@ void	 screen_write_cursorup(struct screen_write_ctx *, u_int);
 void	 screen_write_cursordown(struct screen_write_ctx *, u_int);
 void	 screen_write_cursorright(struct screen_write_ctx *, u_int);
 void	 screen_write_cursorleft(struct screen_write_ctx *, u_int);
+void	 screen_write_wrapnext(struct screen_write_ctx *, int);
 void	 screen_write_alignmenttest(struct screen_write_ctx *);
 void	 screen_write_insertcharacter(struct screen_write_ctx *, u_int, u_int);
 void	 screen_write_deletecharacter(struct screen_write_ctx *, u_int, u_int);
@@ -4120,6 +4150,7 @@ void		 utf8_set(struct utf8_data *, u_char);
 void		 utf8_copy(struct utf8_data *, const struct utf8_data *);
 enum utf8_state	 utf8_open(struct utf8_data *, u_char);
 enum utf8_state	 utf8_append(struct utf8_data *, u_char);
+int		 utf8_next(const char **, struct utf8_data *);
 int		 utf8_isvalid(const char *);
 size_t		 utf8_strvis(char *, const char *, size_t, int);
 size_t		 utf8_stravis(char **, const char *, int);

@@ -391,6 +391,7 @@ server_client_lost(struct client *c)
 
 	cmd_wait_for_client_lost(c);
 	cmdq_next(c);
+	cmdq_flush_lost(c);
 
 	if (c->flags & CLIENT_ATTACHED) {
 		server_client_attached_lost(c);
@@ -1247,7 +1248,8 @@ server_client_update_latest(struct client *c)
 {
 	struct window	*w;
 
-	if (c->session == NULL)
+	/* A client that has gone is never the latest (its queue may still run). */
+	if (c->session == NULL || (c->flags & CLIENT_DEAD))
 		return;
 	w = c->session->curw->window;
 
@@ -2620,6 +2622,12 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 
 		if (c->flags & CLIENT_CONTROL)
 			break;
+		/*
+		 * A client that is exiting can still send a resize it had
+		 * pending, but MSG_EXITING has closed (and freed) its tty.
+		 */
+		if (~c->tty.flags & TTY_OPENED)
+			break;
 		server_client_update_latest(c);
 		old_sx = c->tty.sx;
 		old_sy = c->tty.sy;
@@ -2627,7 +2635,13 @@ server_client_dispatch(struct imsg *imsg, void *arg)
 		tty_repeat_requests(&c->tty, 0);
 		recalculate_sizes();
 		server_redraw_client(c);
-		if (c->session != NULL)
+		/*
+		 * The client also sends MSG_RESIZE when it becomes ready, in
+		 * case of a SIGWINCH while it was starting; that is not a
+		 * resize unless the size changed.
+		 */
+		if (c->session != NULL &&
+		    (c->tty.sx != old_sx || c->tty.sy != old_sy))
 			server_client_fire_resized(c, old_sx, old_sy);
 		break;
 	case MSG_EXITING:
@@ -2774,6 +2788,8 @@ server_client_dispatch_command(struct client *c, struct imsg *imsg)
 		switch (pr->status) {
 		case CMD_PARSE_ERROR:
 			cause = pr->error;
+			args_free_values(values, argc);
+			free(values);
 			goto error;
 		case CMD_PARSE_SUCCESS:
 			break;
