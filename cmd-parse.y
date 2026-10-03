@@ -91,8 +91,10 @@ struct cmd_parse_state {
 static struct cmd_parse_state parse_state;
 
 static char	*cmd_parse_get_error(const char *, u_int, const char *);
-static void	 cmd_parse_free_command(struct cmd_parse_command *);
 static struct cmd_parse_commands *cmd_parse_new_commands(void);
+static void	 cmd_parse_free_argument(struct cmd_parse_argument *);
+static void	 cmd_parse_free_arguments(struct cmd_parse_arguments *);
+static void	 cmd_parse_free_command(struct cmd_parse_command *);
 static void	 cmd_parse_free_commands(struct cmd_parse_commands *);
 static void	 cmd_parse_build_commands(struct cmd_parse_commands *,
 		     struct cmd_parse_input *, struct cmd_parse_result *);
@@ -131,6 +133,14 @@ static void	 cmd_parse_print_commands(struct cmd_parse_input *,
 %type <commands> argument_statements statements statement
 %type <commands> commands condition condition1
 %type <command> command
+
+/* What a syntax error leaves on the stack is freed. */
+%destructor { free($$); } <token>
+%destructor { cmd_parse_free_arguments($$); free($$); } <arguments>
+%destructor { cmd_parse_free_argument($$); } <argument>
+%destructor { cmd_parse_free_commands($$.commands); } <elif>
+%destructor { cmd_parse_free_commands($$); } <commands>
+%destructor { cmd_parse_free_command($$); } <command>
 
 %%
 
@@ -701,7 +711,13 @@ cmd_parse_run_parser(char **cause)
 		TAILQ_REMOVE(&ps->stack, scope, entry);
 		free(scope);
 	}
+	free(ps->scope);	/* left open by an error */
+	ps->scope = NULL;
 	if (retval != 0) {
+		/* An error after the commands were complete leaves them. */
+		if (ps->commands != NULL)
+			cmd_parse_free_commands(ps->commands);
+		ps->commands = NULL;
 		*cause = ps->error;
 		return (NULL);
 	}
