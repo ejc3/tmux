@@ -632,8 +632,9 @@ forward_pane_output(struct window_pane *wp, const u_char *buf, size_t len)
 }
 
 /*
- * The pane has parsed what was forwarded: the terminal has everything the pane
- * put in its history, and is on the screen - main or alternate - the pane is.
+ * The pane has parsed what was forwarded: the terminal is on the screen - main
+ * or alternate - the pane is, and one whose scrollback is the pane's history
+ * (tty_sync_history) has everything the pane put there or cleared from it.
  */
 void
 forward_pane_parsed(struct window_pane *wp)
@@ -644,9 +645,11 @@ forward_pane_parsed(struct window_pane *wp)
 	TAILQ_FOREACH(c, &clients, entry) {
 		if (c->forward_pane != wp->id)
 			continue;
-		c->tty.hist_pane = wp->id;
-		c->tty.hist_seen = gd->scroll_view;
-		c->tty.hist_gen = gd->scroll_generation;
+		if (c->tty.hist_pane == wp->id) {
+			c->tty.hist_seen = gd->scroll_view;
+			c->tty.hist_gen = gd->scroll_generation;
+			c->tty.hist_cleared = gd->scroll_cleared;
+		}
 		if (SCREEN_IS_ALTERNATE(&wp->base))
 			c->tty.flags |= TTY_ALTSCREEN;
 		else

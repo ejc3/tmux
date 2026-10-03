@@ -36,6 +36,8 @@
 static int	tty_log_fd = -1;
 
 static void	tty_count_history(struct tty *, const struct tty_ctx *);
+static int	tty_catch_up_history(struct tty *, struct window_pane *);
+static void	tty_history_lost(struct tty *);
 static int	tty_rewrap(struct tty *, const struct tty_ctx *, u_int, u_int,
 		    u_int);
 static void	tty_pay_scroll(struct tty *);
@@ -241,6 +243,9 @@ tty_block_start(struct tty *tty)
 	c->redraw = 0;
 	tty->exempt = 0;
 	kgfx_client_dropped(c);
+
+	/* Lines counted as reaching the terminal may be among what went. */
+	tty_history_lost(tty);
 
 	tty->discarded = 0;
 	evtimer_add(&tty->timer, &tv);
@@ -470,7 +475,7 @@ tty_start_tty(struct tty *tty)
 	tty_start_start_timer(tty);
 
 	tty->flags |= TTY_STARTED;
-	tty->flags &= ~TTY_ALTSCREEN;
+	tty->flags &= ~(TTY_ALTSCREEN|TTY_HISTWRITTEN);
 	tty_invalidate(tty);
 
 	if (tty->ccolour != -1)
@@ -564,6 +569,10 @@ tty_stop_tty(struct tty *tty)
 	 */
 	forwarding = (c->forward_pane != UINT_MAX);
 	c->forward_pane = UINT_MAX;
+
+	/* Whatever uses the terminal next writes to its scrollback. */
+	tty_history_lost(tty);
+	tty->hist_wrapped = 0;
 
 	evtimer_del(&tty->start_timer);
 	evtimer_del(&tty->clipboard_timer);
@@ -2843,8 +2852,64 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
 }
 
 /*
- * Start following a pane's history from where it is now, or bring the count
- * of the lines that reached this terminal up to date with the pane's grid.
+ * The terminal's own scrollback (clear-on-attach off).
+ *
+ * A terminal keeps one scrollback. While one pane is the whole terminal, the
+ * scrollback is that pane's history: hist_pane is the pane and hist_seen how
+ * many of the lines pushed into its history (grid scroll_view) the terminal
+ * has. Only tty_sync_history makes a pane the terminal's, when the pane is
+ * about to be drawn whole. It stays the terminal's until tmux can no longer
+ * say what the terminal holds, and then hist_pane is UINT_MAX: the terminal
+ * stopped (a detach, a suspend, a lock), output for it was thrown away
+ * (TTY_BLOCK), something other than the one pane was drawn (several panes, a
+ * status line, a window of another size), or the pane's history was rewritten
+ * while the terminal was behind.
+ */
+
+/* What this terminal holds is no longer known to be any pane's history. */
+static void
+tty_history_lost(struct tty *tty)
+{
+	struct window_pane	*old;
+	struct grid		*gd;
+
+	if (tty->hist_pane == UINT_MAX)
+		return;
+	log_debug("%s: %s loses %%%u", __func__, tty->client->name,
+	    tty->hist_pane);
+
+	/*
+	 * The terminal's scrollback ends with the last history line of the
+	 * pane it followed until now; remember whether that line wraps on to
+	 * the screen, for tty_forget_wraps.
+	 */
+	old = window_pane_find_by_id(tty->hist_pane);
+	gd = (old != NULL) ? old->base.grid : NULL;
+	tty->hist_wrapped = (gd != NULL && gd->hsize != 0 &&
+	    (grid_get_line(gd, gd->hsize - 1)->flags & GRID_LINE_WRAPPED));
+	tty->hist_pane = UINT_MAX;
+	tty->hist_shown = UINT_MAX;
+}
+
+/* Follow a pane's history from where it is now. */
+static void
+tty_history_adopt(struct tty *tty, struct window_pane *wp)
+{
+	struct grid	*gd = wp->base.grid;
+
+	tty_history_lost(tty);
+	log_debug("%s: %s follows %%%u", __func__, tty->client->name, wp->id);
+	tty->hist_pane = wp->id;
+	tty->hist_seen = gd->scroll_view;
+	tty->hist_gen = gd->scroll_generation;
+	tty->hist_cleared = gd->scroll_cleared;
+	tty->flags |= TTY_HISTWRITTEN;
+}
+
+/*
+ * Bring the count of the lines of the pane this terminal follows up to date
+ * with the pane's grid, of whose pushes n are about to be counted. Returns 0
+ * if what the terminal holds can no longer be told from the grid.
  *
  * After the grid reflowed its lines once (grid_reflow) while this terminal
  * was behind, the terminal has reflowed what it had too - the pane's lines up
@@ -2852,42 +2917,31 @@ tty_cursor_pane(struct tty *tty, const struct tty_ctx *ctx, u_int cx, u_int cy)
  * tmux does, kept the end of that on its screen, perhaps pulling rows back
  * from its scrollback: those rows of the pane's history (hist_shown, up to
  * that end) are at the top of its screen already and are only scrolled into
- * its scrollback, not painted over. After anything else that rewrote the
- * history, follow from here.
+ * its scrollback, not painted over. A terminal that was not behind reflowed
+ * the same lines as the grid, however often. After anything else - the lines
+ * it lacks rewritten more than once or beyond the reflow's record, the
+ * history cleared without it - the terminal's lines are no longer the
+ * grid's.
  */
-static void
-tty_follow_history(struct tty *tty, struct window_pane *wp)
+static int
+tty_history_step(struct tty *tty, struct window_pane *wp, u_int n)
 {
-	struct grid		*gd = wp->base.grid;
-	struct window_pane	*old;
-	u_int			 m, b, end, top;
+	struct grid	*gd = wp->base.grid;
+	u_int		 m, b, end, top;
 
-	if (tty->hist_pane != wp->id) {
-		/*
-		 * The terminal's scrollback ends with the last history line of
-		 * the pane it followed until now; remember whether that line
-		 * wraps on to the screen, for tty_forget_wraps.
-		 */
-		old = window_pane_find_by_id(tty->hist_pane);
-		tty->hist_wrapped = (old != NULL && old->base.grid->hsize != 0 &&
-		    (grid_get_line(old->base.grid, old->base.grid->hsize - 1)->flags &
-		    GRID_LINE_WRAPPED));
-		tty->hist_pane = wp->id;
-		tty->hist_seen = gd->scroll_view;
-		tty->hist_gen = gd->scroll_generation;
-		tty->hist_shown = UINT_MAX;
-		return;
-	}
+	if (tty->hist_cleared != gd->scroll_cleared)
+		return (0);
 	if (tty->hist_gen == gd->scroll_generation)
-		return;
+		return (1);
 	tty->hist_shown = UINT_MAX;
 	if (tty->hist_gen + 1 == gd->scroll_generation &&
-	    gd->reflow_gen == gd->scroll_generation &&
-	    (int)(gd->reflow_view - tty->hist_seen) > 0) {
+	    gd->reflow_gen == gd->scroll_generation) {
 		m = gd->reflow_view - tty->hist_seen;
-		b = (m <= gd->reflow_hsize) ? gd->reflow_hsize - m : 0;
-		if (m <= gd->reflow_hsize && b >= gd->reflow_first &&
-		    gd->reflow_map != NULL) {
+		if ((int)m > 0) {
+			b = (m <= gd->reflow_hsize) ? gd->reflow_hsize - m : 0;
+			if (m > gd->reflow_hsize || b < gd->reflow_first ||
+			    gd->reflow_map == NULL)
+				return (0);
 			/*
 			 * Its last row was where the cursor was, which the
 			 * pane may have written since: one row of its own,
@@ -2905,20 +2959,20 @@ tty_follow_history(struct tty *tty, struct window_pane *wp)
 				tty->hist_shown = end - 1;
 			} else
 				tty->hist_seen = gd->reflow_view;
-		} else
-			tty->hist_seen = gd->scroll_view;
-	} else if (tty->hist_gen + 1 != gd->scroll_generation ||
-	    gd->reflow_gen != gd->scroll_generation)
-		tty->hist_seen = gd->scroll_view;
+		}
+	} else if (tty->hist_seen + n != gd->scroll_view)
+		return (0);
 	tty->hist_gen = gd->scroll_generation;
+	return (1);
 }
 
 /*
  * A pane's scroll or clear, which pushed ctx->n lines into its history, is
- * about to be written to this terminal: count them as reaching the terminal
- * (see tty_catch_up_history), which does with them what it does - keeps them
- * in its scrollback or not. Not when the output is being thrown away
- * (TTY_BLOCK) or the terminal is on its alternate screen.
+ * about to be written to this terminal: if the terminal's scrollback is the
+ * pane's history, count them as reaching it (see tty_catch_up_history) - it
+ * does with them what it does, keeps them in its scrollback or not. Not when
+ * the output is being thrown away (TTY_BLOCK) or the terminal is on its
+ * alternate screen.
  */
 static void
 tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
@@ -2928,14 +2982,16 @@ tty_count_history(struct tty *tty, const struct tty_ctx *ctx)
 
 	if (wp == NULL || ctx->s != &wp->base || SCREEN_IS_ALTERNATE(&wp->base))
 		return;
-	gd = wp->base.grid;
+	if (tty->hist_pane != wp->id)
+		return;
 	if (tty->flags & (TTY_BLOCK|TTY_ALTSCREEN))
 		return;
-	if (tty->hist_pane != wp->id) {
-		tty_follow_history(tty, wp);
+	gd = wp->base.grid;
+	if (!tty_history_step(tty, wp, ctx->n)) {
+		tty_history_lost(tty);
+		server_redraw_client(tty->client);
 		return;
 	}
-	tty_follow_history(tty, wp);
 	tty->hist_seen += ctx->n;
 	if ((int)(gd->scroll_view - tty->hist_seen) < 0)
 		tty->hist_seen = gd->scroll_view;
@@ -2949,8 +3005,33 @@ tty_cmd_history(struct tty *tty, const struct tty_ctx *ctx)
 	int			 ours;
 
 	ours = (wp != NULL && tty->hist_pane == wp->id);
-	tty_catch_up_history(tty, wp);
+	if (ours && !tty_catch_up_history(tty, wp))
+		server_redraw_client(tty->client);
 	tty_forget_wraps(tty, wp, ours);	/* every row is drawn next */
+}
+
+/*
+ * The pane's history was cleared (clear-history, or ED 3 from the program):
+ * a terminal whose scrollback is that history clears it too.
+ */
+void
+tty_cmd_clearhistory(struct tty *tty, const struct tty_ctx *ctx)
+{
+	struct window_pane	*wp = ctx->wp;
+	struct grid		*gd;
+
+	if (wp == NULL || ctx->s != &wp->base || tty->hist_pane != wp->id)
+		return;
+	gd = wp->base.grid;
+	if ((tty->flags & (TTY_BLOCK|TTY_ALTSCREEN)) ||
+	    !tty_term_has(tty->term, TTYC_E3) ||
+	    tty->hist_cleared + 1 != gd->scroll_cleared)
+		return;		/* tty_history_step finds it was not cleared */
+	tty_putcode(tty, TTYC_E3);
+	tty->hist_seen = gd->scroll_view;
+	tty->hist_gen = gd->scroll_generation;
+	tty->hist_cleared = gd->scroll_cleared;
+	tty->hist_shown = UINT_MAX;
 }
 
 /*
@@ -3155,7 +3236,7 @@ tty_pane_is_terminal(struct tty *tty, struct window_pane *wp)
  * terminal to the terminal's scrollback, as they went into the history when
  * the pane scrolled. The caller redraws the pane over the rows this leaves.
  */
-void
+static void
 tty_replay_history(struct tty *tty, struct window_pane *wp, u_int first,
     u_int n)
 {
@@ -3167,58 +3248,47 @@ tty_replay_history(struct tty *tty, struct window_pane *wp, u_int first,
 }
 
 /*
- * Lines pushed into a pane's history without reaching this terminal - thrown
- * away while the output was held back (sync mode, a full redraw pending, a
- * client too far behind) - are given to it now the way they went into the
- * history (see tty_replay_push); lines older than the grid's record of
- * pushes as full-screen scrolls. The caller redraws the whole pane over the
- * rows this leaves. A pane this terminal was not following, it starts
- * following from here. Only for a pane that is the whole
- * terminal, on the primary screen.
+ * Lines pushed into the history of the pane this terminal follows without
+ * reaching the terminal - thrown away while the output was held back (sync
+ * mode, a full redraw pending, a floating pane over the pane) - are given to
+ * it now the way they went into the history (see tty_replay_push); lines
+ * older than the grid's record of pushes as full-screen scrolls. The caller
+ * redraws the whole pane over the rows this leaves. Returns 0 if the
+ * terminal's lines are no longer the pane's (tty_history_step), and the
+ * terminal then follows no pane.
  */
-void
+static int
 tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 {
-	struct grid		*gd;
+	struct grid		*gd = wp->base.grid;
 	struct grid_push	*gp;
 	u_int			 i, j, k, n, left, e, skip = 0, count;
 
-	if (wp == NULL || SCREEN_IS_ALTERNATE(&wp->base))
-		return;
+	if (SCREEN_IS_ALTERNATE(&wp->base))
+		return (1);
 	if (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK))
-		return;
-	gd = wp->base.grid;
+		return (1);
 	/*
 	 * The painting would scroll a floating pane over this one away: wait
-	 * for the redraw after it has gone - and keep following the pane the
-	 * terminal's scrollback belongs to until then (tty_forget_wraps).
+	 * for the redraw after it has gone.
 	 */
 	if (tty_pane_covered(wp))
-		return;
-	/*
-	 * A floating pane sits over the pane the terminal's scrollback belongs
-	 * to; it does not take the scrollback over.
-	 */
-	if (window_pane_is_floating(wp))
-		return;
-	if (tty->hist_pane != wp->id) {
-		tty_follow_history(tty, wp);
-		return;
+		return (1);
+	if (!tty_history_step(tty, wp, 0) || !tty_pane_is_terminal(tty, wp)) {
+		tty_history_lost(tty);
+		return (0);
 	}
-	tty_follow_history(tty, wp);
 	n = gd->scroll_view - tty->hist_seen;
 	if ((int)n <= 0)
-		return;
+		return (1);
 	tty->hist_seen = gd->scroll_view;
-	if (!tty_pane_is_terminal(tty, wp))
-		return;
 	if (n > gd->hsize)
 		n = gd->hsize;
 	log_debug("%s: %%%u %u lines", __func__, wp->id, n);
 
 	/*
 	 * History rows the terminal has at the top of its screen after it
-	 * reflowed (see tty_follow_history): scroll them into its scrollback.
+	 * reflowed (see tty_history_step): scroll them into its scrollback.
 	 */
 	tty_margin_off(tty);
 	i = gd->hsize - n;
@@ -3262,6 +3332,103 @@ tty_catch_up_history(struct tty *tty, struct window_pane *wp)
 		tty_replay_push(tty, wp, gp->type, gp->upper, gp->lower, i,
 		    count);
 		i += count;
+	}
+	return (1);
+}
+
+/*
+ * The active pane of the window this terminal shows is about to be drawn
+ * whole: make the terminal's scrollback that pane's history if the pane is
+ * the whole terminal, and note that it is no pane's if not.
+ *
+ * A terminal already following the pane is given the lines it lacks. One
+ * following another pane or none has its scrollback written again from the
+ * pane's history, up to scroll-replay lines of it, after erasing what tmux
+ * wrote there before (E3; what the terminal held before tmux started is kept
+ * until then). Without scroll-replay, or without E3 to erase with, the pane
+ * is followed from here and the scrollback keeps what it has.
+ *
+ * Returns whether the scrollback is this pane's history, so the top row may
+ * continue its last line (tty_forget_wraps).
+ */
+int
+tty_sync_history(struct tty *tty, struct window_pane *wp)
+{
+	struct grid	*gd;
+	u_int		 lines, n, first;
+
+	if (clear_on_attach || wp == NULL)
+		return (0);
+	/*
+	 * A floating pane sits over the pane the terminal's scrollback belongs
+	 * to; it does not take the scrollback over.
+	 */
+	if (window_pane_is_floating(wp))
+		return (0);
+	if (!tty_pane_is_terminal(tty, wp)) {
+		/* What is drawn now may scroll into the scrollback. */
+		tty_history_lost(tty);
+		tty->flags |= TTY_HISTWRITTEN;
+		return (0);
+	}
+	/*
+	 * Nothing reaches the scrollback from the alternate screen, and
+	 * painting would scroll a floating pane over this one away: wait for
+	 * the redraw after.
+	 */
+	if (SCREEN_IS_ALTERNATE(&wp->base) ||
+	    (tty->flags & (TTY_ALTSCREEN|TTY_BLOCK)) || tty_pane_covered(wp))
+		return (tty->hist_pane == wp->id);
+	if (tty->hist_pane == wp->id && tty_catch_up_history(tty, wp))
+		return (1);
+
+	lines = options_get_number(wp->window->options, "scroll-replay");
+	if (lines == 0 || ((tty->flags & TTY_HISTWRITTEN) &&
+	    !tty_term_has(tty->term, TTYC_E3))) {
+		tty_history_adopt(tty, wp);
+		return (0);
+	}
+	gd = wp->base.grid;
+	n = gd->hsize;
+	first = (n > lines) ? n - lines : 0;
+	log_debug("%s: %s %%%u %u lines%s", __func__, tty->client->name,
+	    wp->id, n - first, (tty->flags & TTY_HISTWRITTEN) ? ", erased" : "");
+
+	tty_region_off(tty);
+	tty_margin_off(tty);
+	tty_reset(tty);
+	if (tty->flags & TTY_HISTWRITTEN) {
+		tty_putcode(tty, TTYC_CLEAR);
+		tty_putcode(tty, TTYC_E3);
+	} else if (tty_term_has(tty->term, TTYC_ED)) {
+		/* Erase the screen without the terminal keeping it. */
+		tty_cursor(tty, 0, 0);
+		tty_putcode(tty, TTYC_ED);
+	} else
+		tty_putcode(tty, TTYC_CLEAR);
+
+	/*
+	 * The history goes to the scrollback as it went there when the pane
+	 * scrolled (wrapped lines kept whole); the redraw that follows paints
+	 * the visible rows.
+	 */
+	tty_replay_history(tty, wp, first, n - first);
+	tty_invalidate(tty);
+
+	tty_history_adopt(tty, wp);
+	tty->hist_wrapped = 0;
+	return (1);
+}
+
+/* A pane's history is no longer what terminals following it hold. */
+void
+tty_forget_history(struct window_pane *wp)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->tty.hist_pane == wp->id)
+			tty_history_lost(&c->tty);
 	}
 }
 

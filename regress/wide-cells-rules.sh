@@ -191,7 +191,8 @@ $TMUX resize-window -x 80 || exit 1
 	fail "join before a wide character: $($TMUX capturep -pJ | head -2)"
 
 # The history written to a terminal keeping its own scrollback (scroll-replay)
-# has blanks for a character overhanging a row, not the character.
+# when it attaches has blanks for a character overhanging a row, not the
+# character.
 $TMUX kill-server 2>/dev/null
 N=$((N + 1))
 TMUX="$TEST_TMUX -Ltest$$-$N -f/dev/null"
@@ -202,15 +203,15 @@ $TMUX new -d -s inner -x 10 -y 4 \
     set -s forward-output off \; set -g window-size manual \; \
     set -gw scroll-replay 100 || exit 1
 wait_is "$TMUX display -p '#{pane_path}'" done
-$TMUX resize-window -x 4 \; neww -d -t inner:5 'exec cat' || exit 1
+$TMUX resize-window -x 4 || exit 1
 $OUTER new -d -s keep \; set -g default-terminal xterm-256color \; \
     set -g status off || exit 1
 $OUTER new -d -s t -x 4 -y 4 "unset TMUX; exec $TMUX attach -t inner" ||
     exit 1
 wait_is "[ -n \"\$($TMUX lsc -F '#{client_termtype}')\" ] && echo yes" yes
-$TMUX selectw -t inner:5 \; selectw -t inner:0 || exit 1
 wait_is "$OUTER capturep -t t -p -S - | grep -c cdef" 1
-out=$($OUTER capturep -t t -p -S - | sed 's/ *$//' | head -3 | tr '\n' '|')
+out=$($OUTER capturep -t t -p -S - | sed 's/ *$//' | sed -n '/^ab/,$p' |
+    head -3 | tr '\n' '|')
 [ "$out" = 'ab||cdef|' ] || fail "replayed history: '$out'"
 $OUTER kill-server
 

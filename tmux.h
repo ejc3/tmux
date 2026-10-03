@@ -986,6 +986,7 @@ struct grid {
 	u_int			 reflow_gen;
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
+	u_int			 scroll_cleared;	/* times history was cleared */
 
 	struct grid_line	*linedata;
 };
@@ -1959,19 +1960,23 @@ struct tty {
 #define TTY_HAVEGRAPHEMES 0x4000000
 #define TTY_GRAPHEMES 0x8000000
 #define TTY_PIXELSFROM0 0x10000000
+#define TTY_HISTWRITTEN 0x20000000
 #define TTY_ALL_REQUEST_FLAGS \
 	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEKKEYS| \
 	 TTY_HAVEPIXELS|TTY_HAVEKGFX|TTY_HAVEGRAPHEMES)
 	int		 flags;
 
 	/*
-	 * The pane whose history this terminal's scrollback follows, and how
-	 * many of the lines pushed into its history (grid scroll_view) have
-	 * reached it.
+	 * The pane whose history this terminal's scrollback is (UINT_MAX if
+	 * none), and how many of the lines pushed into its history (grid
+	 * scroll_view) have reached it: see tty_sync_history. TTY_HISTWRITTEN
+	 * is set once tmux has written to the scrollback since the terminal
+	 * started.
 	 */
 	u_int		 hist_pane;
 	u_int		 hist_seen;
 	u_int		 hist_gen;	/* grid scroll_generation of hist_seen */
+	u_int		 hist_cleared;	/* grid scroll_cleared of hist_seen */
 	u_int		 hist_shown;	/* history rows on the screen to end */
 	int		 hist_wrapped;	/* scrollback ends wrapping on to row 0 */
 
@@ -2453,7 +2458,6 @@ struct client {
 #define CLIENT_WRITE_ACK 0x4000000000ULL
 #define CLIENT_NO_DETACH_ON_DESTROY 0x8000000000ULL
 #define CLIENT_CONTROL_DISCARD 0x10000000000ULL
-#define CLIENT_REPLAYSCROLL 0x20000000000ULL
 #define CLIENT_ALLREDRAWFLAGS		\
 	(CLIENT_REDRAWWINDOW|		\
 	 CLIENT_REDRAWSTATUS|		\
@@ -3138,11 +3142,12 @@ void	tty_cmd_insertline(struct tty *, const struct tty_ctx *);
 void	tty_cmd_linefeed(struct tty *, const struct tty_ctx *);
 void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
 void	tty_cmd_history(struct tty *, const struct tty_ctx *);
-void	tty_catch_up_history(struct tty *, struct window_pane *);
+void	tty_cmd_clearhistory(struct tty *, const struct tty_ctx *);
+int	tty_sync_history(struct tty *, struct window_pane *);
+void	tty_forget_history(struct window_pane *);
 int	tty_pane_is_terminal(struct tty *, struct window_pane *);
 int	tty_pane_covered(struct window_pane *);
 void	tty_forget_wraps(struct tty *, struct window_pane *, int);
-void	tty_replay_history(struct tty *, struct window_pane *, u_int, u_int);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);
@@ -3491,7 +3496,6 @@ int	 server_create_socket(uint64_t, char **);
 
 /* server-client.c */
 u_int	 server_client_how_many(void);
-int	 server_client_replay_scroll(struct client *);
 void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);

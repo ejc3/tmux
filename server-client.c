@@ -349,10 +349,6 @@ server_client_set_session(struct client *c, struct session *s)
 	if (old != NULL && old->curw != NULL)
 		window_update_focus(old->curw->window);
 	if (s != NULL) {
-		/* Another window: replay its history (see session_set_current). */
-		if (old != NULL && old->curw != NULL &&
-		    old->curw->window != s->curw->window)
-			c->flags |= CLIENT_REPLAYSCROLL;
 		s->curw->window->latest = c;
 		recalculate_sizes();
 		window_update_focus(s->curw->window);
@@ -2377,80 +2373,6 @@ server_client_any_pane_redraw(struct client *c)
 			return (1);
 	}
 	return (0);
-}
-
-/*
- * Replay the current window's history to a client whose terminal keeps its
- * own scrollback. The terminal has one buffer for every window, so clear it
- * and write this window's history in its place; the redraw that follows
- * paints the screen. Only a pane that is the whole terminal reaches its
- * scrollback. Returns whether the history was replayed.
- */
-int
-server_client_replay_scroll(struct client *c)
-{
-	struct window		*w;
-	struct window_pane	*wp;
-	struct grid		*gd;
-	u_int			 lines, n, start;
-
-	/*
-	 * In the terminal's alternate screen there is no scrollback to replay
-	 * into and E3 could erase the primary screen's. Leave the flag set so
-	 * the replay happens when the terminal is back on the primary screen.
-	 */
-	if (c->tty.flags & TTY_ALTSCREEN)
-		return (0);
-
-	if (c->session == NULL || c->session->curw == NULL ||
-	    c->session->curw->window->active == NULL) {
-		c->flags &= ~CLIENT_REPLAYSCROLL;
-		return (0);
-	}
-	w = c->session->curw->window;
-	wp = w->active;
-
-	/*
-	 * A floating pane over this one would be scrolled away with the lines
-	 * as they are written: wait for it to go.
-	 */
-	if (tty_pane_covered(wp))
-		return (0);
-	c->flags &= ~CLIENT_REPLAYSCROLL;
-	lines = options_get_number(w->options, "scroll-replay");
-	if (lines == 0)
-		return (0);
-
-	/*
-	 * Only when the terminal keeps its own scrollback and the pane is the
-	 * whole of it, so the history goes where the pane's rows scroll.
-	 */
-	if (!tty_pane_is_terminal(&c->tty, wp))
-		return (0);
-	if (!tty_term_has(c->tty.term, TTYC_E3))
-		return (0);
-
-	gd = wp->base.grid;
-	n = gd->hsize;
-	start = (n > lines) ? n - lines : 0;
-
-	/* A deliberate large write; do not let tty_block_maybe() drop it. */
-	c->tty.flags |= TTY_NOBLOCK;
-
-	tty_putcode(&c->tty, TTYC_CLEAR);
-	tty_putcode(&c->tty, TTYC_E3);
-
-	/*
-	 * The history goes to the scrollback as it went there when the pane
-	 * scrolled (wrapped lines kept whole); the redraw that follows paints
-	 * the visible rows.
-	 */
-	tty_replay_history(&c->tty, wp, start, n - start);
-	log_debug("%s: replayed %u history lines", c->name, n - start);
-
-	/* The tty contents are now unknown; force a full redraw. */
-	tty_invalidate(&c->tty);
-	return (1);
 }
 
 /* Check for client redraws. */

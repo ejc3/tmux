@@ -2500,11 +2500,22 @@ screen_write_clearscreen(struct screen_write_ctx *ctx, u_int bg)
 	screen_write_set_cursor(ctx, ocx, ocy);
 }
 
-/* Clear entire history. */
+/*
+ * Clear entire history. A terminal whose scrollback is the pane's history
+ * clears it too, after the scrolls still collected.
+ */
 void
 screen_write_clearhistory(struct screen_write_ctx *ctx)
 {
+	struct tty_ctx	 ttyctx;
+
+	if (ctx->wp != NULL && ctx->s == &ctx->wp->base && !clear_on_attach)
+		screen_write_collect_flush(ctx, 0, __func__);
 	grid_clear_history(ctx->s->grid);
+	if (ctx->wp != NULL && ctx->s == &ctx->wp->base && !clear_on_attach) {
+		screen_write_initctx(ctx, &ttyctx, 0, 0);
+		tty_write(tty_cmd_clearhistory, &ttyctx);
+	}
 }
 
 /* Force a full redraw. */

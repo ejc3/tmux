@@ -550,6 +550,7 @@ grid_clear_history(struct grid *gd)
 	gd->hscrolled = 0;
 	gd->hsize = 0;
 	gd->scroll_generation++;
+	gd->scroll_cleared++;
 	gd->rpush_wrapped = -1;
 
 	gd->linedata = xreallocarray(gd->linedata, gd->sy,
