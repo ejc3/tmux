@@ -53,30 +53,54 @@ send_control()
 
 wait_clients()
 {
-	want=$1
-	i=0
+	_want=$1
+	_i=0
 
-	while [ "$i" -lt 50 ]; do
-		have=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$have" -eq "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	while [ "$_i" -lt 200 ]; do
+		_have=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_have" -eq "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
 
 wait_format()
 {
-	target=$1
-	format=$2
-	want=$3
-	i=0
+	_target=$1
+	_format=$2
+	_want=$3
+	_i=0
 
-	while [ "$i" -lt 50 ]; do
-		have=$($TMUX display-message -p -t "$target" "$format" 2>/dev/null)
-		[ "$have" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	while [ "$_i" -lt 200 ]; do
+		_have=$($TMUX display-message -p -t "$_target" "$_format" 2>/dev/null)
+		[ "$_have" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# Wait until the outer pane shows a string.
+wait_outer()
+{
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		$TMUX2 capture-pane -p -t "$1" 2>/dev/null | grep -qF "$2" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# Wait until the control client output has a line starting with a string.
+wait_output()
+{
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		grep -q "^$1" "$OUT" 2>/dev/null && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
@@ -94,7 +118,14 @@ assert_alive()
 
 check_control_output()
 {
-	sleep 1
+	# A new subscription reports on the next subscription timer tick, after
+	# all the churn above; a round trip after it means that tick's output has
+	# all been written.
+	send_control "refresh-client -B 'tick::#{session_name}'"
+	wait_output '%subscription-changed tick ' ||
+	    fail "subscription timer did not fire"
+	send_control "display-message -p control-end"
+	wait_output control-end || fail "control client did not answer"
 
 	if grep -E '(^%error |server exited|lost server|\(null\)|no current)' \
 	    "$OUT" >/dev/null 2>&1; then
@@ -157,7 +188,7 @@ $TMUX2 new-window -t outer -n tree "$TMUX attach -t life" \
 wait_clients 2 || fail "normal clients did not attach"
 
 $TMUX2 send-keys -t outer:prompt M-p || fail "failed to open command prompt"
-sleep 1
+wait_outer outer:prompt '(life)' || fail "command prompt did not open"
 run_tmux choose-tree -t life:tree.0 \
     -F 'tree #{session_name}:#{window_id}:#{pane_id}' >/dev/null
 wait_format life:tree.0 '#{pane_mode}' tree-mode || \
@@ -175,7 +206,8 @@ CONTROL_CLIENT=$($TMUX list-clients -F '#{client_name} #{client_control_mode}' |
 
 send_control "refresh-client -B 'all:%*:#{session_name}:#{window_id}:#{pane_id}:#{session_windows}:#{window_panes}'"
 send_control "refresh-client -B 'windows:@*:#{session_name}:#{window_id}:#{window_index}:#{window_panes}'"
-sleep 1
+send_control "display-message -p subscribed"
+wait_output subscribed || fail "control client did not subscribe"
 
 run_tmux kill-pane -t life:prompt.0 >/dev/null
 run_tmux kill-window -t life:tree >/dev/null

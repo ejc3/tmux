@@ -33,32 +33,27 @@ fail()
 
 wait_for()
 {
-	pattern=$1
-	timeout=${2:-60}
-	i=0
+	_i=0
 
-	while [ "$i" -lt "$timeout" ]; do
-		grep -F -- "$pattern" "$OUT" >/dev/null 2>&1 && return 0
-		sleep 0.1
-		i=$((i + 1))
+	while [ "$_i" -lt "${2:-120}" ]; do
+		grep -F -- "$1" "$OUT" >/dev/null 2>&1 && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "missing: $pattern"
+	fail "missing: $1"
 }
 
 wait_for_count()
 {
-	pattern=$1
-	expected=$2
-	timeout=${3:-60}
-	i=0
+	_i=0
 
-	while [ "$i" -lt "$timeout" ]; do
-		count=$(grep -F -c -- "$pattern" "$OUT" 2>/dev/null)
-		[ "$count" -ge "$expected" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	while [ "$_i" -lt "${3:-120}" ]; do
+		_count=$(grep -F -c -- "$1" "$OUT" 2>/dev/null)
+		[ "$_count" -ge "$2" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "missing count $expected for: $pattern"
+	fail "missing count $2 for: $1"
 }
 
 send()

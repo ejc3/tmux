@@ -37,27 +37,27 @@ control_pid=$!
 exec 3>"$FIFO"
 
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 100 ]; do
 	$TMUX list-clients -F '#{client_flags}' 2>/dev/null |
 	    grep -q 'control-mode' && break
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "control client did not attach"
+[ "$i" -lt 100 ] || fail "control client did not attach"
 
 printf '%s\n' "display-popup -E 'touch $RAN'" >&3
 printf '%s\n' "display-message -p CONTROL-POPUP-ALIVE" >&3
 
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 100 ]; do
 	grep -q 'CONTROL-POPUP-ALIVE' "$OUT" 2>/dev/null && break
 	if ! kill -0 "$control_pid" 2>/dev/null; then
 		fail "control client exited after display-popup"
 	fi
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "command after control-client popup did not run"
+[ "$i" -lt 100 ] || fail "command after control-client popup did not run"
 $TMUX has-session -t control || fail "server exited after control-client popup"
 [ ! -e "$RAN" ] || fail "control client started a popup command"
 
