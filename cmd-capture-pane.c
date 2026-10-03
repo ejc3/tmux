@@ -424,6 +424,7 @@ cmd_capture_pane_exec(struct cmd *self, struct cmdq_item *item)
 
 	if (cmd_get_entry(self) == &cmd_clear_history_entry) {
 		window_pane_reset_mode_all(wp);
+		forward_stop_pane(wp);
 		screen_write_start_pane(&ctx, wp, &wp->base);
 		screen_write_clearhistory(&ctx);
 		screen_write_stop(&ctx);

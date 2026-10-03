@@ -429,6 +429,15 @@ const struct options_table_entry options_table[] = {
 	  .text = "The format of emitted extended key sequences."
 	},
 
+	{ .name = "forward-output",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "With clear-on-attach off, whether a pane that is the whole "
+		  "terminal of a client is shown by writing its output to the "
+		  "terminal as the program wrote it."
+	},
+
 	{ .name = "focus-events",
 	  .type = OPTIONS_TABLE_FLAG,
 	  .scope = OPTIONS_TABLE_SERVER,

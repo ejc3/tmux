@@ -4998,6 +4998,26 @@ option.
 When enabled and
 .Ic mouse
 is on, moving the mouse into a pane selects it.
+.It Xo Ic forward\-output
+.Op Ic on | off
+.Xc
+When
+.Ic clear\-on\-attach
+is off and a client shows a single pane that is the whole terminal, write the
+pane's output to the terminal as the program wrote it rather than drawing the
+pane from
+.Nm Ns 's
+copy of it, so the terminal treats every sequence as it would with the program
+run directly.
+Sequences the terminal would answer, and modes
+.Nm
+sets on the terminal itself (such as the mouse, cursor keys and titles), are not
+written; colours and underline styles the terminal cannot show are changed as
+for any other output.
+Drawing takes over again, with the whole terminal redrawn, when the window is
+split, a floating pane, menu or prompt is shown, the pane enters a mode or has
+a style, or the terminal falls behind.
+The default is on.
 .It Xo Ic get\-clipboard
 .Op Ic both | request | buffer | off
 .Xc
