@@ -18,6 +18,28 @@ fail() {
 	exit 1
 }
 
+# Wait until what the inner client draws has reached the outer pane: the
+# inner server has gone round its loop (a command's answer), and the outer
+# pane has not changed for 0.15 seconds (up to 5 seconds).
+settle() {
+	$TMUX2 display -p x >/dev/null 2>&1
+	_sp=
+	_ss=0
+	_sn=0
+	while [ $_sn -lt 100 ]; do
+		_sc=$($TMUX capturep -p -S0 -E- 2>/dev/null | cksum)
+		if [ "$_sc" = "$_sp" ]; then
+			_ss=$((_ss + 1))
+			[ $_ss -ge 3 ] && return 0
+		else
+			_ss=0
+		fi
+		_sp=$_sc
+		_sn=$((_sn + 1))
+		sleep 0.05
+	done
+}
+
 capture() {
 	$TMUX capturep -pS0 -E- >$TMP || exit 1
 }
@@ -41,7 +63,7 @@ check_no_grep() {
 
 redraw() {
 	$TMUX2 send -X cursor-right || exit 1
-	sleep 1
+	settle
 	capture
 }
 
@@ -64,21 +86,27 @@ $TMUX -f/dev/null new -d -x48 -y8 || exit 1
 $TMUX set -g status off || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+n=0
+until [ -n "$($TMUX2 list-clients 2>/dev/null)" ]; do
+	n=$((n + 1))
+	[ $n -gt 400 ] && fail "inner client did not attach"
+	sleep 0.05
+done
+settle
 
 CLIENT=$($TMUX2 list-clients -F '#{client_name}' | head -1)
 [ -n "$CLIENT" ] || fail "no inner client"
 
 $TMUX2 copy-mode || exit 1
 $TMUX2 send -X history-top || exit 1
-sleep 1
+settle
 
 # Shrinking and moving the position indicator should not leave stale text from
 # the previous indicator, for different widths and alignments.
 for size in 20 48; do
 	$TMUX resizew -x$size -y8 || exit 1
 	$TMUX2 refresh -t"$CLIENT" -c || exit 1
-	sleep 1
+	settle
 	for align in left centre right; do
 		$TMUX2 set -g copy-mode-position-format "#[align=$align][23/100-LONGTAIL]" || exit 1
 		redraw
@@ -105,22 +133,22 @@ $TMUX2 refresh -t"$CLIENT" -c || exit 1
 $TMUX2 send -X cancel || exit 1
 $TMUX2 copy-mode -H || exit 1
 $TMUX2 send -X history-top || exit 1
-sleep 1
+settle
 capture
 check_line 1 "L000-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-END"
 
 $TMUX2 send -X scroll-down || exit 1
-sleep 1
+settle
 capture
 check_line 1 "S001"
 
 $TMUX2 send -X scroll-down || exit 1
-sleep 1
+settle
 capture
 check_line 1 "L002-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-END"
 
 $TMUX2 send -X scroll-down || exit 1
-sleep 1
+settle
 capture
 check_line 1 "S003"
 
@@ -132,15 +160,15 @@ $TMUX2 refresh -t"$CLIENT" -c || exit 1
 $TMUX2 new-window \
 	"printf 'LONGTAIL-ABCDEFGHIJKLMNOPQRSTUV\nA\tB\nLONGTAIL-123456789012345678\nS\n'; i=0; while [ \$i -lt 20 ]; do printf 'FILLER-%02d\n' \$i; i=\$((i + 1)); done; exec sleep 100" || \
 	exit 1
-sleep 1
+settle
 $TMUX2 copy-mode -H || exit 1
 $TMUX2 send -X history-top || exit 1
-sleep 1
+settle
 capture
 check_line 1 "LONGTAIL-ABCDEFGHIJKLMNOPQRSTUV"
 
 $TMUX2 send -X scroll-down || exit 1
-sleep 1
+settle
 capture
 check_line 1 "A       B"
 sed -n 1p $TMP | grep -Fq "LONGTAIL" && \
@@ -153,12 +181,12 @@ $TMUX2 send -X cancel || exit 1
 $TMUX resizew -x80 -y24 || exit 1
 $TMUX2 refresh -t"$CLIENT" -c || exit 1
 $TMUX2 new-window "cat ../tmux.c; exec sleep 100" || exit 1
-sleep 1
+settle
 $TMUX2 splitw -hd || exit 1
-sleep 1
+settle
 $TMUX capturep -pS0 -E- >$BEFORE || exit 1
 $TMUX2 copy-mode -H -t:.0 || exit 1
-sleep 1
+settle
 $TMUX capturep -pS0 -E- >$AFTER || exit 1
 
 if ! cmp -s "$BEFORE" "$AFTER"; then
