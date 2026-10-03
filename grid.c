@@ -381,6 +381,7 @@ grid_create(u_int sx, u_int sy, u_int hlimit)
 	if (hlimit != 0)
 		gd->flags = GRID_HISTORY;
 	gd->hlimit = hlimit;
+	gd->rpush_wrapped = -1;
 
 	if (gd->sy != 0)
 		gd->linedata = xcalloc(gd->sy, sizeof *gd->linedata);
@@ -398,6 +399,7 @@ grid_destroy(struct grid *gd)
 {
 	grid_free_lines(gd, 0, gd->hsize + gd->sy);
 	free(gd->linedata);
+	free(gd->reflow_map);
 	free(gd);
 }
 
@@ -508,6 +510,35 @@ grid_scroll_history(struct grid *gd, u_int bg)
 	grid_line_set_time(&gd->linedata[gd->hsize]);
 	gd->hsize++;
 	gd->scroll_added++;
+	gd->rpush_wrapped = -1;
+}
+
+/*
+ * Note that n lines went into the history, and how (GRID_PUSH_*); a scroll
+ * continuing the last one extends it.
+ */
+void
+grid_add_push(struct grid *gd, u_int type, u_int upper, u_int lower, u_int n)
+{
+	struct grid_push	*gp;
+
+	if (n == 0)
+		return;
+	gd->scroll_view += n;
+	if (gd->npushes != 0) {
+		gp = &gd->pushes[(gd->npushes - 1) % GRID_PUSHES];
+		if (gp->type == type && gp->upper == upper &&
+		    gp->lower == lower &&
+		    (type == GRID_PUSH_SCROLL || type == GRID_PUSH_REGION)) {
+			gp->n += n;
+			return;
+		}
+	}
+	gp = &gd->pushes[gd->npushes++ % GRID_PUSHES];
+	gp->type = type;
+	gp->upper = upper;
+	gp->lower = lower;
+	gp->n = n;
 }
 
 /* Clear the history. */
@@ -519,6 +550,8 @@ grid_clear_history(struct grid *gd)
 	gd->hscrolled = 0;
 	gd->hsize = 0;
 	gd->scroll_generation++;
+	gd->scroll_cleared++;
+	gd->rpush_wrapped = -1;
 
 	gd->linedata = xreallocarray(gd->linedata, gd->sy,
 	    sizeof *gd->linedata);
@@ -529,12 +562,30 @@ void
 grid_scroll_history_region(struct grid *gd, u_int upper, u_int lower, u_int bg)
 {
 	struct grid_line	*gl_history, *gl_upper;
-	u_int			 yy;
+	u_int			 yy, top;
 
 	/* Create a space for a new line. */
 	yy = gd->hsize + gd->sy;
 	gd->linedata = xreallocarray(gd->linedata, yy + 1,
 	    sizeof *gd->linedata);
+
+	/*
+	 * Below the top row the line going in does not continue the last
+	 * history line (which may wrap on to the top row) - unless that line
+	 * came from this region last and wrapped on to what is now its top.
+	 */
+	top = upper - gd->hsize;
+	if (top != 0 && gd->hsize != 0) {
+		gl_history = &gd->linedata[gd->hsize - 1];
+		if (gd->rpush_wrapped == 1 && gd->rpush_upper == top &&
+		    gd->rpush_lower == lower - gd->hsize)
+			gl_history->flags |= GRID_LINE_WRAPPED;
+		else
+			gl_history->flags &= ~GRID_LINE_WRAPPED;
+	}
+	gd->rpush_wrapped = !!(gd->linedata[upper].flags & GRID_LINE_WRAPPED);
+	gd->rpush_upper = top;
+	gd->rpush_lower = lower - gd->hsize;
 
 	/* Move the entire screen down to free a space for this line. */
 	gl_history = &gd->linedata[gd->hsize];
@@ -548,6 +599,8 @@ grid_scroll_history_region(struct grid *gd, u_int upper, u_int lower, u_int bg)
 	/* Move the line into the history. */
 	memcpy(gl_history, gl_upper, sizeof *gl_history);
 	grid_line_set_time(gl_history);
+	if (top != 0)	/* its next row stays in the region */
+		gl_history->flags &= ~GRID_LINE_WRAPPED;
 
 	/* Then move the region up and clear the bottom line. */
 	memmove(gl_upper, gl_upper + 1, (lower - upper) * sizeof *gl_upper);
@@ -657,6 +710,23 @@ grid_get_cell(struct grid *gd, u_int px, u_int py, struct grid_cell *gc)
 		grid_get_cell1(&gd->linedata[py], px, gc);
 }
 
+/*
+ * Lines py to py + ny - 1 change: if the top row of the region the last line
+ * went into the history from is among them, what that row continues is no
+ * longer known (see grid_scroll_history_region).
+ */
+static void
+grid_rpush_touch(struct grid *gd, u_int py, u_int ny)
+{
+	u_int	top;
+
+	if (gd->rpush_wrapped == -1)
+		return;
+	top = gd->hsize + gd->rpush_upper;
+	if (top >= py && top < py + ny)
+		gd->rpush_wrapped = -1;
+}
+
 /* Set cell at position. */
 void
 grid_set_cell(struct grid *gd, u_int px, u_int py, const struct grid_cell *gc)
@@ -666,6 +736,7 @@ grid_set_cell(struct grid *gd, u_int px, u_int py, const struct grid_cell *gc)
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
+	grid_rpush_touch(gd, py, 1);
 
 	grid_expand_line(gd, py, px + 1, 8);
 
@@ -703,6 +774,7 @@ grid_set_cells(struct grid *gd, u_int px, u_int py, const struct grid_cell *gc,
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
+	grid_rpush_touch(gd, py, 1);
 
 	grid_expand_line(gd, py, px + slen, 8);
 
@@ -729,6 +801,7 @@ grid_clear(struct grid *gd, u_int px, u_int py, u_int nx, u_int ny, u_int bg)
 
 	if (nx == 0 || ny == 0)
 		return;
+	grid_rpush_touch(gd, py, ny);
 
 	if (px == 0 && nx == gd->sx) {
 		grid_clear_lines(gd, py, ny, bg);
@@ -768,6 +841,7 @@ grid_clear_lines(struct grid *gd, u_int py, u_int ny, u_int bg)
 
 	if (ny == 0)
 		return;
+	grid_rpush_touch(gd, py, ny);
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
@@ -790,6 +864,8 @@ grid_move_lines(struct grid *gd, u_int dy, u_int py, u_int ny, u_int bg)
 
 	if (ny == 0 || py == dy)
 		return;
+	grid_rpush_touch(gd, dy, ny);
+	grid_rpush_touch(gd, py, ny);
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
@@ -834,6 +910,7 @@ grid_move_cells(struct grid *gd, u_int dx, u_int px, u_int py, u_int nx,
 
 	if (nx == 0 || px == dx)
 		return;
+	grid_rpush_touch(gd, py, 1);
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
@@ -1175,6 +1252,30 @@ grid_string_cells_code(const struct grid_cell *lastgc,
 	}
 }
 
+/* A character given a width (OSC 66) as the sequence the program wrote. */
+static void
+grid_string_cells_sized(const struct grid_cell *gc, char *buf, size_t len,
+    int flags)
+{
+	const struct utf8_data	*ud = &gc->data;
+	size_t			 off;
+	u_int			 i;
+
+	if (~flags & GRID_STRING_ESCAPE_SEQUENCES) {
+		xsnprintf(buf, len, "\033]66;w=%u;%.*s\033\\", ud->width,
+		    (int)ud->size, ud->data);
+		return;
+	}
+	off = xsnprintf(buf, len, "\\033]66;w=%u;", ud->width);
+	for (i = 0; i < ud->size && off + 2 < len; i++) {
+		if (ud->data[i] == '\\')
+			buf[off++] = '\\';
+		buf[off++] = ud->data[i];
+	}
+	buf[off] = '\0';
+	strlcat(buf, "\\033\\\\", len);
+}
+
 /* Convert cells into a string. */
 char *
 grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
@@ -1183,7 +1284,7 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 	struct grid_cell	 gc;
 	static struct grid_cell	 lastgc1;
 	const char		*data;
-	char			*buf, code[8192];
+	char			*buf, code[8192], sized[2 * UTF8_SIZE + 32];
 	size_t			 len, off, size, codelen;
 	u_int			 xx, end;
 	int			 has_link = 0;
@@ -1225,6 +1326,13 @@ grid_string_cells(struct grid *gd, u_int px, u_int py, u_int nx,
 		if (gc.flags & GRID_FLAG_TAB) {
 			data = "\t";
 			size = 1;
+		} else if ((gc.attr & GRID_ATTR_SIZED) &&
+		    (flags & GRID_STRING_WITH_SEQUENCES)) {
+			/* A character given a width: as the program wrote it. */
+			grid_string_cells_sized(&gc, sized, sizeof sized,
+			    flags);
+			data = sized;
+			size = strlen(sized);
 		} else {
 			data = gc.data.data;
 			size = gc.data.size;
@@ -1347,6 +1455,33 @@ grid_reflow_move(struct grid *gd, struct grid_line *from)
 	return (to);
 }
 
+/*
+ * The columns a cell adds to a line: a character all its width, padding
+ * none (a padding cell may read as width 1 or 0, as it was stored).
+ */
+static u_int
+grid_cell_width(const struct grid_cell *gc)
+{
+	if (gc->flags & GRID_FLAG_PADDING)
+		return (0);
+	return (gc->data.width);
+}
+
+/*
+ * Whether a row of width columns ends before this cell. A character starts
+ * a new row if it does not fit, but one wider than a whole row does not
+ * leave an empty one: it keeps a row to itself and overhangs it, so it comes
+ * back whole when the line is wider again. Padding stays with its
+ * character.
+ */
+static int
+grid_reflow_breaks(const struct grid_cell *gc, u_int width, u_int sx)
+{
+	u_int	w = grid_cell_width(gc);
+
+	return (w != 0 && width != 0 && width + w > sx);
+}
+
 /* Join line below onto this one. */
 static void
 grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
@@ -1384,11 +1519,11 @@ grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		line = yy + 1 + lines;
 
 		/* If the next line is empty, skip it. */
-		if (~gd->linedata[line].flags & GRID_LINE_WRAPPED)
-			wrapped = 0;
 		if (gd->linedata[line].cellused == 0) {
-			if (!wrapped)
+			if (~gd->linedata[line].flags & GRID_LINE_WRAPPED) {
+				wrapped = 0;
 				break;
+			}
 			lines++;
 			continue;
 		}
@@ -1396,12 +1531,15 @@ grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		/*
 		 * Is the destination line now full? Copy the first character
 		 * separately because we need to leave "from" set to the last
-		 * line if this line is full.
+		 * line if this line is full. Only a line joined (in part) ends
+		 * the wrap, not one left for the next row.
 		 */
 		grid_get_cell1(&gd->linedata[line], 0, &gc);
-		if (width + gc.data.width > sx)
+		if (width + grid_cell_width(&gc) > sx)
 			break;
-		width += gc.data.width;
+		if (~gd->linedata[line].flags & GRID_LINE_WRAPPED)
+			wrapped = 0;
+		width += grid_cell_width(&gc);
 		grid_set_cell(target, at, to, &gc);
 		at++;
 
@@ -1409,9 +1547,9 @@ grid_reflow_join(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		from = &gd->linedata[line];
 		for (want = 1; want < from->cellused; want++) {
 			grid_get_cell1(from, want, &gc);
-			if (width + gc.data.width > sx)
+			if (width + grid_cell_width(&gc) > sx)
 				break;
-			width += gc.data.width;
+			width += grid_cell_width(&gc);
 
 			grid_set_cell(target, at, to, &gc);
 			at++;
@@ -1474,11 +1612,11 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 		width = 0;
 		for (i = at; i < used; i++) {
 			grid_get_cell1(gl, i, &gc);
-			if (width + gc.data.width > sx) {
+			if (grid_reflow_breaks(&gc, width, sx)) {
 				lines++;
 				width = 0;
 			}
-			width += gc.data.width;
+			width += grid_cell_width(&gc);
 		}
 	}
 
@@ -1491,14 +1629,14 @@ grid_reflow_split(struct grid *target, struct grid *gd, u_int sx, u_int yy,
 	xx = 0;
 	for (i = at; i < used; i++) {
 		grid_get_cell1(gl, i, &gc);
-		if (width + gc.data.width > sx) {
+		if (grid_reflow_breaks(&gc, width, sx)) {
 			target->linedata[line].flags |= GRID_LINE_WRAPPED;
 
 			line++;
 			width = 0;
 			xx = 0;
 		}
-		width += gc.data.width;
+		width += grid_cell_width(&gc);
 		grid_set_cell(target, xx, line, &gc);
 		xx++;
 	}
@@ -1530,7 +1668,7 @@ grid_reflow(struct grid *gd, u_int sx)
 	struct grid		*target;
 	struct grid_line	*gl;
 	struct grid_cell	 gc;
-	u_int			 yy, width, i, at;
+	u_int			 yy, width, i, at, ohsize, first, *map;
 
 	/*
 	 * Create a destination grid. This is just used as a container for the
@@ -1539,10 +1677,24 @@ grid_reflow(struct grid *gd, u_int sx)
 	target = grid_create(gd->sx, 0, 0);
 
 	/*
+	 * Note where the last history rows go, so a terminal that has not
+	 * caught up with the history finds its place (tty_catch_up_history).
+	 */
+	ohsize = gd->hsize;
+	first = (ohsize > 10000) ? ohsize - 10000 : 0;
+	map = xreallocarray(NULL, ohsize + gd->sy + 1 - first, sizeof *map);
+
+	/*
 	 * Loop over each source line.
 	 */
 	for (yy = 0; yy < gd->hsize + gd->sy; yy++) {
 		gl = &gd->linedata[yy];
+		if (yy >= first) {
+			if ((gl->flags & GRID_LINE_DEAD) && target->sy != 0)
+				map[yy - first] = target->sy - 1; /* joined */
+			else
+				map[yy - first] = target->sy;
+		}
 		if (gl->flags & GRID_LINE_DEAD)
 			continue;
 
@@ -1561,9 +1713,10 @@ grid_reflow(struct grid *gd, u_int sx)
 		} else {
 			for (i = 0; i < gl->cellused; i++) {
 				grid_get_cell1(gl, i, &gc);
-				if (at == 0 && width + gc.data.width > sx)
+				if (at == 0 &&
+				    grid_reflow_breaks(&gc, width, sx))
 					at = i;
-				width += gc.data.width;
+				width += grid_cell_width(&gc);
 			}
 		}
 
@@ -1578,9 +1731,10 @@ grid_reflow(struct grid *gd, u_int sx)
 
 		/*
 		 * If the line is too big, it needs to be split, whether or not
-		 * it was previously wrapped.
+		 * it was previously wrapped - unless all of it is one character
+		 * wider than the line, which keeps the line to itself.
 		 */
-		if (width > sx) {
+		if (width > sx && at != 0) {
 			grid_reflow_split(target, gd, sx, yy, at);
 			continue;
 		}
@@ -1595,6 +1749,8 @@ grid_reflow(struct grid *gd, u_int sx)
 			grid_reflow_move(target, gl);
 	}
 
+	map[ohsize + gd->sy - first] = target->sy;	/* the end */
+
 	/*
 	 * Replace the old grid with the new.
 	 */
@@ -1607,14 +1763,33 @@ grid_reflow(struct grid *gd, u_int sx)
 	gd->linedata = target->linedata;
 	free(target);
 	gd->scroll_generation++;
+
+	/* The lines have been rewrapped: how they went in no longer applies. */
+	gd->npushes = 0;
+	gd->rpush_wrapped = -1;
+
+	free(gd->reflow_map);
+	gd->reflow_map = map;
+	gd->reflow_first = first;
+	gd->reflow_view = gd->scroll_view;
+	gd->reflow_hsize = ohsize;
+	gd->reflow_osy = gd->sy;
+	gd->reflow_newh = gd->hsize;
+	gd->reflow_gen = gd->scroll_generation;
 }
 
-/* Convert to position based on wrapped lines. */
+/*
+ * Convert to position based on wrapped lines. sx is the width the rows were
+ * made for (the grid's may already be the new one).
+ */
 void
-grid_wrap_position(struct grid *gd, u_int px, u_int py, u_int *wx, u_int *wy)
+grid_wrap_position(struct grid *gd, u_int sx, u_int px, u_int py, u_int *wx,
+    u_int *wy)
 {
 	u_int	ax = 0, ay = 0, yy;
 
+	if (py > gd->hsize + gd->sy - 1)
+		py = gd->hsize + gd->sy - 1;
 	for (yy = 0; yy < py; yy++) {
 		if (gd->linedata[yy].flags & GRID_LINE_WRAPPED)
 			ax += gd->linedata[yy].cellused;
@@ -1623,7 +1798,12 @@ grid_wrap_position(struct grid *gd, u_int px, u_int py, u_int *wx, u_int *wy)
 			ay++;
 		}
 	}
-	if (px >= gd->linedata[yy].cellused)
+	/*
+	 * At or past the end of the line (or the edge of a row a character
+	 * overhangs, which is its end).
+	 */
+	if (px >= gd->linedata[yy].cellused ||
+	    (gd->linedata[yy].cellused > sx && px >= sx))
 		ax = UINT_MAX;
 	else
 		ax += px;
@@ -1652,6 +1832,8 @@ grid_unwrap_position(struct grid *gd, u_int *px, u_int *py, u_int wx, u_int wy)
 		while (yy < ey && gd->linedata[yy].flags & GRID_LINE_WRAPPED)
 			yy++;
 		wx = gd->linedata[yy].cellused;
+		if (wx > gd->sx)
+			wx = gd->sx;	/* a character overhangs the row */
 	} else {
 		while (gd->linedata[yy].flags & GRID_LINE_WRAPPED) {
 			if (wx < gd->linedata[yy].cellused)
@@ -1659,9 +1841,80 @@ grid_unwrap_position(struct grid *gd, u_int *px, u_int *py, u_int wx, u_int wy)
 			wx -= gd->linedata[yy].cellused;
 			yy++;
 		}
+		if (wx >= gd->sx && gd->sx != 0)
+			wx = gd->sx - 1; /* inside a character that overhangs */
 	}
 	*px = wx;
 	*py = yy;
+}
+
+/*
+ * A line holds cells past its edge when a reflow left a character wider than
+ * the line overhanging it (grid_reflow_breaks). Once an edit has removed that
+ * character, its padding past the edge goes too.
+ */
+void
+grid_trim_overhang(struct grid *gd, u_int py)
+{
+	struct grid_line	*gl = &gd->linedata[py];
+	struct grid_cell	 gc;
+	u_int			 x, end;
+
+	if (gl->cellsize <= gd->sx)
+		return;
+	grid_get_cell(gd, gd->sx, py, &gc);
+	if (~gc.flags & GRID_FLAG_PADDING)
+		return;
+	for (x = gd->sx; x > 0; x--) {
+		grid_get_cell(gd, x - 1, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING) {
+			if (x - 1 + gc.data.width > gd->sx)
+				return;		/* it still overhangs */
+			break;
+		}
+	}
+
+	for (end = gd->sx; end < gl->cellsize; end++) {
+		grid_get_cell(gd, end, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			break;
+	}
+	if (end >= gl->cellused) {
+		gl->cellsize = gd->sx;
+		if (gl->cellused > gd->sx)
+			gl->cellused = gd->sx;
+		return;
+	}
+	for (x = gd->sx; x < end; x++)
+		grid_clear_cell(gd, x, py, 8, 0);
+}
+
+/*
+ * Whether a line's cells past the grid's edge are only the padding of a
+ * character a reflow left overhanging it (grid_reflow_breaks). A reader
+ * that takes a row as its first sx cells then has all of the line: the
+ * character is in the row, and the row wraps on as any other.
+ */
+int
+grid_line_overhangs(struct grid *gd, u_int py)
+{
+	struct grid_line	*gl = &gd->linedata[py];
+	struct grid_cell	 gc;
+	u_int			 x;
+
+	if (gl->cellsize <= gd->sx)
+		return (0);
+	for (x = gd->sx; x < gl->cellused; x++) {
+		grid_get_cell(gd, x, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			return (0);
+	}
+	for (x = gd->sx; x > 0; x--) {
+		grid_get_cell(gd, x - 1, py, &gc);
+		if (~gc.flags & GRID_FLAG_PADDING)
+			return (x - 1 + gc.data.width > gd->sx);
+	}
+	return (0);
 }
 
 /* Get length of line. */

@@ -17,7 +17,13 @@ do_test() {
   printf '$1'
   $TMUX capturep -peS0 -E1 >$TMP"
   printf "$2\n" > $TMP2
-  sleep 1
+  # The server exits when the pane has captured itself and exited.
+  i=0
+  while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
+    i=$((i + 1))
+    [ $i -gt 400 ] && { echo "pane did not exit" >&2; exit 1; }
+    sleep 0.05
+  done
   cmp $TMP $TMP2 || exit 1
   return 0
 }

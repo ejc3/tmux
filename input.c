@@ -95,6 +95,15 @@ struct input_param {
 	};
 };
 
+/* A kitty graphics placeholder as the program wrote it. */
+struct input_kgfx_cell {
+	int				fg;
+	int				us;
+	u_int				row;
+	u_int				column;
+	u_int				high;	/* of the image id */
+};
+
 /* Input parser context. */
 struct input_ctx {
 	struct window_pane	       *wp;
@@ -107,6 +116,12 @@ struct input_ctx {
 	u_int				old_cx;
 	u_int				old_cy;
 	int				old_mode;
+
+	/* The other screen's saved state (DECSC is per screen). */
+	struct input_cell		alt_old_cell;
+	u_int				alt_old_cx;
+	u_int				alt_old_cy;
+	int				alt_old_mode;
 
 	u_char				interm_buf[4];
 	size_t				interm_len;
@@ -128,6 +143,20 @@ struct input_ctx {
 
 	int				ch;
 	struct utf8_data		last;
+
+	/*
+	 * The last kitty graphics placeholder written (in a pane with kitty
+	 * graphics in tmux) and the number of its diacritics so far (-1 once
+	 * anything else is written), and the placeholder before it, if it was
+	 * written just before.
+	 */
+	int				kgfx_marks;
+	struct input_kgfx_cell		kgfx_cell;
+	struct input_kgfx_cell		kgfx_last;
+	int				kgfx_same;	/* same colours as last */
+
+	/* Replies go here, not to the pane, if not NULL. */
+	struct evbuffer		       *capture;
 
 	const struct input_state       *state;
 	int				flags;
@@ -164,6 +193,10 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
+static u_int	input_osc_9_conemu(const char *);
+static void	input_osc_9_path(struct input_ctx *, const char *);
+static void	input_osc_22(struct input_ctx *, const char *);
+static void	input_osc_66(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
 static void	input_osc_11(struct input_ctx *, const char *);
 static void	input_osc_12(struct input_ctx *, const char *);
@@ -182,6 +215,7 @@ static void	input_enter_osc(struct input_ctx *);
 static void	input_exit_osc(struct input_ctx *);
 static void	input_enter_apc(struct input_ctx *);
 static void	input_exit_apc(struct input_ctx *);
+static int	input_is_kitty_graphics(const u_char *);
 static void	input_enter_rename(struct input_ctx *);
 static void	input_exit_rename(struct input_ctx *);
 
@@ -199,6 +233,8 @@ static void	input_csi_dispatch_sm(struct input_ctx *);
 static void	input_csi_dispatch_sm_private(struct input_ctx *);
 static void	input_csi_dispatch_sm_graphics(struct input_ctx *);
 static void	input_csi_dispatch_winops(struct input_ctx *);
+static void	input_csi_dispatch_kkeys(struct input_ctx *, int);
+static void	input_soft_reset(struct input_ctx *);
 static void	input_csi_dispatch_sgr_256(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr_rgb(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr(struct input_ctx *);
@@ -269,6 +305,7 @@ enum input_csi_type {
 	INPUT_CSI_DCH,
 	INPUT_CSI_DECSCUSR,
 	INPUT_CSI_DECSTBM,
+	INPUT_CSI_DECSTR,
 	INPUT_CSI_DL,
 	INPUT_CSI_DSR,
 	INPUT_CSI_DSR_PRIVATE,
@@ -276,12 +313,17 @@ enum input_csi_type {
 	INPUT_CSI_ED,
 	INPUT_CSI_EL,
 	INPUT_CSI_HPA,
+	INPUT_CSI_HPR,
 	INPUT_CSI_ICH,
 	INPUT_CSI_IL,
 	INPUT_CSI_MODOFF,
 	INPUT_CSI_MODSET,
 	INPUT_CSI_QUERY,
 	INPUT_CSI_QUERY_PRIVATE,
+	INPUT_CSI_KKEYS_POP,
+	INPUT_CSI_KKEYS_PUSH,
+	INPUT_CSI_KKEYS_QUERY,
+	INPUT_CSI_KKEYS_SET,
 	INPUT_CSI_RCP,
 	INPUT_CSI_REP,
 	INPUT_CSI_RM,
@@ -321,6 +363,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'X', "",  INPUT_CSI_ECH },
 	{ 'Z', "",  INPUT_CSI_CBT },
 	{ '`', "",  INPUT_CSI_HPA },
+	{ 'a', "",  INPUT_CSI_HPR },
 	{ 'b', "",  INPUT_CSI_REP },
 	{ 'c', "",  INPUT_CSI_DA },
 	{ 'c', ">", INPUT_CSI_DA_TWO },
@@ -336,6 +379,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'n', "",  INPUT_CSI_DSR },
 	{ 'n', ">", INPUT_CSI_MODOFF },
 	{ 'n', "?", INPUT_CSI_DSR_PRIVATE },
+	{ 'p', "!",  INPUT_CSI_DECSTR },
 	{ 'p', "$",  INPUT_CSI_QUERY },
 	{ 'p', "?$", INPUT_CSI_QUERY_PRIVATE },
 	{ 'q', " ", INPUT_CSI_DECSCUSR },
@@ -343,7 +387,11 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'r', "",  INPUT_CSI_DECSTBM },
 	{ 's', "",  INPUT_CSI_SCP },
 	{ 't', "",  INPUT_CSI_WINOPS },
-	{ 'u', "",  INPUT_CSI_RCP }
+	{ 'u', "",  INPUT_CSI_RCP },
+	{ 'u', "<", INPUT_CSI_KKEYS_POP },
+	{ 'u', "=", INPUT_CSI_KKEYS_SET },
+	{ 'u', ">", INPUT_CSI_KKEYS_PUSH },
+	{ 'u', "?", INPUT_CSI_KKEYS_QUERY }
 };
 
 /* Input transition. */
@@ -841,6 +889,39 @@ input_reset_cell(struct input_ctx *ictx)
 	memcpy(&ictx->old_cell, &ictx->cell, sizeof ictx->old_cell);
 	ictx->old_cx = 0;
 	ictx->old_cy = 0;
+	ictx->old_mode = 0;
+
+	memcpy(&ictx->alt_old_cell, &ictx->cell, sizeof ictx->alt_old_cell);
+	ictx->alt_old_cx = 0;
+	ictx->alt_old_cy = 0;
+	ictx->alt_old_mode = 0;
+}
+
+/*
+ * Switch the saved state to the other screen's: as in xterm, each screen has
+ * its own, and 1049 saves and restores the main screen's.
+ */
+static void
+input_swap_state(struct input_ctx *ictx)
+{
+	struct input_cell	cell;
+	u_int			cx, cy;
+	int			mode;
+
+	memcpy(&cell, &ictx->old_cell, sizeof cell);
+	cx = ictx->old_cx;
+	cy = ictx->old_cy;
+	mode = ictx->old_mode;
+
+	memcpy(&ictx->old_cell, &ictx->alt_old_cell, sizeof ictx->old_cell);
+	ictx->old_cx = ictx->alt_old_cx;
+	ictx->old_cy = ictx->alt_old_cy;
+	ictx->old_mode = ictx->alt_old_mode;
+
+	memcpy(&ictx->alt_old_cell, &cell, sizeof ictx->alt_old_cell);
+	ictx->alt_old_cx = cx;
+	ictx->alt_old_cy = cy;
+	ictx->alt_old_mode = mode;
 }
 
 /* Save screen state. */
@@ -868,6 +949,8 @@ input_restore_state(struct input_ctx *ictx)
 	else
 		screen_write_mode_clear(sctx, MODE_ORIGIN);
 	screen_write_cursormove(sctx, ictx->old_cx, ictx->old_cy, 0);
+	if (ictx->old_cx == screen_size_x(sctx->s))
+		screen_write_wrapnext(sctx, 1);
 }
 
 /* Initialise input parser. */
@@ -944,6 +1027,7 @@ input_reset(struct input_ctx *ictx, int clear)
 
 	ictx->state = &input_state_ground;
 	ictx->flags = 0;
+	ictx->kgfx_marks = -1;
 }
 
 /* Return pending data. */
@@ -1037,6 +1121,22 @@ input_parse_pane(struct window_pane *wp)
 	window_pane_update_used_data(wp, &wp->offset, new_size);
 }
 
+/* Is the parser between sequences? */
+int
+input_is_ground(struct input_ctx *ictx)
+{
+	return (ictx->state == &input_state_ground);
+}
+
+/* Are the attributes and character sets the defaults? */
+int
+input_cell_is_default(struct input_ctx *ictx)
+{
+	return (grid_cells_equal(&ictx->cell.cell, &grid_default_cell) &&
+	    ictx->cell.set == 0 && ictx->cell.g0set == 0 &&
+	    ictx->cell.g1set == 0);
+}
+
 /* Parse given input. */
 void
 input_parse_buffer(struct window_pane *wp, const u_char *buf, size_t len)
@@ -1046,6 +1146,7 @@ input_parse_buffer(struct window_pane *wp, const u_char *buf, size_t len)
 
 	if (len == 0)
 		return;
+	forward_pane_output(wp, buf, len);
 
 	wp->output_generation++;
 	window_update_activity(wp->window);
@@ -1070,6 +1171,7 @@ input_parse_buffer(struct window_pane *wp, const u_char *buf, size_t len)
 
 	input_parse(ictx, buf, len);
 	screen_write_stop(sctx);
+	forward_pane_parsed(wp);
 }
 
 /* Parse given input for screen. */
@@ -1163,6 +1265,10 @@ input_get(struct input_ctx *ictx, u_int validx, int minval, int defval)
 static void
 input_send_reply(struct input_ctx *ictx, const char *reply)
 {
+	if (ictx->capture != NULL) {
+		evbuffer_add(ictx->capture, reply, strlen(reply));
+		return;
+	}
 	if (ictx->event != NULL) {
 		log_debug("%s: %s", __func__, reply);
 		bufferevent_write(ictx->event, reply, strlen(reply));
@@ -1242,6 +1348,7 @@ input_print(struct input_ctx *ictx)
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);
 	ictx->flags |= INPUT_LAST;
+	ictx->kgfx_marks = -1;
 
 	ictx->cell.cell.attr &= ~GRID_ATTR_CHARSET;
 
@@ -1324,6 +1431,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case '\010':	/* BS */
+		screen_write_wrapnext(sctx, 0);
 		screen_write_backspace(sctx);
 		break;
 	case '\011':	/* HT */
@@ -1360,6 +1468,7 @@ input_c0_dispatch(struct input_ctx *ictx)
 	case '\012':	/* LF */
 	case '\013':	/* VT */
 	case '\014':	/* FF */
+		screen_write_wrapnext(sctx, 0);
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
 		if (s->mode & MODE_CRLF)
 			screen_write_carriagereturn(sctx);
@@ -1409,6 +1518,7 @@ input_esc_dispatch(struct input_ctx *ictx)
 		screen_write_fullredraw(sctx);
 		break;
 	case INPUT_ESC_IND:
+		screen_write_wrapnext(sctx, 0);
 		screen_write_linefeed(sctx, 0, ictx->cell.cell.bg);
 		break;
 	case INPUT_ESC_NEL:
@@ -1502,6 +1612,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		s->cx = cx;
 		break;
 	case INPUT_CSI_CUB:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursorleft(sctx, n);
@@ -1512,6 +1623,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_cursordown(sctx, n);
 		break;
 	case INPUT_CSI_CUF:
+	case INPUT_CSI_HPR:
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursorright(sctx, n);
@@ -1606,14 +1718,19 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ECH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_clearcharacter(sctx, n, bg);
 		break;
 	case INPUT_CSI_DCH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_deletecharacter(sctx, n, bg);
+		break;
+	case INPUT_CSI_DECSTR:
+		input_soft_reset(ictx);
 		break;
 	case INPUT_CSI_DECSTBM:
 		n = input_get(ictx, 0, 1, 1);
@@ -1622,9 +1739,14 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_scrollregion(sctx, n - 1, m - 1);
 		break;
 	case INPUT_CSI_DL:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
-		if (n != -1)
+		if (n != -1) {
 			screen_write_deleteline(sctx, n, bg);
+			/* Inside the region, the cursor goes to the margin. */
+			if (s->cy >= s->rupper && s->cy <= s->rlower)
+				screen_write_carriagereturn(sctx);
+		}
 		break;
 	case INPUT_CSI_DSR_PRIVATE:
 		switch (input_get(ictx, 0, 0, 0)) {
@@ -1702,14 +1824,23 @@ input_csi_dispatch(struct input_ctx *ictx)
 		case 1006:	/* mouse: SGR */
 			n = (s->mode & MODE_MOUSE_SGR) ? 1 : 2;
 			break;
+		case 1016:	/* mouse: SGR, in pixels */
+			n = (s->mode & MODE_MOUSE_PIXELS) ? 1 : 2;
+			break;
 		case 2004:	/* bracketed paste */
 			n = (s->mode & MODE_BRACKETPASTE) ? 1 : 2;
 			break;
 		case 2026:	/* synchronized output */
 			n = (s->mode & MODE_SYNC) ? 1 : 2;
 			break;
+		case 2027:	/* grapheme clusters: always, see utf8-combined.c */
+			n = 3;
+			break;
 		case 2031:	/* theme update notifications */
 			n = (s->mode & MODE_THEME_UPDATES) ? 1 : 2;
+			break;
+		case 2048:	/* in-band resize notifications */
+			n = (s->mode & MODE_INBAND_RESIZE) ? 1 : 2;
 			break;
 		default:
 			n = 0;
@@ -1735,6 +1866,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_ED:
+		screen_write_wrapnext(sctx, 0);
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
 			break;
@@ -1762,6 +1894,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_EL:
+		screen_write_wrapnext(sctx, 0);
 		switch (input_get(ictx, 0, 0, 0)) {
 		case -1:
 			break;
@@ -1785,21 +1918,32 @@ input_csi_dispatch(struct input_ctx *ictx)
 			screen_write_cursormove(sctx, n - 1, -1, 1);
 		break;
 	case INPUT_CSI_ICH:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_insertcharacter(sctx, n, bg);
 		break;
 	case INPUT_CSI_IL:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
-		if (n != -1)
+		if (n != -1) {
 			screen_write_insertline(sctx, n, bg);
+			/* Inside the region, the cursor goes to the margin. */
+			if (s->cy >= s->rupper && s->cy <= s->rlower)
+				screen_write_carriagereturn(sctx);
+		}
 		break;
 	case INPUT_CSI_REP:
 		n = input_get(ictx, 0, 1, 1);
 		if (n == -1)
 			break;
 
-		m = screen_size_x(s) - s->cx;
+		/*
+		 * Repeat as if written again, wrapping at the end of the line
+		 * as xterm and others do; more than a screenful changes
+		 * nothing more that can be seen, so stop there.
+		 */
+		m = screen_size_x(s) * screen_size_y(s);
 		if (n > m)
 			n = m;
 
@@ -1817,6 +1961,12 @@ input_csi_dispatch(struct input_ctx *ictx)
 		break;
 	case INPUT_CSI_RCP:
 		input_restore_state(ictx);
+		break;
+	case INPUT_CSI_KKEYS_PUSH:
+	case INPUT_CSI_KKEYS_POP:
+	case INPUT_CSI_KKEYS_SET:
+	case INPUT_CSI_KKEYS_QUERY:
+		input_csi_dispatch_kkeys(ictx, entry->type);
 		break;
 	case INPUT_CSI_RM:
 		input_csi_dispatch_rm(ictx);
@@ -1866,6 +2016,7 @@ input_csi_dispatch(struct input_ctx *ictx)
 		}
 		break;
 	case INPUT_CSI_VPA:
+		screen_write_wrapnext(sctx, 0);
 		n = input_get(ictx, 0, 1, 1);
 		if (n != -1)
 			screen_write_cursormove(sctx, -1, n - 1, 1);
@@ -1925,6 +2076,7 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct grid_cell	*gc = &ictx->cell.cell;
 	u_int			 i;
+	int			 alt;
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		switch (input_get(ictx, i, 0, -1)) {
@@ -1942,6 +2094,7 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			screen_write_cursormove(sctx, 0, 0, 1);
 			break;
 		case 7:		/* DECAWM */
+			screen_write_wrapnext(sctx, 0);
 			screen_write_mode_clear(sctx, MODE_WRAP);
 			break;
 		case 12:
@@ -1966,12 +2119,30 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 		case 1006:
 			screen_write_mode_clear(sctx, MODE_MOUSE_SGR);
 			break;
+		case 1016:
+			screen_write_mode_clear(sctx, MODE_MOUSE_PIXELS);
+			break;
 		case 47:
 		case 1047:
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateoff(sctx, gc, 0);
+			if (alt && !SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			break;
+		case 1048:
+			input_restore_state(ictx);
 			break;
 		case 1049:
-			screen_write_alternateoff(sctx, gc, 1);
+			/* Restore the cursor even if not in the alternate screen. */
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
+			if (alt)
+				screen_write_alternateoff(sctx, gc, 1);
+			if (alt && !SCREEN_IS_ALTERNATE(sctx->s)) {
+				input_swap_state(ictx);
+				memcpy(&ictx->cell, &ictx->old_cell,
+				    sizeof ictx->cell);
+			} else
+				input_restore_state(ictx);
 			break;
 		case 2004:
 			screen_write_mode_clear(sctx, MODE_BRACKETPASTE);
@@ -1983,6 +2154,9 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			screen_write_mode_clear(sctx, MODE_THEME_UPDATES);
 			if (ictx->wp != NULL)
 				ictx->wp->flags &= ~PANE_THEMECHANGED;
+			break;
+		case 2048:
+			screen_write_mode_clear(sctx, MODE_INBAND_RESIZE);
 			break;
 		default:
 			log_debug("%s: unknown '%c'", __func__, ictx->ch);
@@ -2022,6 +2196,7 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct grid_cell	*gc = &ictx->cell.cell;
 	u_int			 i;
+	int			 alt;
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		switch (input_get(ictx, i, 0, -1)) {
@@ -2069,12 +2244,29 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 		case 1006:
 			screen_write_mode_set(sctx, MODE_MOUSE_SGR);
 			break;
+		case 1016:
+			screen_write_mode_set(sctx, MODE_MOUSE_PIXELS);
+			break;
 		case 47:
 		case 1047:
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateon(sctx, gc, 0);
+			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			break;
+		case 1048:
+			input_save_state(ictx);
 			break;
 		case 1049:
+			input_save_state(ictx);
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateon(sctx, gc, 1);
+			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			else if (alt) {
+				/* Already there: clear it, as xterm does. */
+				screen_write_clearscreen(sctx, gc->bg);
+			}
 			break;
 		case 2004:
 			screen_write_mode_set(sctx, MODE_BRACKETPASTE);
@@ -2085,6 +2277,13 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 				ictx->wp->last_theme = window_pane_get_theme(ictx->wp);
 				ictx->wp->flags &= ~PANE_THEMECHANGED;
 			}
+			break;
+		case 2048:
+			/* Report the size now, then on every resize. */
+			screen_write_mode_set(sctx, MODE_INBAND_RESIZE);
+			if (ictx->wp != NULL && sctx->s == &ictx->wp->base)
+				window_pane_report_size(ictx->wp, ictx->wp->sx,
+				    ictx->wp->sy);
 			break;
 		case 2026:
 			screen_write_start_sync(ictx->wp);
@@ -2115,6 +2314,63 @@ input_csi_dispatch_sm_graphics(__unused struct input_ctx *ictx)
 	} else
 		input_reply(ictx, 1, "\033[?%d;3;%dS", n, o);
 #endif
+}
+
+/*
+ * Soft reset (DECSTR), as xterm: the cursor shown, insert and origin modes
+ * off, wrapping on, cursor keys and keypad normal, no scroll region,
+ * attributes and character sets at their defaults and the saved cursor at
+ * the top left. Also, as kitty, no kitty keyboard flags. The screen and the
+ * cursor position stay.
+ */
+static void
+input_soft_reset(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	u_int			 cx = s->cx, cy = s->cy;
+
+	screen_write_mode_set(sctx, MODE_CURSOR|MODE_WRAP);
+	screen_write_mode_clear(sctx,
+	    MODE_INSERT|MODE_ORIGIN|MODE_KCURSOR|MODE_KKEYPAD);
+	screen_write_scrollregion(sctx, 0, screen_size_y(s) - 1);
+	screen_write_cursormove(sctx, cx, cy, 0);
+	input_reset_cell(ictx);
+	screen_kkeys_reset(s);
+}
+
+/*
+ * Kitty keyboard protocol: push, pop, set or query the progressive
+ * enhancement flags. With extended-keys off, tmux does not take part: no
+ * answer to the query and the flags stay 0.
+ */
+static void
+input_csi_dispatch_kkeys(struct input_ctx *ictx, int type)
+{
+	struct screen	*s = ictx->ctx.s;
+	int		 n, m;
+
+	if (options_get_number(global_options, "extended-keys") == 0)
+		return;
+	switch (type) {
+	case INPUT_CSI_KKEYS_PUSH:
+		if ((n = input_get(ictx, 0, 0, 0)) != -1)
+			screen_kkeys_push(s, n);
+		break;
+	case INPUT_CSI_KKEYS_POP:
+		if ((n = input_get(ictx, 0, 1, 1)) != -1)
+			screen_kkeys_pop(s, n);
+		break;
+	case INPUT_CSI_KKEYS_SET:
+		n = input_get(ictx, 0, 0, 0);
+		m = input_get(ictx, 1, 1, 1);
+		if (n != -1 && m != -1)
+			screen_kkeys_set(s, n, m);
+		break;
+	case INPUT_CSI_KKEYS_QUERY:
+		input_reply(ictx, 1, "\033[?%uu", screen_kkeys_flags(s));
+		break;
+	}
 }
 
 /* Handle CSI window operations. */
@@ -2741,7 +2997,38 @@ input_exit_osc(struct input_ctx *ictx)
 		input_osc_8(ictx, p);
 		break;
 	case 9:
-		input_osc_9(ictx, p);
+		/*
+		 * 9;4 is a progress bar and 9;9 the shell's directory; the
+		 * other ConEmu commands (9;1 to 9;12) are not notifications
+		 * either.
+		 */
+		if (*p == '4' && (p[1] == ';' || p[1] == '\0'))
+			input_osc_9(ictx, p);
+		else if (input_osc_9_conemu(p) == 9)
+			input_osc_9_path(ictx, p);
+		else if (wp != NULL && input_osc_9_conemu(p) == 0)
+			server_client_notify(wp, ictx->input_buf);
+		break;
+	case 22:
+		input_osc_22(ictx, p);
+		break;
+	case 66:
+		input_osc_66(ictx, p);
+		break;
+	case 99:
+		/*
+		 * A query (for what is supported, or for the notifications
+		 * still open) goes to one terminal, and answers after it wait
+		 * for its answer.
+		 */
+		if (wp != NULL && server_client_notify_is_query(ictx->input_buf))
+			input_add_request(ictx, INPUT_REQUEST_NOTIFY, 0);
+		else if (wp != NULL)
+			server_client_notify(wp, ictx->input_buf);
+		break;
+	case 777:
+		if (wp != NULL)
+			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 10:
 		input_osc_10(ictx, p);
@@ -2798,12 +3085,43 @@ input_exit_apc(struct input_ctx *ictx)
 		return;
 	log_debug("%s: \"%s\"", __func__, ictx->input_buf);
 
+	/* A kitty graphics command, not a title. */
+	if (input_is_kitty_graphics(ictx->input_buf)) {
+		if (wp != NULL) {
+			kgfx_command(wp, sctx, ictx->event, ictx->input_buf,
+			    ictx->input_len);
+		}
+		return;
+	}
+
 	if (wp != NULL &&
 	    options_get_number(wp->options, "allow-set-title") &&
 	    screen_set_title(sctx->s, ictx->input_buf, 1)) {
 		input_fire_pane_title_changed(wp, ictx->input_buf);
 		server_redraw_window_borders(wp->window);
 		server_status_window(wp->window);
+	}
+}
+
+/*
+ * Whether an APC string is a kitty graphics command: G, then single-letter
+ * keys with values (a=T,f=100,...) up to a ; before the payload or the end.
+ */
+static int
+input_is_kitty_graphics(const u_char *s)
+{
+	if (*s++ != 'G')
+		return (0);
+	for (;;) {
+		if (*s == '\0' || *s == ';')
+			return (1);
+		if (!isalpha(s[0]) || s[1] != '=')
+			return (0);
+		s += 2;
+		while (*s != '\0' && *s != ',' && *s != ';')
+			s++;
+		if (*s == ',')
+			s++;
 	}
 }
 
@@ -2852,6 +3170,119 @@ input_exit_rename(struct input_ctx *ictx)
 	server_status_window(w);
 }
 
+/*
+ * Write the placeholder before the cursor again with the image id's high byte
+ * now known, in place.
+ */
+static void
+input_kgfx_rewrite(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	struct grid_cell	 gc;
+	u_int			 cx = s->cx, cy = s->cy;
+	int			 mode = s->mode;
+
+	if (cx == 0)
+		return;
+	grid_view_get_cell(s->grid, cx - 1, cy, &gc);
+	if (gc.data.size < 4 || memcmp(gc.data.data, "\364\216\273\256", 4))
+		return;
+	gc.fg = ictx->kgfx_cell.fg;
+	gc.us = ictx->kgfx_cell.us;
+	kgfx_placeholder(ictx->wp, &gc, ictx->kgfx_cell.high);
+	s->mode &= ~MODE_INSERT;
+	screen_write_cursormove(sctx, cx - 1, cy, 0);
+	screen_write_cell(sctx, &gc);
+	s->mode = mode;
+}
+
+/*
+ * A kitty graphics placeholder, in a pane with kitty graphics in tmux: its ids
+ * become tmux's. Like kitty, without diacritics it follows the placeholder to
+ * its left if that has the same colours: the same row, the next column and the
+ * same high byte of the image id.
+ */
+static void
+input_kgfx_placeholder(struct input_ctx *ictx)
+{
+	struct input_kgfx_cell	*cell = &ictx->kgfx_cell;
+	struct input_kgfx_cell	*last = &ictx->kgfx_last;
+	struct grid_cell	 gc;
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (ictx->kgfx_marks != -1)
+		memcpy(last, cell, sizeof *last);
+	ictx->kgfx_same = (ictx->kgfx_marks != -1 && gc.fg == last->fg &&
+	    gc.us == last->us);
+	cell->fg = gc.fg;
+	cell->us = gc.us;
+	if (ictx->kgfx_same) {
+		cell->row = last->row;
+		cell->column = last->column + 1;
+		cell->high = last->high;
+	} else
+		cell->row = cell->column = cell->high = 0;
+	ictx->kgfx_marks = 0;
+	kgfx_placeholder(ictx->wp, &gc, cell->high);
+	screen_write_collect_add(&ictx->ctx, &gc);
+}
+
+/*
+ * A character after a placeholder. A diacritic gives its row, then its column,
+ * then the high byte of the image id; as kitty, the high byte is the one of the
+ * placeholder to the left only if that has the same colours and row (and the
+ * column before, if there is a column). If the high byte changes, the
+ * placeholder is written again; the third diacritic is not written (tmux's ids
+ * are smaller). Returns 1 if the character has been handled.
+ */
+static int
+input_kgfx_mark(struct input_ctx *ictx)
+{
+	struct input_kgfx_cell	*cell = &ictx->kgfx_cell;
+	struct input_kgfx_cell	*last = &ictx->kgfx_last;
+	struct utf8_data	*ud = &ictx->utf8data;
+	u_int			 high = cell->high;
+	int			 n;
+
+	if (ud->width != 0 || (n = kgfx_diacritic(ud)) == -1) {
+		ictx->kgfx_marks = -1;
+		return (0);
+	}
+	switch (++ictx->kgfx_marks) {
+	case 1:
+		cell->row = n;
+		if (ictx->kgfx_same && last->row == cell->row) {
+			cell->column = last->column + 1;
+			cell->high = last->high;
+		} else {
+			cell->column = 0;
+			cell->high = 0;
+		}
+		break;
+	case 2:
+		cell->column = n;
+		if (ictx->kgfx_same && last->row == cell->row &&
+		    last->column + 1 == cell->column)
+			cell->high = last->high;
+		else
+			cell->high = 0;
+		break;
+	case 3:
+		cell->high = n;
+		if (cell->high != high)
+			input_kgfx_rewrite(ictx);
+		ictx->flags |= INPUT_LAST;
+		return (1);
+	default:
+		return (0);
+	}
+	screen_write_collect_add(&ictx->ctx, &ictx->cell.cell);
+	if (cell->high != high)
+		input_kgfx_rewrite(ictx);
+	return (1);
+}
+
 /* Open UTF-8 character. */
 static int
 input_top_bit_set(struct input_ctx *ictx)
@@ -2859,6 +3290,8 @@ input_top_bit_set(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct utf8_data	*ud = &ictx->utf8data;
 
+	if (!ictx->utf8started && (~ictx->flags & INPUT_LAST))
+		ictx->kgfx_marks = -1;
 	ictx->flags &= ~INPUT_LAST;
 
 	if (!ictx->utf8started) {
@@ -2883,7 +3316,11 @@ input_top_bit_set(struct input_ctx *ictx)
 	    (int)ud->size, ud->data, ud->width);
 
 	utf8_copy(&ictx->cell.cell.data, ud);
-	screen_write_collect_add(sctx, &ictx->cell.cell);
+	if (ictx->wp != NULL && (ictx->wp->flags & PANE_KGFX) &&
+	    ud->size == 4 && memcmp(ud->data, "\364\216\273\256", 4) == 0)
+		input_kgfx_placeholder(ictx);
+	else if (ictx->kgfx_marks == -1 || !input_kgfx_mark(ictx))
+		screen_write_collect_add(sctx, &ictx->cell.cell);
 
 	utf8_copy(&ictx->last, &ictx->cell.cell.data);
 	ictx->flags |= INPUT_LAST;
@@ -3021,6 +3458,222 @@ input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
 		server_redraw_window_borders(ictx->wp->window);
 		server_status_window(ictx->wp->window);
 	}
+}
+
+/*
+ * Handle the OSC 66 sequence (kitty's text sizing protocol), metadata;text:
+ * the width part only. With w=0 (the default), the text is written as any
+ * other; with w=1 to 7, all of it is one character that many cells wide
+ * (tmux keeps it in at most 6 and a blank cell). The scale (s) and the
+ * fractional scale (n, d, v, h) are not supported, so a program asking (with
+ * CPR) finds the width part and not the scale part.
+ */
+static void
+input_osc_66(struct input_ctx *ictx, const char *p)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct grid_cell	 gc;
+	const char		*text;
+	u_int			 w, sx = screen_size_x(sctx->s);
+
+	if ((text = input_sized_parse(p, &w)) == NULL)
+		return;
+	if (w > sx)
+		return;		/* too wide for the screen: discarded */
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (w == 0) {
+		/* The text as if written: a character at a time. */
+		while (*text != '\0') {
+			if (utf8_next(&text, &gc.data))
+				screen_write_collect_add(sctx, &gc);
+		}
+		return;
+	}
+
+	/* All of the text, as much as a cell holds, as one character. */
+	if (!input_sized_data(text, w, &gc.data))
+		return;
+	gc.attr |= GRID_ATTR_SIZED;
+	screen_write_collect_add(sctx, &gc);
+	if (w > UTF8_MAXWIDTH) {
+		memcpy(&gc, &ictx->cell.cell, sizeof gc);
+		utf8_set(&gc.data, ' ');
+		screen_write_collect_add(sctx, &gc);
+	}
+}
+
+/*
+ * The width (0 to 7, 0 if not given) from OSC 66 metadata;text and the text
+ * after it, or NULL if there is no text.
+ */
+const char *
+input_sized_parse(const char *p, u_int *w)
+{
+	const char	*text, *key;
+
+	*w = 0;
+	if ((text = strchr(p, ';')) == NULL)
+		return (NULL);
+	for (key = p; key < text; key += strcspn(key, ":;") + 1) {
+		if (key[0] == 'w' && key[1] == '=' && key[2] >= '0' &&
+		    key[2] <= '7' && (key[3] == ':' || key[3] == ';'))
+			*w = key[2] - '0';
+		if (key[strcspn(key, ":;")] == ';')
+			break;
+	}
+	return (text + 1);
+}
+
+/*
+ * All of the text given width w (1 to 7) as one character in ud: its valid
+ * characters, as many as a cell keeps. Returns 0 if there are none.
+ */
+int
+input_sized_data(const char *text, u_int w, struct utf8_data *ud)
+{
+	struct utf8_data	one;
+
+	memset(ud, 0, sizeof *ud);
+	while (*text != '\0') {
+		if (!utf8_next(&text, &one))
+			continue;
+		if (ud->size + one.size > UTF8_MAXSIZE)
+			break;
+		memcpy(ud->data + ud->size, one.data, one.size);
+		ud->size += one.size;
+	}
+	if (ud->size == 0)
+		return (0);
+	ud->have = ud->size;
+	ud->width = (w > UTF8_MAXWIDTH) ? UTF8_MAXWIDTH : w;
+	return (1);
+}
+
+/*
+ * Handle the OSC 22 sequence for the mouse pointer shape, as kitty: =name (or
+ * name) sets it, empty resets it, >a,b pushes each and < pops, and ?a,b asks
+ * for the shape set (__current__, 0 if none) or whether shapes are known. The
+ * main and alternate screens have a stack each.
+ */
+static void
+input_osc_22(struct input_ctx *ictx, const char *p)
+{
+	struct window_pane	*wp = ictx->wp;
+	struct screen		*s = ictx->ctx.s;
+	static const char *const known[] = {
+		"alias", "all-scroll", "cell", "col-resize", "context-menu",
+		"copy", "crosshair", "default", "e-resize", "ew-resize",
+		"grab", "grabbing", "help", "move", "n-resize", "ne-resize",
+		"nesw-resize", "no-drop", "not-allowed", "ns-resize",
+		"nw-resize", "nwse-resize", "pointer", "progress", "row-resize",
+		"s-resize", "se-resize", "sw-resize", "text", "vertical-text",
+		"w-resize", "wait", "zoom-in", "zoom-out"
+	};
+	char		*copy, *next, *name;
+	const char	*answer;
+	struct evbuffer	*reply;
+	u_int		 i;
+
+	if (wp == NULL)
+		return;
+	switch (*p) {
+	case '?':
+		reply = evbuffer_new();
+		if (reply == NULL)
+			fatalx("out of memory");
+		copy = next = xstrdup(p + 1);
+		while ((name = strsep(&next, ",")) != NULL) {
+			if (strcmp(name, "__current__") == 0) {
+				answer = screen_pointer(s);
+				if (answer == NULL)
+					answer = "0";
+			} else {
+				answer = "0";
+				for (i = 0; i < nitems(known); i++) {
+					if (strcmp(name, known[i]) == 0)
+						answer = "1";
+				}
+			}
+			evbuffer_add_printf(reply, "%s%s",
+			    EVBUFFER_LENGTH(reply) == 0 ? "" : ",", answer);
+		}
+		free(copy);
+		input_reply(ictx, 0, "\033]22;%.*s\033\\",
+		    (int)EVBUFFER_LENGTH(reply), EVBUFFER_DATA(reply));
+		evbuffer_free(reply);
+		return;
+	case '>':
+		screen_pointer_push(s, p + 1);
+		return;
+	case '<':
+		screen_pointer_pop(s);
+		return;
+	case '=':
+		p++;
+		break;
+	}
+	if (*p == '\0') {
+		while (screen_pointer(s) != NULL)
+			screen_pointer_pop(s);
+		return;
+	}
+	screen_pointer_set(s, p);
+}
+
+/*
+ * Which ConEmu command OSC 9 is (9;1 to 9;12), or 0 if it is not one but a
+ * notification.
+ */
+static u_int
+input_osc_9_conemu(const char *p)
+{
+	u_int	n = 0;
+
+	if (*p < '1' || *p > '9')
+		return (0);
+	while (*p >= '0' && *p <= '9' && n <= 12)
+		n = n * 10 + *p++ - '0';
+	if (n > 12 || (*p != ';' && *p != '\0'))
+		return (0);
+	return (n);
+}
+
+/*
+ * Handle OSC 9;9, ConEmu's (and Windows Terminal's) report of the shell's
+ * directory, which may be in double quotes. It is the pane's path, as OSC 7
+ * sets, when it is a path tmux can use (absolute: not C:\ or \\server, which
+ * a shell in WSL sends) and OSC 7 is not giving the path already (a URL, or
+ * anything but an absolute path: that is kept, whichever of the two the shell
+ * sends last).
+ */
+static void
+input_osc_9_path(struct input_ctx *ictx, const char *p)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct window_pane	*wp = ictx->wp;
+	const char		*now = sctx->s->path;
+	char			*path;
+	size_t			 len;
+
+	if (wp == NULL || p[0] != '9' || p[1] != ';')
+		return;
+	p += 2;
+	len = strlen(p);
+	if (len >= 2 && p[0] == '"' && p[len - 1] == '"') {
+		p++;
+		len -= 2;
+	}
+	if (len == 0 || *p != '/')
+		return;
+	if (now != NULL && *now != '\0' && *now != '/')
+		return;
+	path = xstrndup(p, len);
+	if (screen_set_path(sctx->s, path, 1)) {
+		server_redraw_window_borders(wp->window);
+		server_status_window(wp->window);
+	}
+	free(path);
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */
@@ -3471,33 +4124,42 @@ input_osc_104(struct input_ctx *ictx, const char *p)
 	free(copy);
 }
 
+/* A clipboard reply, or NULL. */
+static char *
+input_clipboard_string(const char *buf, size_t len, const char *end, char clip)
+{
+	char	*out = NULL, *s;
+	int	 outlen = 0;
+
+	if (buf != NULL && len != 0) {
+		if (len >= ((size_t)INT_MAX * 3 / 4) - 1)
+			return (NULL);
+		outlen = 4 * ((len + 2) / 3) + 1;
+		out = xmalloc(outlen);
+		if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
+			free(out);
+			return (NULL);
+		}
+	}
+	if (clip != 0)
+		xasprintf(&s, "\033]52;%c;%s%s", clip, out == NULL ? "" : out, end);
+	else
+		xasprintf(&s, "\033]52;;%s%s", out == NULL ? "" : out, end);
+	free(out);
+	return (s);
+}
+
 /* Send a clipboard reply. */
 void
 input_reply_clipboard(struct bufferevent *bev, const char *buf, size_t len,
     const char *end, char clip)
 {
-	char	*out = NULL;
-	int	 outlen = 0;
+	char	*s;
 
-	if (buf != NULL && len != 0) {
-		if (len >= ((size_t)INT_MAX * 3 / 4) - 1)
-			return;
-		outlen = 4 * ((len + 2) / 3) + 1;
-		out = xmalloc(outlen);
-		if ((outlen = b64_ntop(buf, len, out, outlen)) == -1) {
-			free(out);
-			return;
-		}
-	}
-
-	bufferevent_write(bev, "\033]52;", 5);
-	if (clip != 0)
-		bufferevent_write(bev, &clip, 1);
-	bufferevent_write(bev, ";", 1);
-	if (outlen != 0)
-		bufferevent_write(bev, out, outlen);
-	bufferevent_write(bev, end, strlen(end));
-	free(out);
+	if ((s = input_clipboard_string(buf, len, end, clip)) == NULL)
+		return;
+	bufferevent_write(bev, s, strlen(s));
+	free(s);
 }
 
 /* Set input buffer size. */
@@ -3517,6 +4179,13 @@ input_request_timer_callback(__unused int fd, __unused short events, void *arg)
 	uint64_t		 t = get_timer();
 
 	TAILQ_FOREACH_SAFE(ir, &ictx->requests, entry, ir1) {
+		/*
+		 * A kitty graphics answer waits until the terminal has said
+		 * whether it has the protocol (at most until the terminal's
+		 * start timer), and answers after it wait behind it.
+		 */
+		if (ir->type == INPUT_REQUEST_KGFX)
+			break;
 		if (ir->t >= t - INPUT_REQUEST_TIMEOUT)
 			continue;
 		if (ir->type == INPUT_REQUEST_QUEUE)
@@ -3579,7 +4248,7 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	struct window		*w;
 	struct client		*c = NULL, *loop;
 	struct input_request	*ir;
-	char			 s[64];
+	char			 s[64], *copy;
 
 	if (wp == NULL)
 		return (-1);
@@ -3599,6 +4268,8 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	}
 	if (c == NULL)
 		return (-1);
+	if (type == INPUT_REQUEST_NOTIFY && (~c->tty.term->flags & TERM_NOTIFY))
+		return (-1);
 
 	ir = input_make_request(ictx, type);
 	ir->c = c;
@@ -3614,11 +4285,65 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	case INPUT_REQUEST_CLIPBOARD:
 		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
 		break;
+	case INPUT_REQUEST_NOTIFY:
+		copy = server_client_notify_rewrite(wp, ictx->input_buf);
+		tty_notify(&c->tty, copy);
+		free(copy);
+		break;
+	case INPUT_REQUEST_KGFX:
 	case INPUT_REQUEST_QUEUE:
 		break;
 	}
 
 	return (0);
+}
+
+/*
+ * Hold a kitty graphics answer until the client's terminal has said whether it
+ * has the protocol (kgfx.c); answers after it wait behind it.
+ */
+void
+input_kgfx_request(struct input_ctx *ictx, struct client *c,
+    const char *reply)
+{
+	struct input_request	*ir;
+
+	ir = input_make_request(ictx, INPUT_REQUEST_KGFX);
+	ir->c = c;
+	ir->data = xstrdup(reply);
+	TAILQ_INSERT_TAIL(&c->input_requests, ir, centry);
+}
+
+/*
+ * The client's terminal has said whether it has the kitty graphics protocol
+ * (yes): every answer held for it goes if it has, and answers waiting behind
+ * them go too.
+ */
+void
+input_kgfx_known(struct client *c, int yes)
+{
+	struct input_request	*ir, *ir1, *next;
+	struct input_ctx	*ictx;
+
+	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
+		if (ir->type != INPUT_REQUEST_KGFX)
+			continue;
+		ictx = ir->ictx;
+		if (!yes)
+			input_free_request(ir);
+		else {
+			TAILQ_REMOVE(&c->input_requests, ir, centry);
+			ir->c = NULL;
+			ir->type = INPUT_REQUEST_QUEUE;
+		}
+
+		/* Answers at the front of the pane's queue can go now. */
+		while ((next = TAILQ_FIRST(&ictx->requests)) != NULL &&
+		    next->type == INPUT_REQUEST_QUEUE) {
+			input_send_reply(ictx, next->data);
+			input_free_request(next);
+		}
+	}
 }
 
 /* Handle a palette reply. */
@@ -3635,10 +4360,9 @@ static void
 input_request_clipboard_reply(struct input_request *ir, void *data)
 {
 	struct input_ctx			*ictx = ir->ictx;
-	struct bufferevent			*ev = ictx->event;
 	struct input_request_clipboard_data	*cd = data;
 	int					 state;
-	char					*copy;
+	char					*copy, *s;
 
 	state = options_get_number(global_options, "get-clipboard");
 	if (state == 0 || state == 1)
@@ -3650,9 +4374,31 @@ input_request_clipboard_reply(struct input_request *ir, void *data)
 	}
 
 	if (ir->idx == INPUT_END_BEL)
-		input_reply_clipboard(ev, cd->buf, cd->len, "\007", cd->clip);
+		s = input_clipboard_string(cd->buf, cd->len, "\007", cd->clip);
 	else
-		input_reply_clipboard(ev, cd->buf, cd->len, "\033\\", cd->clip);
+		s = input_clipboard_string(cd->buf, cd->len, "\033\\", cd->clip);
+	if (s != NULL) {
+		input_send_reply(ictx, s);
+		free(s);
+	}
+}
+
+/*
+ * A reply captured while answers wait behind a held one: it waits in the
+ * request's place.
+ */
+static void
+input_queue_capture(struct input_ctx *ictx, struct input_request *before)
+{
+	struct input_request	*ir;
+	size_t			 len = EVBUFFER_LENGTH(ictx->capture);
+
+	if (len == 0)
+		return;
+	ir = input_make_request(ictx, INPUT_REQUEST_QUEUE);
+	ir->data = xstrndup(EVBUFFER_DATA(ictx->capture), len);
+	TAILQ_REMOVE(&ictx->requests, ir, entry);
+	TAILQ_INSERT_BEFORE(before, ir, entry);
 }
 
 /* Handle a reply to a request. */
@@ -3661,9 +4407,12 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 {
 	struct input_request			*ir, *ir1, *found = NULL;
 	struct input_request_palette_data	*pd = data;
-	int					 complete = 0;
+	struct input_ctx			*ictx;
+	int					 complete = 0, held = 0;
 
 	TAILQ_FOREACH_SAFE(ir, &c->input_requests, centry, ir1) {
+		if (ir->type == INPUT_REQUEST_KGFX)
+			continue;
 		if (ir->type != type) {
 			input_free_request(ir);
 			continue;
@@ -3676,7 +4425,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 			found = ir;
 			break;
 		}
-		if (type == INPUT_REQUEST_CLIPBOARD) {
+		if (type == INPUT_REQUEST_CLIPBOARD ||
+		    type == INPUT_REQUEST_NOTIFY) {
 			found = ir;
 			break;
 		}
@@ -3684,16 +4434,37 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 	if (found == NULL)
 		return;
 
-	TAILQ_FOREACH_SAFE(ir, &found->ictx->requests, entry, ir1) {
+	/*
+	 * Answers go in order: earlier requests not answered are given up, but
+	 * a kitty graphics answer held until the terminal says whether it has
+	 * the protocol is kept, and the answers after it wait behind it.
+	 */
+	ictx = found->ictx;
+	TAILQ_FOREACH_SAFE(ir, &ictx->requests, entry, ir1) {
 		if (complete && ir->type != INPUT_REQUEST_QUEUE)
 			break;
-		if (ir->type == INPUT_REQUEST_QUEUE)
-			input_send_reply(ir->ictx, ir->data);
-		else if (ir == found) {
+		if (ir->type == INPUT_REQUEST_KGFX) {
+			held = 1;
+			continue;
+		}
+		if (ir->type == INPUT_REQUEST_QUEUE) {
+			if (held)
+				continue;
+			input_send_reply(ictx, ir->data);
+		} else if (ir == found) {
+			if (held && (ictx->capture = evbuffer_new()) == NULL)
+				fatalx("out of memory");
 			if (ir->type == INPUT_REQUEST_PALETTE)
 				input_request_palette_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_CLIPBOARD)
 				input_request_clipboard_reply(ir, data);
+			else if (ir->type == INPUT_REQUEST_NOTIFY)
+				input_send_reply(ictx, data);
+			if (held) {
+				input_queue_capture(ictx, ir);
+				evbuffer_free(ictx->capture);
+				ictx->capture = NULL;
+			}
 			complete = 1;
 		}
 		input_free_request(ir);

@@ -39,31 +39,44 @@ wait_channel()
 
 	$TMUX wait-for "$channel" &
 	pid=$!
-	i=0
+	_i=0
 	while kill -0 "$pid" 2>/dev/null; do
-		[ $i -lt 50 ] || {
+		[ $_i -lt 200 ] || {
 			kill "$pid" 2>/dev/null || true
 			fail "wait-for $channel timed out"
 		}
-		i=$((i + 1))
-		sleep 0.2
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	wait "$pid" || fail "wait-for $channel failed"
 }
 
+# Check an option still has its value. Call it only once something has
+# happened after the change it guards against would have.
 assert_unchanged()
 {
 	option=$1
 	expected=$2
-	count=${3:-15}
-	i=0
 
-	while [ $i -lt "$count" ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] ||
-			fail "expected $option to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.2
+	value=$($TMUX show -gqv "$option" 2>/dev/null || true)
+	[ "$value" = "$expected" ] ||
+		fail "expected $option to remain '$expected' but got '$value'"
+}
+
+# How many times the @wf monitor has reported a change.
+wf_fires()
+{
+	$TMUX show-hooks -g -F '#{hook_fire_count}' @wf
+}
+
+# Wait until the @wf monitor has reported more than $1 changes.
+wait_fires()
+{
+	_i=0
+	while [ "$(wf_fires)" -le "$1" ]; do
+		_i=$((_i + 1))
+		[ $_i -gt 400 ] && fail "@wf monitor did not report a change"
+		sleep 0.05
 	done
 }
 
@@ -71,9 +84,9 @@ wait_list()
 {
 	event=$1
 	name=$2
-	i=0
+	_i=0
 
-	while [ $i -lt 50 ]; do
+	while [ $_i -lt 400 ]; do
 		if [ "$event" = 1 ]; then
 			value=$($TMUX wait-for -E -l "$name" 2>/dev/null || true)
 		else
@@ -83,8 +96,8 @@ wait_list()
 			printf '%s\n' "$value" | sed -n '1p'
 			return
 		fi
-		i=$((i + 1))
-		sleep 0.2
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	fail "wait-for -l $name found no waiters"
 }
@@ -137,7 +150,8 @@ wait "$event_pid" || fail "wait-for -E command failed"
 $TMUX set -g @late 0 || fail "set @late failed"
 $TMUX wait-for -E @wf \; set -g @late 1 \; wait-for -S wf-late &
 late_pid=$!
-assert_unchanged @late 0 5
+wait_list 1 @wf >/dev/null
+assert_unchanged @late 0
 
 $TMUX set -g @wf_value 2 || fail "set @wf_value 2 failed"
 wait_channel wf-late
@@ -147,10 +161,13 @@ $TMUX set -g @filtered 0 || fail "set @filtered failed"
 $TMUX wait-for -E -F '#{==:#{value},3}' @wf \; set -g @filtered 1 \; \
 	wait-for -S wf-filtered &
 filtered_pid=$!
-assert_unchanged @filtered 0 5
+wait_list 1 @wf >/dev/null
+assert_unchanged @filtered 0
 
+fires=$(wf_fires)
 $TMUX set -g @wf_value unmatched || fail "set @wf_value unmatched failed"
-assert_unchanged @filtered 0 5
+wait_fires "$fires"
+assert_unchanged @filtered 0
 
 $TMUX set -g @wf_value 3 || fail "set @wf_value 3 failed"
 wait_channel wf-filtered
@@ -159,8 +176,8 @@ wait "$filtered_pid" || fail "filtered wait-for -E command failed"
 verbose_file="$OUT/verbose"
 $TMUX wait-for -E -v @wf \; wait-for -S wf-verbose >"$verbose_file" &
 verbose_pid=$!
+wait_list 1 @wf >/dev/null
 
-sleep 0.5
 $TMUX set -g @wf_value 4 || fail "set @wf_value 4 failed"
 wait_channel wf-verbose
 wait "$verbose_pid" || fail "verbose wait-for -E command failed"
@@ -175,8 +192,8 @@ $TMUX new -d -s wf2 || fail "new-session wf2 failed"
 
 $TMUX wait-for -E window-renamed \; wait-for -S wf-renamed &
 renamed_pid=$!
+wait_list 1 window-renamed >/dev/null
 
-sleep 0.5
 $TMUX rename-window -t wf2:0 renamed || fail "rename-window failed"
 wait_channel wf-renamed
 wait "$renamed_pid" || fail "wait-for -E window-renamed failed"
@@ -193,10 +210,19 @@ target=$($TMUX splitw -d -t wf2:0 -P -F '#{pane_id}' 'sleep 30') ||
 $TMUX wait-for -E -F "#{==:#{pane},$target}" pane-exited \; \
 	set -g @builtin_filtered 1 \; wait-for -S wf-builtin-filtered &
 builtin_filtered_pid=$!
-assert_unchanged @builtin_filtered 0 5
+wait_list 1 pane-exited >/dev/null
+assert_unchanged @builtin_filtered 0
 
-$TMUX splitw -d -t wf2:0 'true' || fail "split-window nonmatching failed"
-assert_unchanged @builtin_filtered 0 5
+other=$($TMUX splitw -d -t wf2:0 -P -F '#{pane_id}' 'true') ||
+	fail "split-window nonmatching failed"
+# The pane is removed right after pane-exited has fired.
+i=0
+while $TMUX list-panes -t wf2:0 -F '#{pane_id}' | grep -qx "$other"; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && fail "nonmatching pane did not exit"
+	sleep 0.05
+done
+assert_unchanged @builtin_filtered 0
 
 $TMUX send-keys -t "$target" C-c || fail "send C-c to target failed"
 wait_channel wf-builtin-filtered

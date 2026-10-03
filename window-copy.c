@@ -79,9 +79,9 @@ static void	window_copy_scroll_to(struct window_mode_entry *, u_int, u_int,
 static int	window_copy_search_compare(struct grid *, u_int, u_int,
 		    struct grid *, u_int, int);
 static int	window_copy_search_lr(struct grid *, struct grid *, u_int *,
-		    u_int, u_int, u_int, int);
+		    u_int *, u_int, u_int, u_int, int);
 static int	window_copy_search_rl(struct grid *, struct grid *, u_int *,
-		    u_int, u_int, u_int, int);
+		    u_int *, u_int, u_int, u_int, int);
 static int	window_copy_last_regex(struct grid *, u_int, u_int, u_int,
 		    u_int, u_int *, u_int *, const char *, const regex_t *,
 		    int);
@@ -439,7 +439,8 @@ window_copy_clone_screen(struct screen *src, struct screen *hint, u_int *cx,
 	else
 		reflow = 0;
 	if (reflow)
-		grid_wrap_position(dst->grid, *cx, *cy, &wx, &wy);
+		grid_wrap_position(dst->grid, dst->grid->sx, *cx, *cy, &wx,
+		    &wy);
 	screen_resize_cursor(dst, screen_size_x(hint), screen_size_y(hint), 1,
 	    0, 0);
 	if (reflow)
@@ -1225,7 +1226,7 @@ window_copy_resize(struct window_mode_entry *wme, u_int sx, u_int sy)
 	cy = gd->hsize + data->cy - data->oy;
 	reflow = (gd->sx != sx);
 	if (reflow)
-		grid_wrap_position(gd, cx, cy, &wx, &wy);
+		grid_wrap_position(gd, gd->sx, cx, cy, &wx, &wy);
 	screen_resize_cursor(data->backing, sx, sy, 1, 0, 0);
 	if (reflow)
 		grid_unwrap_position(gd, &cx, &cy, wx, wy);
@@ -2084,7 +2085,8 @@ window_copy_cmd_next_matching_bracket(struct window_copy_cmd_state *cs)
 				gl = grid_get_line(s->grid, py);
 				if (~gl->flags & GRID_LINE_WRAPPED)
 					continue;
-				if (gl->cellsize > s->grid->sx)
+				if (gl->cellsize > s->grid->sx &&
+				    !grid_line_overhangs(s->grid, py))
 					continue;
 				px = 0;
 				py++;
@@ -3991,7 +3993,13 @@ window_copy_scroll_to(struct window_mode_entry *wme, u_int px, u_int py,
 	if (py >= gd->hsize - data->oy && py < gd->hsize - data->oy + gd->sy)
 		data->cy = py - (gd->hsize - data->oy);
 	else {
+		/*
+		 * Put the line gap rows above the bottom: at least one, or a
+		 * screen of fewer than 4 rows put it one past the bottom.
+		 */
 		gap = gd->sy / 4;
+		if (gap == 0)
+			gap = 1;
 		if (py < gd->sy) {
 			offset = 0;
 			data->cy = py;
@@ -4038,20 +4046,39 @@ window_copy_search_compare(struct grid *gd, u_int px, u_int py,
 	return (memcmp(ud->data, sud->data, ud->size) == 0);
 }
 
+/*
+ * A character matched at px overhangs its row (a reflow narrower than it):
+ * the row has only some of its padding and the next row follows. Skip the
+ * rest of its padding in the search grid, and go on at the next row.
+ */
+static void
+window_copy_search_overhang(struct grid *gd, const struct grid_cell *gc,
+    u_int px, u_int *bx, u_int *skip)
+{
+	u_int	w = gc->data.width;
+
+	if ((gc->flags & (GRID_FLAG_PADDING|GRID_FLAG_TAB)) ||
+	    px + w <= gd->sx)
+		return;
+	*bx += w - 1;
+	*skip += px + w - gd->sx;	/* the next row starts sooner */
+}
+
 static int
-window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
-    u_int first, u_int last, int cis)
+window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx,
+    u_int *psx, u_int py, u_int first, u_int last, int cis)
 {
 	u_int			 ax, bx, px, pywrap, endline, padding;
+	u_int			 skip;
 	int			 matched;
 	struct grid_line	*gl;
 	struct grid_cell	 gc;
 
 	endline = gd->hsize + gd->sy - 1;
 	for (ax = first; ax < last; ax++) {
-		padding = 0;
+		padding = skip = 0;
 		for (bx = 0; bx < sgd->sx; bx++) {
-			px = ax + bx + padding;
+			px = ax + bx + padding - skip;
 			pywrap = py;
 			/* Wrap line. */
 			while (px >= gd->sx && pywrap < endline) {
@@ -4073,9 +4100,12 @@ window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
 			    sgd, bx, cis);
 			if (!matched)
 				break;
+			window_copy_search_overhang(gd, &gc, px, &bx, &skip);
 		}
 		if (bx == sgd->sx) {
 			*ppx = ax;
+			if (psx != NULL)
+				*psx = sgd->sx - skip;
 			return (1);
 		}
 	}
@@ -4083,19 +4113,20 @@ window_copy_search_lr(struct grid *gd, struct grid *sgd, u_int *ppx, u_int py,
 }
 
 static int
-window_copy_search_rl(struct grid *gd,
-    struct grid *sgd, u_int *ppx, u_int py, u_int first, u_int last, int cis)
+window_copy_search_rl(struct grid *gd, struct grid *sgd, u_int *ppx,
+    u_int *psx, u_int py, u_int first, u_int last, int cis)
 {
 	u_int			 ax, bx, px, pywrap, endline, padding;
+	u_int			 skip;
 	int			 matched;
 	struct grid_line	*gl;
 	struct grid_cell	 gc;
 
 	endline = gd->hsize + gd->sy - 1;
 	for (ax = last; ax > first; ax--) {
-		padding = 0;
+		padding = skip = 0;
 		for (bx = 0; bx < sgd->sx; bx++) {
-			px = ax - 1 + bx + padding;
+			px = ax - 1 + bx + padding - skip;
 			pywrap = py;
 			/* Wrap line. */
 			while (px >= gd->sx && pywrap < endline) {
@@ -4117,9 +4148,12 @@ window_copy_search_rl(struct grid *gd,
 			    sgd, bx, cis);
 			if (!matched)
 				break;
+			window_copy_search_overhang(gd, &gc, px, &bx, &skip);
 		}
 		if (bx == sgd->sx) {
 			*ppx = ax - 1;
+			if (psx != NULL)
+				*psx = sgd->sx - skip;
 			return (1);
 		}
 	}
@@ -4431,6 +4465,11 @@ window_copy_cstrtocellpos(struct grid *gd, u_int ncells, u_int *ppx, u_int *ppy,
 			}
 			d = cells[ccell].d;
 			dlen = cells[ccell].dlen;
+			if (dlen == 0) {
+				/* Padding: no text (and no pointer). */
+				ccell++;
+				continue;
+			}
 			if (dlen == 1) {
 				if (str[pos] != *d) {
 					match = 0;
@@ -4595,7 +4634,7 @@ window_copy_search_jump(struct window_mode_entry *wme, struct grid *gd,
 				    &px, &sx, i, fx, gd->sx, &reg);
 			} else {
 				found = window_copy_search_lr(gd, sgd,
-				    &px, i, fx, gd->sx, cis);
+				    &px, NULL, i, fx, gd->sx, cis);
 			}
 			if (found)
 				break;
@@ -4612,7 +4651,7 @@ window_copy_search_jump(struct window_mode_entry *wme, struct grid *gd,
 				}
 			} else {
 				found = window_copy_search_rl(gd, sgd,
-				    &px, i - 1, 0, fx + 1, cis);
+				    &px, NULL, i - 1, 0, fx + 1, cis);
 			}
 			if (found) {
 				i--;
@@ -4947,7 +4986,7 @@ again:
 					break;
 			} else {
 				found = window_copy_search_lr(gd, ssp->grid,
-				    &px, py, px, sx, cis);
+				    &px, &width, py, px, sx, cis);
 				if (!found)
 					break;
 			}
@@ -5077,25 +5116,45 @@ window_copy_match_start_end(struct window_copy_mode_data *data, u_int at,
 		(*end)--;
 }
 
+/*
+ * The search mark index of the copy cursor in *at. With emacs keys the cursor
+ * can be past the last column, after a full row: that is not a cell (the
+ * index would be the next row's, or past the marks for the last row), so *at
+ * is the row's last cell and *after is set. Returns -1 if the cursor is not
+ * on the screen.
+ */
+static int
+window_copy_cursor_mark(struct window_copy_mode_data *data, u_int *at,
+    int *after)
+{
+	u_int	cx = data->cx, sx = screen_size_x(data->backing), cy;
+
+	cy = screen_hsize(data->backing) - data->oy + data->cy;
+	*after = (cx >= sx);
+	if (*after)
+		cx = sx - 1;
+	return (window_copy_search_mark_at(data, cx, cy, at));
+}
+
 static char *
 window_copy_match_at_cursor(struct window_copy_mode_data *data)
 {
 	struct grid	*gd = data->backing->grid;
 	struct grid_cell gc;
-	u_int		 at, start, end, cy, px, py;
+	u_int		 at, start, end, px, py;
 	u_int		 sx = screen_size_x(data->backing);
 	char		*buf = NULL;
 	size_t		 len = 0;
+	int		 after;
 
 	if (data->searchmark == NULL)
 		return (NULL);
 
-	cy = screen_hsize(data->backing) - data->oy + data->cy;
-	if (window_copy_search_mark_at(data, data->cx, cy, &at) != 0)
+	if (window_copy_cursor_mark(data, &at, &after) != 0)
 		return (NULL);
 	if (data->searchmark[at] == 0) {
 		/* Allow one position after the match. */
-		if (at == 0 || data->searchmark[--at] == 0)
+		if (after || at == 0 || data->searchmark[--at] == 0)
 			return (NULL);
 	}
 	window_copy_match_start_end(data, at, &start, &end);
@@ -5135,7 +5194,7 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 	struct window_pane		*wp = wme->wp;
 	struct window_copy_mode_data	*data = wme->data;
 	u_int				 mark, start, end, cy, cursor, current;
-	int				 inv = 0, found = 0;
+	int				 inv = 0, found = 0, after;
 	int				 keys;
 
 	cy = screen_hsize(data->backing) - data->oy + data->cy;
@@ -5148,7 +5207,7 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 	}
 
 	if (data->showmark && fy == data->my) {
-		gc->attr = mkgc->attr;
+		gc->attr = mkgc->attr|(gc->attr & GRID_ATTR_CONTENT);
 		if (fx == data->mx)
 			inv = 1;
 		if (inv) {
@@ -5170,21 +5229,23 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 	if (mark == 0)
 		return;
 
-	if (window_copy_search_mark_at(data, data->cx, cy, &cursor) == 0) {
+	if (window_copy_cursor_mark(data, &cursor, &after) == 0) {
 		keys = options_get_number(wp->window->options, "mode-keys");
-		if (cursor != 0 &&
+		if ((after || cursor != 0) &&
 		    keys == MODEKEY_EMACS &&
 		    data->searchdirection) {
-			if (data->searchmark[cursor - 1] == mark) {
+			/* The cell before the cursor. */
+			if (!after)
 				cursor--;
+			if (data->searchmark[cursor] == mark)
 				found = 1;
-			}
-		} else if (data->searchmark[cursor] == mark)
+		} else if (!after && data->searchmark[cursor] == mark)
 			found = 1;
 		if (found) {
 			window_copy_match_start_end(data, cursor, &start, &end);
 			if (current >= start && current <= end) {
-				gc->attr = cgc->attr;
+				gc->attr = cgc->attr|
+				    (gc->attr & GRID_ATTR_CONTENT);
 				if (inv) {
 					gc->fg = cgc->bg;
 					gc->bg = cgc->fg;
@@ -5198,7 +5259,7 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 		}
 	}
 
-	gc->attr = mgc->attr;
+	gc->attr = mgc->attr|(gc->attr & GRID_ATTR_CONTENT);
 	if (inv) {
 		gc->fg = mgc->bg;
 		gc->bg = mgc->fg;
@@ -6234,12 +6295,13 @@ window_copy_copy_line(struct window_mode_entry *wme, char **buf, size_t *off,
 	 * on screen.
 	 */
 	gl = grid_get_line(gd, sy);
-	if (gl->flags & GRID_LINE_WRAPPED && gl->cellsize <= gd->sx)
+	if ((gl->flags & GRID_LINE_WRAPPED) &&
+	    (gl->cellsize <= gd->sx || grid_line_overhangs(gd, sy)))
 		wrapped = 1;
 
 	/* If the line was wrapped, don't strip spaces (use the full length). */
 	if (wrapped)
-		xx = gl->cellsize;
+		xx = (gl->cellsize > gd->sx) ? gd->sx : gl->cellsize;
 	else
 		xx = window_copy_find_length(wme, sy);
 	if (ex > xx)

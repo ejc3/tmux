@@ -282,7 +282,9 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 			else if (current_state == TTY_DRAW_LINE_FIRST)
 				next_state = TTY_DRAW_LINE_SAME;
 			else if (grid_cells_look_equal(gcp, &last)) {
-				if (gcp->data.size > (sizeof buf) - len)
+				if (((gcp->attr & GRID_ATTR_SIZED) ?
+				    TTY_SIZED_SIZE : gcp->data.size) >
+				    (sizeof buf) - len)
 					next_state = TTY_DRAW_LINE_FLUSH;
 				else
 					next_state = TTY_DRAW_LINE_SAME;
@@ -324,7 +326,12 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 		}
 
 		/* Append the cell if it is not empty and not padding. */
-		if (next_state != TTY_DRAW_LINE_EMPTY) {
+		if (next_state != TTY_DRAW_LINE_EMPTY &&
+		    (gcp->attr & GRID_ATTR_SIZED)) {
+			len += tty_sized_cell(tty, gcp, buf + len,
+			    (sizeof buf) - len);
+			width += gcp->data.width;
+		} else if (next_state != TTY_DRAW_LINE_EMPTY) {
 			memcpy(buf + len, gcp->data.data, gcp->data.size);
 			len += gcp->data.size;
 			width += gcp->data.width;
@@ -341,6 +348,29 @@ tty_draw_line(struct tty *tty, struct screen *s, u_int px, u_int py, u_int nx,
 			i += empty;
 		else
 			i += gcp->data.width;
+	}
+
+	/*
+	 * The line wraps on to the next row but its drawing ended before the
+	 * last column (the row was erased or is short): write its last cell
+	 * again so the terminal waits to wrap there and the next row, drawn
+	 * after it, joins it as when the program wrote it. Only for the whole
+	 * of a row as wide as the terminal, with the next row on it too; part
+	 * of a wider row does not end where the line wraps.
+	 */
+	if (px == 0 && nx == gd->sx && atx == 0 && nx == tty->sx &&
+	    py + 1 < gd->sy && aty + 1 < tty->sy &&
+	    (~tty->term->flags & TERM_NOAM) &&
+	    (tty->cx < tty->sx || tty->cy != aty)) {
+		gl = grid_get_line(gd, gd->hsize + py);
+		if (gl->flags & GRID_LINE_WRAPPED) {
+			i = grid_view_get_char(gd, px + nx - 1, py, &gc) - px;
+			if ((~gc.flags & GRID_FLAG_PADDING) &&
+			    i + gc.data.width <= nx) {
+				tty_cursor(tty, atx + i, aty);
+				tty_cell(tty, &gc, style_ctx);
+			}
+		}
 	}
 
 out:

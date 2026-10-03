@@ -28,33 +28,32 @@ fail()
 
 wait_list()
 {
-	expected=$1
+	_expected=$1
 	shift
-	i=0
-	while [ $i -lt 100 ]; do
-		value=$($TMUX wait-for -l "$@") || fail "list waiters failed"
-		[ "$value" = "$expected" ] && return
-		i=$((i + 1))
+	_i=0
+	while [ $_i -lt 100 ]; do
+		_value=$($TMUX wait-for -l "$@") || fail "list waiters failed"
+		[ "$_value" = "$_expected" ] && return
+		_i=$((_i + 1))
 		sleep 0.05
 	done
-	fail "expected waiters '$expected', got '$value'"
+	fail "expected waiters '$_expected', got '$_value'"
 }
 
 wait_free()
 {
-	client_pid=$1
-	i=0
-	while [ $i -lt 100 ]; do
-		awk -v pid="$client_pid" '
+	_i=0
+	while [ $_i -lt 100 ]; do
+		awk -v pid="$1" '
 		    $4 == "IDENTIFY_CLIENTPID" && $5 == pid { address = $3 }
 		    address != "" && $2 == "free" && $3 == "client" &&
 		    $4 == address && $5 == "(0" { freed = 1 }
 		    END { exit !freed }
 		' "$OUT"/tmux-server-*.log && return
-		i=$((i + 1))
+		_i=$((_i + 1))
 		sleep 0.05
 	done
-	fail "client $client_pid was not freed"
+	fail "client $1 was not freed"
 }
 
 cd "$OUT" || exit 1

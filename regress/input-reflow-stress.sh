@@ -74,6 +74,31 @@ replacement()
 	u8 '\0357\0277\0275'
 }
 
+# wait_until DESCRIPTION COMMAND: poll until COMMAND succeeds.
+wait_until()
+{
+	_what=$1
+	shift
+	_i=0
+	until eval "$@"; do
+		_i=$((_i + 1))
+		if [ "$_i" -gt 400 ]; then
+			echo "FAIL: timed out waiting for $_what" >&2
+			exit 1
+		fi
+		sleep 0.05
+	done
+}
+
+# resize_to WIDTH: resize the stress window and wait for the pane to follow.
+resize_to()
+{
+	_width=$1
+	$TMUX resize-window -t stress: -x "$_width" -y "$HEIGHT" || exit 1
+	wait_until "pane width $_width" \
+	    '[ "$($TMUX display-message -p -t stress: "#{pane_width}")" = "$_width" ]'
+}
+
 assert_alive()
 {
 	$TMUX display-message -p -t stress: alive >/dev/null 2>&1 ||
@@ -180,8 +205,17 @@ load_and_paste()
 
 	"$@" >"$EXP"
 	$TMUX load-buffer -b "$buffer" "$EXP" || exit 1
+
+	# cat reads whole lines, so the last complete line of the payload is the
+	# last thing it prints; a trailing partial line stays in the pane's tty.
+	_last=
+	[ "$(tail -c 1 "$EXP" | wc -l)" -eq 1 ] && _last=$(sed -n '$p' "$EXP")
+	[ -n "$_last" ] && _seen=$(capture_joined; grep -cF -- "$_last" "$TMP")
+
 	$TMUX paste-buffer -d -b "$buffer" -t stress:0.0 || exit 1
-	sleep 0.3
+	[ -n "$_last" ] && wait_until "pasted line $_last" \
+	    '[ "$(capture_joined; grep -cF -- "$_last" "$TMP")" -gt "$_seen" ]'
+	return 0
 }
 
 capture_joined()
@@ -366,8 +400,7 @@ assert_copy_mode_sane()
 run_resize_checks()
 {
 	for width in $WIDTHS; do
-		$TMUX resize-window -t stress: -x "$width" -y "$HEIGHT" || exit 1
-		sleep 0.1
+		resize_to "$width"
 		assert_alive "resize to $width"
 		assert_joined_sane "resize to $width"
 		assert_raw_sane "resize to $width"
@@ -377,14 +410,37 @@ run_resize_checks()
 
 wait_outer_contains()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		$TMUX2 capture-pane -p -t out:0 >"$TMP" 2>/dev/null &&
-			grep -F "$marker" "$TMP" >/dev/null 2>&1 &&
+			grep -F "$_marker" "$TMP" >/dev/null 2>&1 &&
 			return 0
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# Wait until the inner server has gone round its loop and what it drew has
+# reached the outer pane: the capture is unchanged for 0.15 seconds.
+wait_outer_settled()
+{
+	$TMUX display-message -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ "$_i" -lt 100 ]; do
+		_sum=$($TMUX2 capture-pane -p -t out:0 | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ "$_same" -ge 3 ] && return 0
+		else
+			_same=0
+			_last=$_sum
+		fi
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
@@ -395,30 +451,42 @@ assert_live_client_redraw()
 	$TMUX set-option -t stress: status-interval 1 >/dev/null || exit 1
 
 	$TMUX2 kill-server 2>/dev/null
+	_k=0
+	until $TMUX2 ls 2>&1 | grep -qE 'no server running|No such file'; do
+		_k=$((_k + 1))
+		[ $_k -lt 400 ] || { echo "old outer server did not exit"; exit 1; }
+		sleep 0.05
+	done
 	$TMUX2 new-session -d -s out -x 100 -y 12 "$TMUX attach -t stress" ||
 		exit 1
 
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		clients=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
 		[ "$clients" -ge 1 ] && break
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	[ "$i" -lt 50 ] || {
+	[ "$_i" -lt 200 ] || {
 		record_fail "nested client did not attach"
 		return
 	}
 
+	# Each width reaches the nested client and is drawn before the next one
+	# is set.
 	for width in $LIVE_WIDTHS; do
 		$TMUX set-option -t stress: status-left "REDRAW-$width " >/dev/null ||
 			exit 1
 		$TMUX2 resize-window -t out: -x "$width" -y 12 || exit 1
-		sleep 0.2
+		wait_until "nested client width $width" \
+		    '[ "$($TMUX list-clients -F "#{client_width}")" = "$width" ]'
+		wait_outer_contains "REDRAW-$width" || break
 	done
 
 	wait_outer_contains 'REDRAW-80' ||
 		record_fail "outer capture missing final redraw marker"
+	wait_outer_settled ||
+		record_fail "outer capture did not settle"
 
 	$TMUX2 capture-pane -p -t out:0 >"$TMP" 2>/dev/null ||
 		record_fail "outer capture failed"
@@ -444,21 +512,23 @@ assert_live_client_redraw()
 
 $TMUX kill-server 2>/dev/null
 $TMUX2 kill-server 2>/dev/null
-sleep 0.1
+wait_until "old servers to exit" \
+    '$TMUX ls 2>&1 | grep -qE "no server running|No such file" && $TMUX2 ls 2>&1 | grep -qE "no server running|No such file"'
 
 $TMUX new-session -d -x 1 -y 1 -s test-setup "sleep 2" || exit 1
 $TMUX set-option -g history-limit "$HISTORY_LIMIT" || exit 1
 $TMUX new-session -d -x 80 -y "$HEIGHT" -s stress 'stty -echo; exec cat' || exit 1
 $TMUX kill-session -t test-setup || exit 1
-sleep 0.3
+# cat runs once stty has turned echo off.
+wait_until "cat to start" \
+    '[ "$($TMUX display-message -p -t stress: "#{pane_current_command}")" = cat ]'
 
 load_and_paste stress-data make_payload
 assert_joined_sane "initial payload"
 assert_raw_sane "initial payload"
 assert_history_sane "initial payload"
 
-$TMUX resize-window -t stress: -x 40 -y "$HEIGHT" || exit 1
-sleep 0.1
+resize_to 40
 load_and_paste stress-orphan-post make_orphan_payload POST
 assert_joined_sane "post-resize orphan payload"
 assert_raw_sane "post-resize orphan payload"
@@ -468,23 +538,23 @@ assert_final_logical_text "return to original width"
 
 $TMUX copy-mode -H -t stress: || exit 1
 $TMUX send-keys -t stress: -X history-top
-sleep 0.1
+wait_until "copy mode" \
+    '[ "$($TMUX display-message -p -t stress: "#{pane_in_mode}")" = 1 ]'
 assert_alive "copy-mode"
 assert_copy_mode_sane "copy-mode history-top"
 $TMUX send-keys -t stress: -X cancel
-sleep 0.1
+wait_until "copy mode to exit" \
+    '[ "$($TMUX display-message -p -t stress: "#{pane_in_mode}")" = 0 ]'
 
 assert_live_client_redraw
 
 load_and_paste stress-alt make_alternate_payload
 for width in 30 12 80; do
-	$TMUX resize-window -t stress: -x "$width" -y "$HEIGHT" || exit 1
-	sleep 0.1
+	resize_to "$width"
 	assert_alive "alternate resize to $width"
 	assert_raw_sane "alternate resize to $width"
 done
 load_and_paste stress-alt-exit exit_alternate_payload
-sleep 0.3
 assert_alive "alternate screen exit"
 assert_joined_sane "alternate screen exit"
 assert_raw_sane "alternate screen exit"

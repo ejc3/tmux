@@ -39,14 +39,14 @@ wait_channel()
 
 	$TMUX wait-for "$channel" &
 	pid=$!
-	i=0
+	_i=0
 	while kill -0 "$pid" 2>/dev/null; do
-		[ $i -lt 50 ] || {
+		[ $_i -lt 200 ] || {
 			kill "$pid" 2>/dev/null || true
 			fail "wait-for $channel timed out"
 		}
-		i=$((i + 1))
-		sleep 0.2
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	wait "$pid" || fail "wait-for $channel failed"
 }
@@ -55,46 +55,42 @@ wait_for()
 {
 	option=$1
 	expected=$2
-	i=0
+	_i=0
 
-	while [ $i -lt 30 ]; do
+	while [ $_i -lt 400 ]; do
 		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
 		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	fail "expected $option to be '$expected' but got '$value'"
 }
 
+# Check an option still has its value. Call it only once something has
+# happened after the change it guards against would have.
 assert_unchanged()
 {
 	option=$1
 	expected=$2
-	count=${3:-15}
-	i=0
 
-	while [ $i -lt "$count" ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] ||
-			fail "expected $option to remain '$expected' but got '$value'"
-		i=$((i + 1))
-		sleep 0.2
-	done
+	value=$($TMUX show -gqv "$option" 2>/dev/null || true)
+	[ "$value" = "$expected" ] ||
+		fail "expected $option to remain '$expected' but got '$value'"
 }
 
 wait_list()
 {
 	name=$1
-	i=0
+	_i=0
 
-	while [ $i -lt 50 ]; do
+	while [ $_i -lt 400 ]; do
 		value=$($TMUX wait-for -E -l "$name" 2>/dev/null || true)
 		if [ -n "$value" ]; then
 			printf '%s\n' "$value" | sed -n '1p'
 			return
 		fi
-		i=$((i + 1))
-		sleep 0.2
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	fail "wait-for -E -l $name found no waiters"
 }
@@ -135,8 +131,9 @@ r_pid=$!
 r_client=$(wait_list @manual-r)
 
 $TMUX set-hook -R @manual-r || fail "set-hook -R @manual-r failed"
+# The hook has run, so an event fired with it would have been handled too.
 wait_for @r_hook 1
-assert_unchanged @r_event 0 5
+assert_unchanged @r_event 0
 
 $TMUX wait-for -E -w "$r_client" @manual-r ||
 	fail "wait-for -E -w @manual-r failed"

@@ -45,9 +45,9 @@ SERVER=$($TMUX display -pt rt '#{pid}')
 exec 8<"$FIFO"
 
 n=0
-while [ $n -lt 50 ]; do
+while [ $n -lt 100 ]; do
 	$TMUX lsc -F '#{client_name}' 2>/dev/null | grep -q . && break
-	sleep 0.1
+	sleep 0.05
 	n=$((n + 1))
 done
 $TMUX lsc -F '#{client_name}' 2>/dev/null | grep -q . ||
@@ -63,12 +63,12 @@ $TMUX kill-server 2>/dev/null
 # The server must exit within the exit timeout (10 seconds) plus slack,
 # rather than staying in limbo forever rejecting new clients.
 n=0
-while [ $n -lt 100 ]; do
+while [ $n -lt 400 ]; do
 	if ! kill -0 "$SERVER" 2>/dev/null; then
 		SERVER=
 		exit 0
 	fi
-	sleep 0.2
+	sleep 0.05
 	n=$((n + 1))
 done
 

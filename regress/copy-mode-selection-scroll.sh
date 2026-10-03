@@ -33,8 +33,15 @@ wheel()
 	col=$2
 	row=$3
 	seq=$(printf '\033[<%s;%s;%sM' "$button" "$col" "$row")
+	_before=$($TMUX display -p '#{scroll_position}')
 	$TMUX2 send-keys -t "$OUTER" -l "$seq" 2>/dev/null
-	sleep 1
+	# The wheel scrolls copy mode: wait for the position to move.
+	_i=0
+	while [ "$($TMUX display -p '#{scroll_position}')" = "$_before" ]; do
+		_i=$((_i + 1))
+		[ $_i -ge 400 ] && fail "wheel $button did not scroll"
+		sleep 0.05
+	done
 }
 trap cleanup 0
 trap 'exit 1' 1 2 3 15
@@ -44,6 +51,13 @@ $TMUX new -d -x40 -y10 \
 	exit 1
 $TMUX set -g window-size manual || exit 1
 $TMUX set -g mouse on || exit 1
+# Copy mode needs every line the pane prints in its history first.
+_i=0
+until $TMUX capture-pane -p | grep -q 'line 79'; do
+	_i=$((_i + 1))
+	[ $_i -ge 400 ] && fail "the pane did not print its lines"
+	sleep 0.05
+done
 
 $TMUX copy-mode || exit 1
 $TMUX send-keys -X history-top || exit 1
@@ -98,7 +112,13 @@ extended_start=$(printf 'line 09 xxxxxxxxxx\nline 10 xxxxxxxxxx\nline 11 xxxxxxx
 expect_buffer "$extended_start"
 
 $TMUX2 new-session -d -x40 -y10 "$TMUX attach" || exit 1
-sleep 1
+# The client has settled once it has the terminal's answer to its queries.
+_i=0
+until [ -n "$($TMUX list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	_i=$((_i + 1))
+	[ $_i -ge 400 ] && fail "client did not attach"
+	sleep 0.05
+done
 OUTER=$($TMUX2 list-panes -F '#{pane_id}' | head -1)
 [ -n "$OUTER" ] || fail "no outer pane"
 

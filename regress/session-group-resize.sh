@@ -29,13 +29,24 @@ $TMUX selectw -t test:0 || exit 1
 (echo "refresh-client -C 20,6"; echo "selectw -t :1"; sleep 5) |
 	$TMUX -f/dev/null -C attach -t test >$TMP1 2>&1 &
 
+# Wait for a client $1 wide to be on window 1.
+wait_client()
+{
+	_n=0
+	while ! $TMUX lsc -F '#{client_width} #{window_index}' 2>/dev/null |
+	    grep -q "^$1 1$"; do
+		_n=$((_n + 1))
+		if [ $_n -ge 400 ]; then
+			echo "no client $1 wide on window 1"
+			$TMUX kill-server 2>/dev/null
+			exit 1
+		fi
+		sleep 0.05
+	done
+}
+
 # Wait for small client to be on window 1.
-n=0
-while [ $n -lt 20 ]; do
-	$TMUX lsc -F '#{client_name} #{window_index}' 2>/dev/null | grep -q " 1$" && break
-	sleep 0.1
-	n=$((n + 1))
-done
+wait_client 20
 
 # Create a grouped session with a larger 30x10 client, also in control mode. It
 # starts on window 0 (inherited), then switches to window 1 with
@@ -43,9 +54,9 @@ done
 (echo "refresh-client -C 30,10"; echo "switch-client -t :=1"; sleep 5) |
 	$TMUX -f/dev/null -C new -t test -x 30 -y 10 >$TMP2 2>&1 &
 
-# Wait briefly for the switch-client command to execute, then check.
-# The resize should happen immediately (within 0.2s).
-sleep 0.2
+# Wait for the switch-client command to execute, then check. The resize
+# should happen immediately, so the window has its size already.
+wait_client 30
 OUT1=$($TMUX display -t test:1 -p '#{window_width}x#{window_height}' 2>/dev/null)
 
 # Also test selectw (select-window) which uses a different code path.
@@ -54,7 +65,7 @@ OUT1=$($TMUX display -t test:1 -p '#{window_width}x#{window_height}' 2>/dev/null
 (echo "refresh-client -C 25,8"; echo "selectw -t :1"; sleep 5) |
 	$TMUX -f/dev/null -C new -t test -x 25 -y 8 >$TMP3 2>&1 &
 
-sleep 0.2
+wait_client 25
 OUT2=$($TMUX display -t test:1 -p '#{window_width}x#{window_height}' 2>/dev/null)
 
 # Clean up - kill server (terminates clients). Don't wait for background

@@ -100,17 +100,16 @@ assert_alive()
 
 wait_for()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		if capture | grep -F "$marker" >/dev/null 2>&1; then
-			sleep 0.1
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		if capture | grep -F "$_marker" >/dev/null 2>&1; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "timed out waiting for $marker"
+	fail "timed out waiting for $_marker"
 }
 
 render_status_options()
@@ -181,7 +180,8 @@ render_customize()
 
 	tmux_run "$label customize-mode" \
 		customize-mode -t fmt:0 -F "CM$label: $fmt" >/dev/null
-	sleep 0.5
+	# The options are collapsed, so the format is not on screen.
+	wait_for "+ Server Options"
 	out=$(capture)
 	bounded "$label customize-mode capture" "$out"
 	tmux_run "$label quit customize-mode" send-keys -t fmt:0 q >/dev/null
@@ -294,13 +294,13 @@ run_cmd $TMUX2 new-session -d -s out -x 100 -y 30 "$TMUX attach -t fmt" \
 	>/dev/null 2>&1 || fail "failed to start outer client"
 
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 200 ]; do
 	c=$(tmux_run "wait clients" list-clients -F x | grep -c x)
 	[ "$c" -eq 1 ] && break
-	sleep 0.2
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "inner client did not attach"
+[ "$i" -lt 200 ] || fail "inner client did not attach"
 
 run_corpus A 'plain #{session_name}:#{window_index} #{@nested}'
 run_corpus B "$(wide_fmt)"

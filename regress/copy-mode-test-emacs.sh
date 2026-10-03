@@ -11,6 +11,14 @@ $TMUX new -d -x40 -y10 \
       "cat copy-mode-test.txt; printf '\e[9;15H'; cat" || exit 1
 $TMUX set -g window-size manual || exit 1
 
+# Copy mode needs the pane's text first: wait for its cursor to be placed.
+_i=0
+until [ "$($TMUX display -p '#{cursor_y},#{cursor_x}')" = 8,14 ]; do
+	_i=$((_i + 1))
+	[ $_i -ge 400 ] && exit 1
+	sleep 0.05
+done
+
 # Enter copy mode and go to the first column of the first row.
 $TMUX set-window-option -g mode-keys emacs
 $TMUX set-window-option -g word-separators ""

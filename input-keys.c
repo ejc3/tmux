@@ -20,6 +20,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <wctype.h>
 
 #include "tmux.h"
 
@@ -474,6 +475,202 @@ input_key_extended(struct bufferevent *bev, key_code key)
 }
 
 /*
+ * Kitty keyboard protocol numbers for keys without a character: the number
+ * and the final byte, 'u' for CSI number u, '~' for CSI number ~ or a letter
+ * for CSI 1 letter. Keypad keys that give text with num lock on give it.
+ */
+static const struct {
+	key_code	key;
+	u_int		number;
+	char		final;
+	char		text;
+} input_key_kitty_table[] = {
+	{ KEYC_F1, 1, 'P', 0 },
+	{ KEYC_F2, 1, 'Q', 0 },
+	{ KEYC_F3, 13, '~', 0 },
+	{ KEYC_F4, 1, 'S', 0 },
+	{ KEYC_F5, 15, '~', 0 },
+	{ KEYC_F6, 17, '~', 0 },
+	{ KEYC_F7, 18, '~', 0 },
+	{ KEYC_F8, 19, '~', 0 },
+	{ KEYC_F9, 20, '~', 0 },
+	{ KEYC_F10, 21, '~', 0 },
+	{ KEYC_F11, 23, '~', 0 },
+	{ KEYC_F12, 24, '~', 0 },
+	{ KEYC_IC, 2, '~', 0 },
+	{ KEYC_DC, 3, '~', 0 },
+	{ KEYC_HOME, 1, 'H', 0 },
+	{ KEYC_END, 1, 'F', 0 },
+	{ KEYC_NPAGE, 6, '~', 0 },
+	{ KEYC_PPAGE, 5, '~', 0 },
+	{ KEYC_UP, 1, 'A', 0 },
+	{ KEYC_DOWN, 1, 'B', 0 },
+	{ KEYC_RIGHT, 1, 'C', 0 },
+	{ KEYC_LEFT, 1, 'D', 0 },
+	{ KEYC_KP_ZERO, 57399, 'u', '0' },
+	{ KEYC_KP_ONE, 57400, 'u', '1' },
+	{ KEYC_KP_TWO, 57401, 'u', '2' },
+	{ KEYC_KP_THREE, 57402, 'u', '3' },
+	{ KEYC_KP_FOUR, 57403, 'u', '4' },
+	{ KEYC_KP_FIVE, 57404, 'u', '5' },
+	{ KEYC_KP_SIX, 57405, 'u', '6' },
+	{ KEYC_KP_SEVEN, 57406, 'u', '7' },
+	{ KEYC_KP_EIGHT, 57407, 'u', '8' },
+	{ KEYC_KP_NINE, 57408, 'u', '9' },
+	{ KEYC_KP_PERIOD, 57409, 'u', '.' },
+	{ KEYC_KP_SLASH, 57410, 'u', '/' },
+	{ KEYC_KP_STAR, 57411, 'u', '*' },
+	{ KEYC_KP_MINUS, 57412, 'u', '-' },
+	{ KEYC_KP_PLUS, 57413, 'u', '+' },
+	{ KEYC_KP_ENTER, 57414, 'u', 0 },
+};
+
+/*
+ * Encode a key as the kitty keyboard protocol does for the flags in effect,
+ * or return -1 for the key to be sent as it would be without them. tmux has
+ * key presses only, and knows only the shift, alt and ctrl modifiers; the key
+ * number of a shifted character is the lower case letter for A to Z and
+ * otherwise the character itself.
+ */
+static int
+input_key_kitty(struct bufferevent *bev, key_code key, u_int flags)
+{
+	key_code		 k = key & KEYC_MASK_KEY;
+	u_int			 i, mods = 0, number = 0, shifted = 0, text = 0;
+	int			 plain = 0, function = 1, legacy;
+	char			 final = 'u', tmp[64], field[32];
+	struct utf8_data	 ud;
+	wchar_t			 wc;
+	size_t			 n;
+
+	if (key & KEYC_SHIFT)
+		mods |= 1;
+	if (key & KEYC_META)
+		mods |= 2;
+	if (key & KEYC_CTRL)
+		mods |= 4;
+
+	switch (k) {
+	case KEYC_BTAB:
+		number = 9;
+		mods |= 1;
+		break;
+	case KEYC_BSPACE:
+		number = 127;
+		plain = 1;
+		break;
+	case '\r':
+		number = 13;
+		plain = 1;
+		break;
+	case '\t':
+		number = 9;
+		plain = 1;
+		break;
+	case '\033':
+		number = 27;
+		break;
+	default:
+		for (i = 0; i < nitems(input_key_kitty_table); i++) {
+			if (input_key_kitty_table[i].key == k)
+				break;
+		}
+		if (i != nitems(input_key_kitty_table)) {
+			number = input_key_kitty_table[i].number;
+			final = input_key_kitty_table[i].final;
+			text = input_key_kitty_table[i].text;
+			break;
+		}
+		if (KEYC_IS_UNICODE(k)) {
+			utf8_to_data(k, &ud);
+			if (utf8_towc(&ud, &wc) != UTF8_DONE)
+				return (-1);
+		} else if (k >= 0x20 && k < 0x7f)
+			wc = k;
+		else
+			return (-1);
+		function = 0;
+		if (iswupper(wc)) {
+			mods |= 1;
+			shifted = wc;
+			wc = towlower(wc);
+		} else if (mods & 1) {
+			shifted = towupper(wc);
+			if (shifted == (u_int)wc)
+				shifted = 0;
+		}
+		number = wc;
+		text = (shifted != 0) ? shifted : number;
+		break;
+	}
+
+	/* Keys that give text without ctrl or alt are sent as the text. */
+	if (mods & 6)
+		text = 0;
+	if (text != 0 && (~flags & KKEYS_ALL)) {
+		if (utf8_fromwc(text, &ud) != UTF8_DONE)
+			return (-1);
+		input_key_write(__func__, bev, ud.data, ud.size);
+		return (0);
+	}
+
+	/*
+	 * Without flag 1, 2 or 8, functional keys are as they are without the
+	 * protocol; so is Escape alone without 1 or 8, and Enter, Tab and
+	 * Backspace alone without 8. Other keys are as they are unless flag 1
+	 * or 8 is set or there is a shifted key (flag 4) or text (flag 16) to
+	 * add.
+	 */
+	legacy = !(flags & (KKEYS_DISAMBIGUATE|KKEYS_EVENTS|KKEYS_ALL));
+	if ((~flags & KKEYS_TEXT) || (~flags & KKEYS_ALL))
+		text = 0;
+	if (function) {
+		if (legacy)
+			return (-1);
+		if (mods == 0 && number == 27 &&
+		    !(flags & (KKEYS_DISAMBIGUATE|KKEYS_ALL)))
+			return (-1);
+		if (plain && mods == 0 && (~flags & KKEYS_ALL))
+			return (-1);
+		shifted = 0;
+	} else {
+		if ((~flags & KKEYS_ALTERNATES) || (~mods & 1))
+			shifted = 0;
+		if (shifted == 0 && text == 0 &&
+		    !(flags & (KKEYS_DISAMBIGUATE|KKEYS_ALL)))
+			return (-1);
+	}
+
+	if (final != 'u') {
+		if (mods == 0 && final != '~')
+			xsnprintf(tmp, sizeof tmp, "\033[%c", final);
+		else if (mods == 0)
+			xsnprintf(tmp, sizeof tmp, "\033[%u~", number);
+		else {
+			xsnprintf(tmp, sizeof tmp, "\033[%u;%u%c", number,
+			    mods + 1, final);
+		}
+		input_key_write(__func__, bev, tmp, strlen(tmp));
+		return (0);
+	}
+
+	n = xsnprintf(tmp, sizeof tmp, "\033[%u", number);
+	if (shifted != 0)
+		n += xsnprintf(tmp + n, sizeof tmp - n, ":%u", shifted);
+	if (mods != 0 || text != 0) {
+		*field = '\0';
+		if (mods != 0)
+			xsnprintf(field, sizeof field, "%u", mods + 1);
+		n += xsnprintf(tmp + n, sizeof tmp - n, ";%s", field);
+	}
+	if (text != 0)
+		n += xsnprintf(tmp + n, sizeof tmp - n, ";%u", text);
+	xsnprintf(tmp + n, sizeof tmp - n, "u");
+	input_key_write(__func__, bev, tmp, strlen(tmp));
+	return (0);
+}
+
+/*
  * Outputs the key in the "standard" mode. This is by far the most
  * complicated output mode, with a lot of remapping in order to
  * emulate quirks of terminals that today can be only found in museums.
@@ -505,11 +702,12 @@ input_key_vt10x(struct bufferevent *bev, key_code key)
 	}
 
 	/*
-	 * Prevent TAB, CR and LF from being swallowed by the C0 remapping
-	 * logic.
+	 * Prevent TAB, CR, LF and Escape from being swallowed by the C0
+	 * remapping logic.
 	 */
 	onlykey = key & KEYC_MASK_KEY;
-	if (onlykey == '\r' || onlykey == '\n' || onlykey == '\t')
+	if (onlykey == '\r' || onlykey == '\n' || onlykey == '\t' ||
+	    onlykey == C0_ESC)
 		key &= ~KEYC_CTRL;
 
 	/*
@@ -529,6 +727,8 @@ input_key_vt10x(struct bufferevent *bev, key_code key)
 			key = onlykey - '\030';
 		else if (onlykey >= '@' && onlykey <= '~')
 			key = onlykey & 0x1f;
+		else if (onlykey == 0x7f)	/* C-BSpace, as xterm */
+			key = C0_BS;
 		else
 			return (-1);
 	}
@@ -576,6 +776,7 @@ input_key(struct screen *s, struct bufferevent *bev, key_code key)
 	struct input_key_entry	*ike = NULL;
 	key_code		 newkey;
 	struct utf8_data	 ud;
+	u_int			 flags;
 
 	/* Mouse keys need a pane. */
 	if (KEYC_IS_MOUSE(key))
@@ -587,6 +788,11 @@ input_key(struct screen *s, struct bufferevent *bev, key_code key)
 		input_key_write(__func__, bev, &ud.data[0], 1);
 		return (0);
 	}
+
+	/* The kitty keyboard protocol, if the program has asked for it. */
+	flags = screen_kkeys_flags(s);
+	if (flags != 0 && input_key_kitty(bev, key, flags) == 0)
+		return (0);
 
 	/* Is this backspace? */
 	if ((key & KEYC_MASK_KEY) == KEYC_BSPACE) {
@@ -711,10 +917,11 @@ input_key(struct screen *s, struct bufferevent *bev, key_code key)
 /* Get mouse event string. */
 int
 input_key_get_mouse(struct screen *s, struct mouse_event *m, u_int x, u_int y,
-    const char **rbuf, size_t *rlen)
+    u_int xpixel, u_int ypixel, const char **rbuf, size_t *rlen)
 {
 	static char	 buf[40];
 	size_t		 len;
+	u_int		 px, py;
 
 	*rbuf = NULL;
 	*rlen = 0;
@@ -753,7 +960,23 @@ input_key_get_mouse(struct screen *s, struct mouse_event *m, u_int x, u_int y,
 	 * UTF-8 (1005) extension if the application requested, or to the
 	 * legacy format.
 	 */
-	if (m->sgr_type != ' ' && (s->mode & MODE_MOUSE_SGR)) {
+	if (m->sgr_type != ' ' && (s->mode & MODE_MOUSE_PIXELS)) {
+		/*
+		 * In pixels from the pane's top left, from 0 (as kitty): the
+		 * terminal's less the pane's offset if it gave them (m->x - x
+		 * is the offset in cells), or the top left of the cell in the
+		 * cell size the pane was given (xpixel and ypixel).
+		 */
+		if (m->pixels) {
+			px = m->px - (m->x - x) * m->xpixel;
+			py = m->py - (m->y - y) * m->ypixel;
+		} else {
+			px = x * xpixel;
+			py = y * ypixel;
+		}
+		len = xsnprintf(buf, sizeof buf, "\033[<%u;%u;%u%c",
+		    m->sgr_b, px, py, m->sgr_type);
+	} else if (m->sgr_type != ' ' && (s->mode & MODE_MOUSE_SGR)) {
 		len = xsnprintf(buf, sizeof buf, "\033[<%u;%u;%u%c",
 		    m->sgr_b, x + 1, y + 1, m->sgr_type);
 	} else if (s->mode & MODE_MOUSE_UTF8) {
@@ -808,7 +1031,8 @@ input_key_mouse(struct window_pane *wp, struct mouse_event *m)
 		return;
 	if (!window_pane_is_visible(wp))
 		return;
-	if (!input_key_get_mouse(s, m, x, y, &buf, &len))
+	if (!input_key_get_mouse(s, m, x, y, wp->window->xpixel,
+	    wp->window->ypixel, &buf, &len))
 		return;
 	log_debug("writing mouse %.*s to %%%u", (int)len, buf, wp->id);
 	input_key_write(__func__, wp->event, buf, len);

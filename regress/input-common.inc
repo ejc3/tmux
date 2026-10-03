@@ -7,6 +7,10 @@ TMUX="$TEST_TMUX -LtestA$$ -f/dev/null"
 # Keep panes alive until the next case or cleanup, without reading replies.
 INPUT_HOLD='while :; do sleep 3600; done'
 
+# A pane program ends its output with this (for printf): tmux reads pane output
+# in order, so once the pane path is input-done all of it has been parsed.
+INPUT_DONE='\033]7;input-done\007'
+
 TMP=$(mktemp)
 EXP=$(mktemp)
 trap 'rm -f "$TMP" "$EXP"; $TMUX kill-server 2>/dev/null' 0 1 15
@@ -18,6 +22,30 @@ fail()
 	echo "FAIL: $1"
 	diff -u "$EXP" "$TMP"
 	exit_status=1
+}
+
+# Wait until the old server has gone. A dying server can make ls fail with
+# "server exited unexpectedly" before its socket is gone.
+input_gone()
+{
+	_i=0
+	until $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 400 ] || { echo "FAIL: old server did not exit"; exit 1; }
+		sleep 0.05
+	done
+}
+
+# Wait for a pane program's INPUT_DONE.
+input_wait_done()
+{
+	_i=0
+	until [ "$($TMUX display -p -t "$1:" '#{pane_path}' 2>/dev/null)" = \
+	    input-done ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 400 ] || { echo "FAIL: $1 output not read"; exit 1; }
+		sleep 0.05
+	done
 }
 
 start_pane()
@@ -39,15 +67,16 @@ start_pane_hlimit()
 	hlimit=$5
 
 	$TMUX kill-server 2>/dev/null
-	sleep 0.1
+	input_gone
 	$TMUX new-session -d -x 1 -y 1 -s test-setup "$INPUT_HOLD" || exit 1
 	$TMUX set-option -g history-limit "$hlimit" || exit 1
 	$TMUX new-session -d -x "$sx" -y "$sy" -s "$name" \
-	    "printf '$seq'; $INPUT_HOLD" || exit 1
+	    "printf '$seq'; printf '$INPUT_DONE'; $INPUT_HOLD" || exit 1
 	$TMUX kill-session -t test-setup
-	sleep 0.3
+	input_wait_done "$name"
 }
 
+# The command must end its output with INPUT_DONE.
 start_cmd()
 {
 	name=$1
@@ -56,9 +85,9 @@ start_cmd()
 	cmd=$4
 
 	$TMUX kill-server 2>/dev/null
-	sleep 0.1
+	input_gone
 	$TMUX new-session -d -x "$sx" -y "$sy" -s "$name" "$cmd" || exit 1
-	sleep 0.3
+	input_wait_done "$name"
 }
 
 normalize_capture()
@@ -81,6 +110,24 @@ check_capture()
 	capture_grid "$name" >"$TMP"
 	printf "%s\n" "$expected" >"$EXP"
 	cmp "$TMP" "$EXP" || fail "$name"
+}
+
+# Like check_capture, for output that arrives after the pane's own, such as
+# a reply to the pane echoed by its terminal.
+wait_capture()
+{
+	name=$1
+	expected=$2
+
+	printf "%s\n" "$expected" >"$EXP"
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		capture_grid "$name" >"$TMP"
+		cmp -s "$TMP" "$EXP" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "$name"
 }
 
 check_cursor()

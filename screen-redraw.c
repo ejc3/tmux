@@ -1807,6 +1807,7 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 	u_int			 width, i, y, lines;
 	struct redraw_span	*first;
 	int			 redraw;
+	int			 ours;
 
 	if (c->flags & CLIENT_SUSPENDED)
 		return;
@@ -1885,8 +1886,21 @@ redraw_draw(struct client *c, struct window_pane *wp, int flags)
 			}
 		}
 	}
-	tty_sync_start(tty); /* end in server_client_reset_state */
+	tty_sync_start(tty);
+
 	tty_update_mode(tty, tty->mode & ~CURSOR_MODES, NULL);
+
+	/*
+	 * The terminal's scrollback is made the active pane's history before
+	 * the pane is drawn over the rows that leaves, inside the same
+	 * synchronized update, so the two are painted as one frame.
+	 */
+	loop = w->active;
+	if ((flags & REDRAW_PANE) && loop != NULL &&
+	    (wp == NULL || wp == loop)) {
+		ours = tty_sync_history(tty, loop);
+		tty_forget_wraps(tty, loop, ours);
+	}
 
 	if (wp != NULL)
 		redraw_draw_pane_lines(&dctx, wp, flags);

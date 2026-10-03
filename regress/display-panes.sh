@@ -28,45 +28,45 @@ fail()
 
 wait_format()
 {
-	target=$1
-	format=$2
-	want=$3
+	_target=$1
+	_format=$2
+	_want=$3
 
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t "$target" "$format" 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t "$_target" "$_format" 2>/dev/null)
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "$target: expected '$want' for $format, got '$got'"
+	fail "$_target: expected '$_want' for $_format, got '$_got'"
 }
 
 wait_option()
 {
-	option=$1
-	want=$2
+	_option=$1
+	_want=$2
 
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX show -gv "$option" 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX show -gv "$_option" 2>/dev/null)
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "$option: expected '$want', got '$got'"
+	fail "$_option: expected '$_want', got '$_got'"
 }
 
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "expected $1 clients, have $c"
+	fail "expected $1 clients, have $_c"
 }
 
 $TMUX new-session -d -s m -x 80 -y 24 'cat' || exit 1
@@ -89,12 +89,12 @@ capture()
 
 wait_capture()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		CAPTURED=$(capture)
 		printf '%s\n' "$CAPTURED" | grep -F -q "$1" && return 0
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1' in capture"
 }

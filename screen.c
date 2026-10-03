@@ -50,7 +50,8 @@ struct screen_title_entry {
 TAILQ_HEAD(screen_titles, screen_title_entry);
 
 static void	screen_resize_y(struct screen *, u_int, int, u_int *);
-static void	screen_reflow(struct screen *, u_int, u_int *, u_int *, int);
+static void	screen_reflow(struct screen *, u_int, u_int, u_int *,
+		    u_int *, int);
 
 /* Free titles stack. */
 static void
@@ -99,7 +100,9 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 #endif
 
 	s->write_list = NULL;
+	s->write_wrap = 0;
 	s->hyperlinks = NULL;
+	memset(s->pointers, 0, sizeof s->pointers);
 
 	screen_reinit(s, 1);
 }
@@ -138,6 +141,167 @@ screen_reinit(struct screen *s, int check)
 
 	screen_set_progress_bar(s, PROGRESS_BAR_HIDDEN, 0);
 	screen_reset_hyperlinks(s);
+	screen_kkeys_reset(s);
+	screen_pointer_reset(s);
+}
+
+/* The kitty keyboard flags stack of the main or alternate screen, in use. */
+static struct screen_kkeys *
+screen_kkeys(struct screen *s)
+{
+	return (&s->kkeys[SCREEN_IS_ALTERNATE(s) ? 1 : 0]);
+}
+
+/* The kitty keyboard flags in effect. */
+u_int
+screen_kkeys_flags(struct screen *s)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	if (kk->n == 0)
+		return (0);
+	return (kk->flags[kk->n - 1]);
+}
+
+/* Push kitty keyboard flags. A full stack loses its oldest entry. */
+void
+screen_kkeys_push(struct screen *s, u_int flags)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	if (kk->n == KKEYS_DEPTH) {
+		memmove(kk->flags, kk->flags + 1, KKEYS_DEPTH - 1);
+		kk->n--;
+	}
+	kk->flags[kk->n++] = flags & KKEYS_MASK;
+}
+
+/* Pop kitty keyboard flags. */
+void
+screen_kkeys_pop(struct screen *s, u_int n)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	kk->n = (n >= kk->n) ? 0 : kk->n - n;
+}
+
+/*
+ * Change the kitty keyboard flags in effect: mode 1 sets them, 2 adds to
+ * them, 3 removes from them. An empty stack gets an entry.
+ */
+void
+screen_kkeys_set(struct screen *s, u_int flags, u_int mode)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+	u_char			*f;
+
+	if (mode < 1 || mode > 3)
+		return;
+	if (kk->n == 0) {
+		kk->flags[0] = 0;
+		kk->n = 1;
+	}
+	f = &kk->flags[kk->n - 1];
+	switch (mode) {
+	case 1:
+		*f = flags;
+		break;
+	case 2:
+		*f |= flags;
+		break;
+	case 3:
+		*f &= ~flags;
+		break;
+	}
+	*f &= KKEYS_MASK;
+}
+
+/* Empty both kitty keyboard flags stacks. */
+void
+screen_kkeys_reset(struct screen *s)
+{
+	memset(s->kkeys, 0, sizeof s->kkeys);
+}
+
+/* The mouse pointer shape stack of the main or alternate screen, in use. */
+static struct screen_pointers *
+screen_pointers(struct screen *s)
+{
+	return (&s->pointers[SCREEN_IS_ALTERNATE(s) ? 1 : 0]);
+}
+
+/* The mouse pointer shape set, or NULL for the default. */
+const char *
+screen_pointer(struct screen *s)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n == 0)
+		return (NULL);
+	return (sp->shape[sp->n - 1]);
+}
+
+/* Set the mouse pointer shape: replace the top, or push onto an empty stack. */
+void
+screen_pointer_set(struct screen *s, const char *name)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n == 0) {
+		screen_pointer_push(s, name);
+		return;
+	}
+	free(sp->shape[sp->n - 1]);
+	sp->shape[sp->n - 1] = xstrdup(name);
+}
+
+/*
+ * Push a comma separated list of mouse pointer shapes, the last on top. A full
+ * stack loses its oldest entry.
+ */
+void
+screen_pointer_push(struct screen *s, const char *names)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+	char			*copy, *next, *name;
+
+	copy = next = xstrdup(names);
+	while ((name = strsep(&next, ",")) != NULL) {
+		if (*name == '\0')
+			continue;
+		if (sp->n == SCREEN_POINTERS) {
+			free(sp->shape[0]);
+			memmove(sp->shape, sp->shape + 1,
+			    (SCREEN_POINTERS - 1) * sizeof *sp->shape);
+			sp->n--;
+		}
+		sp->shape[sp->n++] = xstrdup(name);
+	}
+	free(copy);
+}
+
+/* Pop a mouse pointer shape. */
+void
+screen_pointer_pop(struct screen *s)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n != 0)
+		free(sp->shape[--sp->n]);
+}
+
+/* Empty both mouse pointer shape stacks. */
+void
+screen_pointer_reset(struct screen *s)
+{
+	struct screen_pointers	*sp;
+	u_int			 i;
+
+	for (i = 0; i < nitems(s->pointers); i++) {
+		sp = &s->pointers[i];
+		while (sp->n != 0)
+			free(sp->shape[--sp->n]);
+	}
 }
 
 /* Reset hyperlinks of a screen. */
@@ -173,6 +337,7 @@ screen_free(struct screen *s)
 	if (s->hyperlinks != NULL)
 		hyperlinks_free(s->hyperlinks);
 	screen_free_titles(s);
+	screen_pointer_reset(s);
 
 #ifdef ENABLE_SIXEL
 	/*
@@ -355,6 +520,7 @@ screen_resize_cursor(struct screen *s, u_int sx, u_int sy, int reflow,
     int eat_empty, int cursor)
 {
 	u_int	cx = s->cx, cy = s->grid->hsize + s->cy;
+	u_int	ox = screen_size_x(s);
 
 	if (s->write_list != NULL)
 		screen_write_free_list(s);
@@ -382,7 +548,7 @@ screen_resize_cursor(struct screen *s, u_int sx, u_int sy, int reflow,
 #endif
 
 	if (reflow)
-		screen_reflow(s, sx, &cx, &cy, cursor);
+		screen_reflow(s, ox, sx, &cx, &cy, cursor);
 
 	if (cy >= s->grid->hsize) {
 		s->cx = cx;
@@ -654,7 +820,7 @@ screen_select_cell(struct screen *s, struct grid_cell *dst,
 	dst->flags = src->flags;
 
 	if (dst->attr & GRID_ATTR_NOATTR)
-		dst->attr |= (src->attr & GRID_ATTR_CHARSET);
+		dst->attr |= (src->attr & GRID_ATTR_CONTENT);
 	else
 		dst->attr |= src->attr;
 	return (1);
@@ -662,12 +828,13 @@ screen_select_cell(struct screen *s, struct grid_cell *dst,
 
 /* Reflow wrapped lines. */
 static void
-screen_reflow(struct screen *s, u_int new_x, u_int *cx, u_int *cy, int cursor)
+screen_reflow(struct screen *s, u_int old_x, u_int new_x, u_int *cx, u_int *cy,
+    int cursor)
 {
 	u_int	wx, wy;
 
 	if (cursor) {
-		grid_wrap_position(s->grid, *cx, *cy, &wx, &wy);
+		grid_wrap_position(s->grid, old_x, *cx, *cy, &wx, &wy);
 		log_debug("%s: cursor %u,%u is %u,%u", __func__, *cx, *cy, wx,
 		    wy);
 	}
@@ -715,6 +882,13 @@ screen_alternate_on(struct screen *s, struct grid_cell *gc, int cursor)
 	    im->list = &s->saved_images;
 #endif
 
+	/*
+	 * Clearing the screen ends a line wrapping into it from the history;
+	 * the primary screen comes back with that line, so keep its wrap.
+	 */
+	s->saved_hwrap = (s->grid->hsize != 0 &&
+	    (grid_get_line(s->grid, s->grid->hsize - 1)->flags &
+	    GRID_LINE_WRAPPED));
 	grid_view_clear(s->grid, 0, 0, sx, sy, 8);
 
 	s->saved_flags = s->grid->flags;
@@ -750,18 +924,29 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 			memcpy(gc, &s->saved_cell, sizeof *gc);
 	}
 
+	/*
+	 * The cursor was saved by the last alternate screen to save it, which
+	 * may be before a resize (1049h, 47l, resize, 47h): keep it inside the
+	 * screen it is restored to, which the resize back reflows with it. One
+	 * past the last column is where a full line leaves it (the next
+	 * character wraps), so that stays; further out is a column from a wider
+	 * screen, which goes to the last one.
+	 */
+	if (s->cx > screen_size_x(s))
+		s->cx = screen_size_x(s) - 1;
+	if (s->cy > screen_size_y(s) - 1)
+		s->cy = screen_size_y(s) - 1;
+
 	/* If not in the alternate screen, do nothing more. */
-	if (!SCREEN_IS_ALTERNATE(s)) {
-		if (s->cx > screen_size_x(s) - 1)
-			s->cx = screen_size_x(s) - 1;
-		if (s->cy > screen_size_y(s) - 1)
-			s->cy = screen_size_y(s) - 1;
+	if (!SCREEN_IS_ALTERNATE(s))
 		return 0;
-	}
 
 	/* Restore the saved grid. */
 	grid_duplicate_lines(s->grid, screen_hsize(s), s->saved_grid, 0,
 	    s->saved_grid->sy);
+	if (s->saved_hwrap && s->grid->hsize != 0)
+		grid_get_line(s->grid, s->grid->hsize - 1)->flags |=
+		    GRID_LINE_WRAPPED;
 
 	/*
 	 * Turn history back on (so resize can use it) and then resize back to
@@ -825,6 +1010,8 @@ screen_mode_to_string(int mode)
 		strlcat(tmp, "MOUSE_UTF8,", sizeof tmp);
 	if (mode & MODE_MOUSE_SGR)
 		strlcat(tmp, "MOUSE_SGR,", sizeof tmp);
+	if (mode & MODE_MOUSE_PIXELS)
+		strlcat(tmp, "MOUSE_PIXELS,", sizeof tmp);
 	if (mode & MODE_BRACKETPASTE)
 		strlcat(tmp, "BRACKETPASTE,", sizeof tmp);
 	if (mode & MODE_FOCUSON)

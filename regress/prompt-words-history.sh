@@ -34,14 +34,43 @@ capture()
 	$OUTER capture-pane -p -t outer:0.0 2>/dev/null
 }
 
+# Wait up to 20 seconds for $1 to be true.
+poll()
+{
+	_i=0
+	until eval "$1"; do
+		_i=$((_i + 1))
+		[ "$_i" -gt 400 ] && return 1
+		sleep 0.05
+	done
+}
+
+# Wait for the prompt to be drawn, or gone.
+prompt_open()
+{
+	poll 'capture | grep -Fq "(word)"' || fail "prompt did not open"
+}
+prompt_closed()
+{
+	poll '! capture | grep -Fq "(word)"' || fail "prompt did not close"
+}
+
+# Wait for vi command mode: the prompt is then drawn in message-command-style,
+# set below to colour 196.
+vi_command_mode()
+{
+	poll '$OUTER capture-pane -ep -t outer:0.0 | grep -Fq "38;5;196"' ||
+		fail "prompt did not enter vi command mode"
+}
+
 wait_result()
 {
 	want=$1
 	i=0
-	while [ "$i" -lt 50 ]; do
+	while [ "$i" -lt 100 ]; do
 		got=$($INNER show-option -gqv @result 2>/dev/null)
 		[ "$got" = "$want" ] && return 0
-		sleep 0.1
+		sleep 0.05
 		i=$((i + 1))
 	done
 	fail "prompt result is '$got', expected '$want'"
@@ -60,10 +89,11 @@ run_prompt()
 	shift
 	$INNER set-option -g @result sentinel || exit 1
 	$OUTER send-keys M-r || exit 1
-	sleep 0.2
+	prompt_open
 	$OUTER send-keys "$@" || exit 1
 	$OUTER send-keys Enter || exit 1
 	wait_result "$want"
+	prompt_closed
 }
 
 run_vi_prompt()
@@ -72,16 +102,16 @@ run_vi_prompt()
 	shift
 	$INNER set-option -g @result sentinel || exit 1
 	$OUTER send-keys M-r || exit 1
-	sleep 0.2
-	# Send Escape separately so the terminal's escape-time handling does not
-	# combine it with the first vi command as a Meta key.
+	prompt_open
+	# Send Escape separately, and wait until the inner client has taken it
+	# as a key on its own (after escape-time) rather than the start of a
+	# Meta key with the first vi command.
 	$OUTER send-keys Escape || exit 1
-	# The inner client must see Escape as a complete key, not the prefix of a
-	# Meta sequence (the default escape-time is 500 milliseconds).
-	sleep 0.7
+	vi_command_mode
 	$OUTER send-keys "$@" || exit 1
 	$OUTER send-keys Enter || exit 1
 	wait_result "$want"
+	prompt_closed
 }
 
 $INNER new-session -d -s prompt -x80 -y24 'exec sleep 100' || exit 1
@@ -91,7 +121,9 @@ $INNER set-option -g window-size manual || exit 1
 $OUTER new-session -d -s outer -x80 -y24 "$INNER attach -t prompt" || exit 1
 $OUTER set-option -g status off || exit 1
 $OUTER set-option -g window-size manual || exit 1
-sleep 1
+$INNER set-option -g message-command-style fg=colour196 || exit 1
+poll '[ -n "$($INNER display -p "#{client_termtype}" 2>/dev/null)" ]' ||
+	fail "inner client did not attach"
 
 # Emacs Meta-f stops after the first word; Meta-b returns to the start of the
 # previous word. Inserting a marker makes the cursor position observable.
@@ -121,24 +153,15 @@ run_vi_prompt 'one-twoX three' 0 E a X
 $INNER set-option -g status-keys emacs || exit 1
 bind_prompt ''
 $OUTER send-keys M-r || exit 1
-sleep 0.2
+prompt_open
 $OUTER send-keys -l 'show-' || exit 1
 $OUTER send-keys Tab || exit 1
-sleep 0.2
-captured=$(capture)
-printf '%s\n' "$captured" | grep -Fq 'show-buffer' ||
+poll 'capture | grep -Fq show-buffer' ||
 	fail "ambiguous completion list was not drawn"
-printf '%s\n' "$captured" | grep -Fq 'show-environment' ||
+capture | grep -Fq 'show-environment' ||
 	fail "ambiguous completion list was incomplete"
 $OUTER send-keys Escape || exit 1
-# Wait until Escape has closed the prompt before sending another Meta key.
-# Otherwise the two can be parsed together as a single escape sequence.
-i=0
-while capture | grep -Fq '(word)'; do
-	[ "$i" -lt 50 ] || fail "completion prompt did not close"
-	sleep 0.1
-	i=$((i + 1))
-done
+prompt_closed
 
 # Add entries to both history rings through real prompts.
 bind_prompt 'history-command'

@@ -31,7 +31,7 @@ def attach():
     os.set_blocking(fd, False)
     return pid, fd
 
-def read_until(fd, needle, timeout=5):
+def read_until(fd, needle, timeout=20):
     end = time.time() + timeout
     data = b""
     while time.time() < end:
@@ -49,22 +49,30 @@ def read_until(fd, needle, timeout=5):
     raise RuntimeError("did not see terminal request %r in %r" %
         (needle, data))
 
-def wait_file(path, timeout=5):
+# The pane program moves its complete output into place when it is done.
+def wait_file(path, timeout=20):
     end = time.time() + timeout
     while time.time() < end:
         try:
             with open(path, "rb") as f:
-                data = f.read()
-            if data:
-                return data
+                return f.read()
         except FileNotFoundError:
             pass
         time.sleep(0.05)
-    return b""
+    raise RuntimeError("pane program did not write %s" % path)
+
+def wait_attached(timeout=20):
+    end = time.time() + timeout
+    while time.time() < end:
+        out = run("display-message", "-p", "-t", "requests",
+            "#{session_attached}", check=False).stdout
+        if out.strip() == b"1":
+            return
+        time.sleep(0.05)
+    raise RuntimeError("client did not attach")
 
 def respawn(command):
     run("respawn-window", "-k", "-t", "requests:0", command)
-    time.sleep(0.2)
 
 def cleanup(pid=None):
     if pid is not None:
@@ -80,14 +88,15 @@ run("new-session", "-d", "-x", "80", "-y", "24", "-s", "requests",
 
 pid, fd = attach()
 try:
-    time.sleep(0.5)
+    wait_attached()
 
     with tempfile.NamedTemporaryFile(delete=False) as f:
         palette_out = f.name
+    os.unlink(palette_out)
     respawn("stty raw -echo min 1 time 50; "
         "printf '\\033]4;99;?\\033\\\\'; "
-        "dd bs=1 count=27 2>/dev/null | cat -v >%s; sleep 1" %
-        palette_out)
+        "dd bs=1 count=27 2>/dev/null | cat -v >%s.tmp; mv %s.tmp %s; "
+        "exec sleep 60" % (palette_out, palette_out, palette_out))
     read_until(fd, b"\033]4;99;?\033\\")
     os.write(fd, b"\033]4;99;rgb:0101/0202/0303\033\\")
     got = wait_file(palette_out)
@@ -100,10 +109,11 @@ try:
     run("set-option", "-s", "get-clipboard", "request")
     with tempfile.NamedTemporaryFile(delete=False) as f:
         clip_out = f.name
+    os.unlink(clip_out)
     respawn("stty raw -echo min 1 time 50; "
         "printf '\\033]52;c;?\\033\\\\'; "
-        "dd bs=1 count=21 2>/dev/null | cat -v >%s; sleep 1" %
-        clip_out)
+        "dd bs=1 count=21 2>/dev/null | cat -v >%s.tmp; mv %s.tmp %s; "
+        "exec sleep 60" % (clip_out, clip_out, clip_out))
     data = read_until(fd, b"]52;")
     if b"?" not in data:
         raise RuntimeError("clipboard request missing query in %r" % data)
