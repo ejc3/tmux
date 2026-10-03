@@ -1708,6 +1708,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 		case 2026:	/* synchronized output */
 			n = (s->mode & MODE_SYNC) ? 1 : 2;
 			break;
+		case 2027:	/* grapheme clusters: always, see utf8-combined.c */
+			n = 3;
+			break;
 		case 2031:	/* theme update notifications */
 			n = (s->mode & MODE_THEME_UPDATES) ? 1 : 2;
 			break;
