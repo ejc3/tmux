@@ -574,6 +574,9 @@ window_set_name(struct window *w, const char *new_name, int untrusted)
 void
 window_resize(struct window *w, u_int sx, u_int sy, int xpixel, int ypixel)
 {
+	struct window_pane	*wp;
+	u_int			 oxpixel = w->xpixel, oypixel = w->ypixel;
+
 	if (xpixel == 0)
 		xpixel = DEFAULT_XPIXEL;
 	if (ypixel == 0)
@@ -593,6 +596,17 @@ window_resize(struct window *w, u_int sx, u_int sy, int xpixel, int ypixel)
 	if (ypixel != -1)
 		w->ypixel = ypixel;
 	redraw_invalidate_scene(w);
+
+	/*
+	 * A new cell size is a resize too: tell the panes whose size in cells
+	 * has not changed (the others are told when their resize is done).
+	 */
+	if (w->xpixel != oxpixel || w->ypixel != oypixel) {
+		TAILQ_FOREACH(wp, &w->panes, entry) {
+			if (TAILQ_EMPTY(&wp->resize_queue))
+				window_pane_send_resize(wp, wp->sx, wp->sy);
+		}
+	}
 }
 
 void
@@ -622,6 +636,24 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 		if (errno != EINVAL && errno != ENXIO)
 #endif
 		fatal("ioctl failed");
+	if (wp->base.mode & MODE_INBAND_RESIZE)
+		window_pane_report_size(wp, sx, sy);
+}
+
+/*
+ * Tell a pane that asked for in-band resize notifications (mode 2048) its
+ * size: rows, columns, then height and width in pixels.
+ */
+void
+window_pane_report_size(struct window_pane *wp, u_int sx, u_int sy)
+{
+	struct window	*w = wp->window;
+
+	if (wp->fd == -1 || wp->event == NULL)
+		return;
+	bufferevent_write(wp->event, "\033[48;", 5);
+	evbuffer_add_printf(bufferevent_get_output(wp->event), "%u;%u;%u;%ut",
+	    sy, sx, sy * w->ypixel, sx * w->xpixel);
 }
 
 int
