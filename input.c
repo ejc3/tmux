@@ -1702,6 +1702,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 		case 1006:	/* mouse: SGR */
 			n = (s->mode & MODE_MOUSE_SGR) ? 1 : 2;
 			break;
+		case 1016:	/* mouse: SGR, in pixels */
+			n = (s->mode & MODE_MOUSE_PIXELS) ? 1 : 2;
+			break;
 		case 2004:	/* bracketed paste */
 			n = (s->mode & MODE_BRACKETPASTE) ? 1 : 2;
 			break;
@@ -1966,6 +1969,9 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 		case 1006:
 			screen_write_mode_clear(sctx, MODE_MOUSE_SGR);
 			break;
+		case 1016:
+			screen_write_mode_clear(sctx, MODE_MOUSE_PIXELS);
+			break;
 		case 47:
 		case 1047:
 			screen_write_alternateoff(sctx, gc, 0);
@@ -2068,6 +2074,9 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 			break;
 		case 1006:
 			screen_write_mode_set(sctx, MODE_MOUSE_SGR);
+			break;
+		case 1016:
+			screen_write_mode_set(sctx, MODE_MOUSE_PIXELS);
 			break;
 		case 47:
 		case 1047:

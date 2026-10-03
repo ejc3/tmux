@@ -2054,6 +2054,18 @@ format_cb_mouse_sgr_flag(struct format_tree *ft)
 	return (NULL);
 }
 
+/* Callback for mouse_pixels_flag. */
+static void *
+format_cb_mouse_pixels_flag(struct format_tree *ft)
+{
+	if (ft->wp != NULL) {
+		if (ft->wp->base.mode & MODE_MOUSE_PIXELS)
+			return (xstrdup("1"));
+		return (xstrdup("0"));
+	}
+	return (NULL);
+}
+
 /* Callback for mouse_standard_flag. */
 static void *
 format_cb_mouse_standard_flag(struct format_tree *ft)
@@ -3782,6 +3794,9 @@ static const struct format_table_entry format_table[] = {
 	},
 	{ "mouse_pane", FORMAT_TABLE_STRING,
 	  format_cb_mouse_pane
+	},
+	{ "mouse_pixels_flag", FORMAT_TABLE_STRING,
+	  format_cb_mouse_pixels_flag
 	},
 	{ "mouse_sgr_flag", FORMAT_TABLE_STRING,
 	  format_cb_mouse_sgr_flag
