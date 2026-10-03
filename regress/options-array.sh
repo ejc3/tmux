@@ -38,16 +38,16 @@ check_value()
 
 check_wait_value()
 {
-	i=0
-	while [ "$i" -lt 30 ]; do
-		out=$($TMUX show $1 2>&1)
-		[ "$out" = "$2" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+	_i=0
+	while [ "$_i" -lt 120 ]; do
+		_out=$($TMUX show $1 2>&1)
+		[ "$_out" = "$2" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 	echo "show $1 failed."
 	echo "Expected: '$2'"
-	echo "But got:  '$out'"
+	echo "But got:  '$_out'"
 	exit 1
 }
 

@@ -32,17 +32,17 @@ trap cleanup EXIT
 
 wait_for()
 {
-	option=$1
-	expected=$2
-	i=0
+	_option=$1
+	_expected=$2
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		value=$($TMUX show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+	while [ $_i -lt 120 ]; do
+		_value=$($TMUX show -gqv "$_option" 2>/dev/null || true)
+		[ "$_value" = "$_expected" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $option to be '$expected' but got '$value'"
+	fail "expected $_option to be '$_expected' but got '$_value'"
 }
 
 $TMUX new -d -s main || fail "new-session main failed"
@@ -505,12 +505,12 @@ $TMUX neww -d -n resize-client "$TMUX2 attach -t resize" ||
 	fail "new outer window for client-resized failed"
 i=0
 client=
-while [ $i -lt 30 ]; do
+while [ $i -lt 120 ]; do
 	client=$($TMUX2 list-clients -F '#{client_name}' 2>/dev/null |
 		awk 'NR == 1 { print; exit }')
 	[ -n "$client" ] && break
 	i=$((i + 1))
-	sleep 0.2
+	sleep 0.05
 done
 [ -n "$client" ] || fail "inner client did not attach"
 old_size=$($TMUX2 list-clients -F '#{client_width},#{client_height}') ||
@@ -518,7 +518,7 @@ old_size=$($TMUX2 list-clients -F '#{client_width},#{client_height}') ||
 $TMUX resizew -t resize-client -x 70 -y 20 ||
 	fail "resize outer client window failed"
 i=0
-while [ $i -lt 30 ]; do
+while [ $i -lt 120 ]; do
 	value=$($TMUX2 show -gqv @cr 2>/dev/null || true)
 	new_size=$($TMUX2 list-clients -F '#{client_width},#{client_height}' \
 		2>/dev/null || true)
@@ -526,7 +526,7 @@ while [ $i -lt 30 ]; do
 	[ "$new_size" != "$old_size" ] && [ "$value" = "$expected" ] &&
 		break
 	i=$((i + 1))
-	sleep 0.2
+	sleep 0.05
 done
 [ "$value" = "$expected" ] ||
 	fail "expected @cr to be '$expected' but got '$value'"

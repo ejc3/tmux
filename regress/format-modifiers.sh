@@ -99,7 +99,6 @@ assert_alive()
 }
 
 $TMUX kill-server 2>/dev/null
-sleep 0.1
 $TMUX new-session -d -s main -x 80 -y 24 || exit 1
 
 # Single-window session used by test_expand for format_expand-context tests.
@@ -543,9 +542,15 @@ assert_alive "verbose expansion"
 #
 # These need a fully controlled server so the set of sessions, windows and
 # panes (and their order) is known, so start from a clean server.  This must be
-# the last section as it discards the setup above.
+# the last section as it discards the setup above. Wait for the old server to
+# go: one still exiting takes the next command with it.
 $TMUX kill-server 2>/dev/null
-sleep 0.1
+_g=0
+until $TMUX ls 2>&1 | grep -qE 'no server running|No such file'; do
+	_g=$((_g + 1))
+	[ $_g -lt 400 ] || { echo "old server did not exit"; exit 1; }
+	sleep 0.05
+done
 
 # Sessions, created in this order, so session ids (and hence creation order)
 # are zeta=$0, alpha=$1, mike=$2.

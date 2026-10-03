@@ -12,8 +12,15 @@ trap '$TMUX kill-server 2>/dev/null; rm -f "$TMP"' 0 1 15
 $TMUX kill-server 2>/dev/null
 
 before=$(date +%s)
-$TMUX new-session -d -x 40 -y 5 'seq 1 12; sleep 10' || exit 1
-sleep 1
+$TMUX new-session -d -x 40 -y 5 \
+	"seq 1 12; printf '\\033]7;done\\007'; sleep 10" || exit 1
+# The pane prints OSC 7 after seq's output.
+i=0
+while [ "$($TMUX display -p '#{pane_path}')" != done ]; do
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "pane output was not read"; exit 1; }
+	sleep 0.05
+done
 after=$(date +%s)
 
 $TMUX capture-pane -pILF -S - -E - >"$TMP" || exit 1
