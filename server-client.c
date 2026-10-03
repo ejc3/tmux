@@ -391,6 +391,7 @@ server_client_lost(struct client *c)
 
 	cmd_wait_for_client_lost(c);
 	cmdq_next(c);
+	cmdq_flush_lost(c);
 
 	if (c->flags & CLIENT_ATTACHED) {
 		server_client_attached_lost(c);
@@ -1264,7 +1265,8 @@ server_client_update_latest(struct client *c)
 {
 	struct window	*w;
 
-	if (c->session == NULL)
+	/* A client that has gone is never the latest (its queue may still run). */
+	if (c->session == NULL || (c->flags & CLIENT_DEAD))
 		return;
 	w = c->session->curw->window;
 

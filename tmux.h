@@ -3226,6 +3226,7 @@ struct cmdq_item *cmdq_append(struct client *, struct cmdq_item *);
 void printflike(4, 5) cmdq_insert_hook(struct session *, struct cmdq_item *,
 		     struct cmd_find_state *, const char *, ...);
 void		 cmdq_continue(struct cmdq_item *);
+void		 cmdq_flush_lost(struct client *);
 u_int		 cmdq_next(struct client *);
 struct cmdq_item *cmdq_running(struct client *);
 void		 cmdq_guard(struct cmdq_item *, const char *, int);
