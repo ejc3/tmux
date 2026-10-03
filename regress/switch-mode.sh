@@ -37,59 +37,60 @@ capture()
 
 wait_capture()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		captured=$(capture)
-		printf '%s\n' "$captured" | grep -Fq "$marker" && return 0
-		sleep 0.1
-		i=$((i + 1))
+		printf '%s\n' "$captured" | grep -Fq "$_marker" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "timed out waiting for '$marker'"
+	fail "timed out waiting for '$_marker'"
 }
 
+# Leaves the last capture in $captured.
 wait_count()
 {
-	marker=$1
-	want=$2
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_marker=$1
+	_want=$2
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		captured=$(capture)
-		count=$(printf '%s\n' "$captured" | grep -Fc "$marker")
-		[ "$count" -eq "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+		_count=$(printf '%s\n' "$captured" | grep -Fc "$_marker")
+		[ "$_count" -eq "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "found $count '$marker' rows, expected $want"
+	fail "found $_count '$_marker' rows, expected $_want"
 }
 
 wait_format()
 {
-	target=$1
-	format=$2
-	want=$3
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($INNER display-message -p -t "$target" "$format" \
+	_target=$1
+	_format=$2
+	_want=$3
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_got=$($INNER display-message -p -t "$_target" "$_format" \
 		    2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "$target format $format is '$got', expected '$want'"
+	fail "$_target format $_format is '$_got', expected '$_want'"
 }
 
 wait_client_session()
 {
-	want=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($INNER list-clients -F '#{client_session}' 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_want=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
+		_got=$($INNER list-clients -F '#{client_session}' 2>/dev/null)
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "client session is '$got', expected '$want'"
+	fail "client session is '$_got', expected '$_want'"
 }
 
 # Three alphabetically ordered sessions. alpha:main has two panes so -Z can be
@@ -192,12 +193,12 @@ $INNER switch-mode -ks -t "$kill_pane" -F 'KILL #{session_name}' || exit 1
 wait_format "$kill_pane" '#{pane_mode}' switch-mode
 $INNER send-keys -t "$kill_pane" Escape || exit 1
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 100 ]; do
 	$INNER list-panes -s -t alpha -F '#{pane_id}' 2>/dev/null | \
 	    grep -q -x "$kill_pane" || break
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "switch-mode -k did not kill its pane"
+[ "$i" -lt 100 ] || fail "switch-mode -k did not kill its pane"
 
 exit 0

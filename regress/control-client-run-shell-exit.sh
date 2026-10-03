@@ -14,14 +14,27 @@ TMUX="$TEST_TMUX -Ltest$$"
 $TMUX kill-server 2>/dev/null
 
 OUT=$(mktemp)
-trap "$TMUX kill-server 2>/dev/null; rm -f $OUT" 0 1 15
+PID=$(mktemp)
+trap "$TMUX kill-server 2>/dev/null; rm -f $OUT $PID" 0 1 15
 
 $TMUX -f/dev/null new-session -d -s main || exit 1
 
-printf '%s\n' 'run-shell "sleep 0.2; echo TEST"' |
+printf '%s\n' "run-shell 'echo \$\$ >$PID; sleep 0.2; echo TEST'" |
 	$TMUX -f/dev/null -C >"$OUT" 2>&1
 
-sleep 1
+# The job's shell wrote its pid; once the server has reaped it and gone round
+# its loop, the job callback with the late output has run.
+_i=0
+while [ ! -s "$PID" ] || kill -0 "$(cat "$PID")" 2>/dev/null; do
+	_i=$((_i + 1))
+	if [ $_i -ge 400 ]; then
+		echo "run-shell job did not start or finish"
+		cat "$OUT"
+		exit 1
+	fi
+	sleep 0.05
+done
+$TMUX display -p x >/dev/null 2>&1
 
 $TMUX has-session -t main 2>/dev/null || {
 	echo "server exited after late run-shell output"

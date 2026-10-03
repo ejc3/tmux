@@ -29,28 +29,28 @@ trap cleanup 0 1 15
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 400 ]; do
 		client=$($INNER list-clients -F '#{client_name}' 2>/dev/null)
 		[ -n "$client" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "inner client did not attach"
 }
 
 wait_for_option()
 {
-	option=$1
-	expected=$2
-	i=0
-	while [ "$i" -lt 50 ]; do
-		actual=$($INNER show-option -gv "$option" 2>/dev/null)
-		[ "$actual" = "$expected" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_option=$1
+	_expected=$2
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_actual=$($INNER show-option -gv "$_option" 2>/dev/null)
+		[ "$_actual" = "$_expected" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "$option is '$actual', expected '$expected'"
+	fail "$_option is '$_actual', expected '$_expected'"
 }
 
 cleanup

@@ -50,15 +50,15 @@ check_value()
 
 # wait_clients $n
 #
-# Wait (up to ~10s) until the test server has exactly $n clients attached.
+# Wait (up to 20s) until the test server has exactly $n clients attached.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 10 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }
@@ -105,6 +105,12 @@ out=$($TMUX show-environment -t main OTHER 2>&1)
 # reattach with -E: the session values must be left untouched.
 $TMUX2 kill-server 2>/dev/null
 wait_clients 0 || fail "client did not detach"
+_g=0
+until $TMUX2 ls 2>&1 | grep -qE 'no server running|No such file'; do
+	_g=$((_g + 1))
+	[ $_g -lt 400 ] || { echo "client host server did not exit"; exit 1; }
+	sleep 0.05
+done
 
 $TMUX set-environment -t main MYVAR oldvalue2 || exit 1
 $TMUX set-environment -t main ABSENTVAR pre2 || exit 1

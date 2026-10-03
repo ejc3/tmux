@@ -16,7 +16,6 @@ OUT=$(mktemp)
 trap 'rm -f "$TMP" "$OUT"; $TMUX kill-server 2>/dev/null' 0 1 15
 
 $TMUX -f/dev/null new -d || exit 1
-sleep 1
 cat <<EOF|$TMUX -C a >$TMP
 ls -F':#{window_width} #{window_height}'
 refresh -C 100,50
@@ -28,7 +27,6 @@ $TMUX kill-server 2>/dev/null
 
 TMUX="$TEST_TMUX -LtestA$$-2 -f/dev/null"
 $TMUX -f/dev/null new -d || exit 1
-sleep 1
 cat <<EOF|$TMUX -f/dev/null -C a >$TMP
 ls -F':#{window_width} #{window_height}'
 refresh -C 80,24
