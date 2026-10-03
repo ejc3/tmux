@@ -199,6 +199,7 @@ static void	input_csi_dispatch_sm(struct input_ctx *);
 static void	input_csi_dispatch_sm_private(struct input_ctx *);
 static void	input_csi_dispatch_sm_graphics(struct input_ctx *);
 static void	input_csi_dispatch_winops(struct input_ctx *);
+static void	input_soft_reset(struct input_ctx *);
 static void	input_csi_dispatch_sgr_256(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr_rgb(struct input_ctx *, int, u_int *);
 static void	input_csi_dispatch_sgr(struct input_ctx *);
@@ -269,6 +270,7 @@ enum input_csi_type {
 	INPUT_CSI_DCH,
 	INPUT_CSI_DECSCUSR,
 	INPUT_CSI_DECSTBM,
+	INPUT_CSI_DECSTR,
 	INPUT_CSI_DL,
 	INPUT_CSI_DSR,
 	INPUT_CSI_DSR_PRIVATE,
@@ -336,6 +338,7 @@ static const struct input_table_entry input_csi_table[] = {
 	{ 'n', "",  INPUT_CSI_DSR },
 	{ 'n', ">", INPUT_CSI_MODOFF },
 	{ 'n', "?", INPUT_CSI_DSR_PRIVATE },
+	{ 'p', "!",  INPUT_CSI_DECSTR },
 	{ 'p', "$",  INPUT_CSI_QUERY },
 	{ 'p', "?$", INPUT_CSI_QUERY_PRIVATE },
 	{ 'q', " ", INPUT_CSI_DECSCUSR },
@@ -1615,6 +1618,9 @@ input_csi_dispatch(struct input_ctx *ictx)
 		if (n != -1)
 			screen_write_deletecharacter(sctx, n, bg);
 		break;
+	case INPUT_CSI_DECSTR:
+		input_soft_reset(ictx);
+		break;
 	case INPUT_CSI_DECSTBM:
 		n = input_get(ictx, 0, 1, 1);
 		m = input_get(ictx, 1, 1, screen_size_y(s));
@@ -2115,6 +2121,27 @@ input_csi_dispatch_sm_graphics(__unused struct input_ctx *ictx)
 	} else
 		input_reply(ictx, 1, "\033[?%d;3;%dS", n, o);
 #endif
+}
+
+/*
+ * Soft reset (DECSTR), as xterm: the cursor shown, insert and origin modes
+ * off, wrapping on, cursor keys and keypad normal, no scroll region,
+ * attributes and character sets at their defaults and the saved cursor at
+ * the top left. The screen and the cursor position stay.
+ */
+static void
+input_soft_reset(struct input_ctx *ictx)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct screen		*s = sctx->s;
+	u_int			 cx = s->cx, cy = s->cy;
+
+	screen_write_mode_set(sctx, MODE_CURSOR|MODE_WRAP);
+	screen_write_mode_clear(sctx,
+	    MODE_INSERT|MODE_ORIGIN|MODE_KCURSOR|MODE_KKEYPAD);
+	screen_write_scrollregion(sctx, 0, screen_size_y(s) - 1);
+	screen_write_cursormove(sctx, cx, cy, 0);
+	input_reset_cell(ictx);
 }
 
 /* Handle CSI window operations. */
