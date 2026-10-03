@@ -37,7 +37,7 @@ wait_is() {
 
 # Write $1 (printf format) into the outer pane, as the terminal's input.
 terminal_sends() {
-	$OUTER send-keys -H -t0 $(printf "$1" | od -An -tx1) || exit 1
+	$OUTER send-keys -H -t0 $(printf "$1" | od -An -v -tx1) || exit 1
 }
 
 $INNER new -d -x 60 -y 5 \
@@ -142,8 +142,183 @@ N=$(cat $DIR/out $DIR/out2 | grep -ac "t${PANE}_q3:p=alive")
 [ "$N" = 1 ] || fail "p=alive query given to $N terminals"
 if grep -aq "t${PANE}_q3:p=alive" $DIR/out; then T=:0; else T=:1; fi
 $OUTER send-keys -H -t$T \
-    $(printf "\\033]99;i=t${PANE}_q3:p=alive;\\033\\\\" | od -An -tx1) || exit 1
+    $(printf "\\033]99;i=t${PANE}_q3:p=alive;\\033\\\\" | od -An -v -tx1) || exit 1
 wait_is "$INNER capturep -p | grep -c '99;i=q3:p=alive;'" 1
+
+# A notification is on both terminals, and each would report for it; the pane
+# is told as one terminal would tell it. $1 is the terminal, 0 or 1.
+term_sends() {
+	$OUTER send-keys -H -t:$1 $(printf "$2" | od -An -v -tx1) || exit 1
+}
+# How many times the pane has been sent $1, and a terminal ($2) $1.
+heard() {
+	$INNER capturep -pJ -S- -t %$PANE | grep -o "$1" | wc -l | tr -d ' '
+}
+told() {
+	grep -ao "$1" $2 | wc -l | tr -d ' '
+}
+# A notification to both terminals, after which each has been given all
+# that was sent before it.
+mark() {
+	$INNER respawn-pane -k "stty raw -echo; \
+	    printf '\\033]99;i=mk$1;MARK$1\\033\\\\'; exec cat -v" || exit 1
+	wait_is "grep -ac MARK$1 $DIR/out" 1
+	wait_is "grep -ac MARK$1 $DIR/out2" 1
+}
+ACT="\\033]99;i=t${PANE}_d1;\\033\\\\"
+CLOSE="\\033]99;i=t${PANE}_d1:p=close;\\033\\\\"
+
+# The first terminal to report an activation is the one whose activations
+# count, and the notification is closed on the other; the first to report a
+# close is the one whose closes count. What the other reports is dropped.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d1:a=report:c=1;both\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;both' $DIR/out" 1
+wait_is "grep -ac 'c=1;both' $DIR/out2" 1
+term_sends 0 "$ACT"
+wait_is "heard '99;i=d1;'" 1
+wait_is "told 't${PANE}_d1:p=close' $DIR/out2" 1
+term_sends 1 "$CLOSE"
+wait_is "heard 'i=d1:p=close'" 1
+term_sends 0 "$CLOSE\\033]99;i=t${PANE}_z0;\\033\\\\"
+term_sends 1 "$ACT\\033]99;i=t${PANE}_z1;\\033\\\\"
+wait_is "heard '99;i=z0;'" 1
+wait_is "heard '99;i=z1;'" 1
+[ "$(heard '99;i=d1;')" = 1 ] || fail "the pane heard $(heard '99;i=d1;') activations"
+[ "$(heard 'i=d1:p=close')" = 1 ] || fail "the pane heard $(heard 'i=d1:p=close') closes"
+mark 1
+[ "$(told "t${PANE}_d1:p=close" $DIR/out)" = 0 ] ||
+    fail "the terminal it was activated on was told to close it"
+[ "$(told "t${PANE}_d1:p=close" $DIR/out2)" = 1 ] ||
+    fail "the other terminal was told to close it $(told "t${PANE}_d1:p=close" $DIR/out2) times"
+
+# The identifier used again is a new notification, heard about again; a
+# terminal that cannot tell when one is closed (untracked) is not a close.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d1:c=1;again\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;again' $DIR/out2" 1
+term_sends 0 "\\033]99;i=t${PANE}_d1:p=close;untracked\\033\\\\"
+wait_is "heard 'i=d1:p=close;untracked'" 1
+term_sends 1 "$CLOSE"
+wait_is "heard 'i=d1:p=close;^'" 1
+term_sends 0 "$CLOSE\\033]99;i=t${PANE}_z2;\\033\\\\"
+wait_is "heard '99;i=z2;'" 1
+[ "$(heard 'i=d1:p=close;^')" = 1 ] || fail "the pane heard $(heard 'i=d1:p=close;^') closes of the second"
+
+# All that one terminal reports is passed on, as with it alone: a second
+# button after the first.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d5:a=report;buttons\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'a=report;buttons' $DIR/out" 1
+term_sends 0 "\\033]99;i=t${PANE}_d5;1\\033\\\\\\033]99;i=t${PANE}_d5;2\\033\\\\"
+wait_is "heard '99;i=d5;2'" 1
+[ "$(heard '99;i=d5;1')" = 1 ] || fail "the first button was heard $(heard '99;i=d5;1') times"
+
+# A close on one terminal (it expired there) leaves the notification on the
+# other, whose activation is then heard and closes it on the first.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d6:a=report:c=1;expires\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;expires' $DIR/out" 1
+wait_is "grep -ac 'c=1;expires' $DIR/out2" 1
+term_sends 1 "\\033]99;i=t${PANE}_d6:p=close;\\033\\\\"
+wait_is "heard 'i=d6:p=close'" 1
+term_sends 0 "\\033]99;i=t${PANE}_d6;\\033\\\\"
+wait_is "heard '99;i=d6;'" 1
+wait_is "told 't${PANE}_d6:p=close' $DIR/out2" 1
+mark 6
+[ "$(told "t${PANE}_d6:p=close" $DIR/out)" = 0 ] ||
+    fail "a close on one terminal closed the notification on the other"
+
+# Closed by the program and sent again at once: the close a terminal reports
+# for the first does not close the second on the other terminal, and the
+# second's activation is heard.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d7:a=report:c=1;first\\033\\\\\\033]99;i=d7:p=close;\\033\\\\\\033]99;i=d7:a=report:c=1;second\\033\\\\'; \
+    exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;second' $DIR/out" 1
+wait_is "grep -ac 'c=1;second' $DIR/out2" 1
+term_sends 0 "\\033]99;i=t${PANE}_d7:p=close;\\033\\\\"
+wait_is "heard 'i=d7:p=close'" 1
+term_sends 0 "\\033]99;i=t${PANE}_d7;\\033\\\\"
+wait_is "heard '99;i=d7;'" 1
+wait_is "told 't${PANE}_d7:p=close' $DIR/out2" 2
+mark 7
+[ "$(told "t${PANE}_d7:p=close" $DIR/out2)" = 2 ] ||
+    fail "the other terminal was told to close d7 $(told "t${PANE}_d7:p=close" $DIR/out2) times, not 2 (the program's, and on the activation)"
+
+# Closed by the program and its identifier used again: a terminal that says
+# "untracked" for each is heard for each.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d3:c=1;one\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;one' $DIR/out" 1
+term_sends 0 "\\033]99;i=t${PANE}_d3:p=close;untracked\\033\\\\"
+wait_is "heard 'i=d3:p=close;untracked'" 1
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d3:p=close;\\033\\\\\\033]99;i=d3:c=1;two\\033\\\\'; \
+    exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;two' $DIR/out" 1
+term_sends 0 "\\033]99;i=t${PANE}_d3:p=close;untracked\\033\\\\"
+wait_is "heard 'i=d3:p=close;untracked'" 1
+
+# Sent twice before the terminal answers: its "untracked" for each is heard
+# (all one terminal says is passed on), and the other terminal's is not.
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d8:c=1;twice1\\033\\\\\\033]99;i=d8:c=1;twice2\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;twice2' $DIR/out" 1
+wait_is "grep -ac 'c=1;twice2' $DIR/out2" 1
+U="\\033]99;i=t${PANE}_d8:p=close;untracked\\033\\\\"
+term_sends 0 "$U$U"
+wait_is "heard 'i=d8:p=close;untracked'" 2
+term_sends 1 "$U\\033]99;i=t${PANE}_z8;\\033\\\\"
+wait_is "heard '99;i=z8;'" 1
+[ "$(heard 'i=d8:p=close;untracked')" = 2 ] ||
+    fail "untracked was heard $(heard 'i=d8:p=close;untracked') times, not the first terminal's 2"
+
+# Activated on one terminal and sent again: it is a new notification, which
+# the other terminal can be the one to activate (and the first is told to
+# close it).
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d9:a=report;resend1\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'a=report;resend1' $DIR/out" 1
+term_sends 0 "\\033]99;i=t${PANE}_d9;\\033\\\\"
+wait_is "heard '99;i=d9;'" 1
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=d9:a=report;resend2\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'a=report;resend2' $DIR/out2" 1
+term_sends 1 "\\033]99;i=t${PANE}_d9;\\033\\\\"
+wait_is "heard '99;i=d9;'" 1
+wait_is "told 't${PANE}_d9:p=close' $DIR/out" 1
+
+# An identifier too long to remember (129 bytes with the pane's part; 128 is
+# kept) is passed on from every terminal, as one tmux has forgotten is.
+LONG=$(printf '%0126d' 0)
+$INNER respawn-pane -k "stty raw -echo; \
+    printf '\\033]99;i=$LONG:a=report;long\\033\\\\\\033]99;i=k${LONG#00}:a=report;kept\\033\\\\'; \
+    exec cat -v" || exit 1
+wait_is "grep -ac 'a=report;kept' $DIR/out" 1
+wait_is "grep -ac 'a=report;kept' $DIR/out2" 1
+for t in 0 1; do
+	term_sends $t "\\033]99;i=t${PANE}_$LONG;\\033\\\\\\033]99;i=t${PANE}_k${LONG#00};\\033\\\\\\033]99;i=t${PANE}_zl$t;\\033\\\\"
+	wait_is "heard '99;i=zl$t;'" 1
+done
+[ "$(heard "99;i=$LONG;")" = 2 ] ||
+    fail "the long identifier was heard $(heard "99;i=$LONG;") times, not from both"
+[ "$(heard "99;i=k${LONG#00};")" = 1 ] ||
+    fail "the 128-byte identifier was heard $(heard "99;i=k${LONG#00};") times"
+
+# A terminal given a notification and then switched to a session without the
+# pane still has it up: it is closed there too when the other is activated.
+$INNER new-session -d -s other 'exec sleep 1000' || exit 1
+$INNER respawn-pane -k -t %$PANE "stty raw -echo; \
+    printf '\\033]99;i=d4:a=report;moved\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'a=report;moved' $DIR/out" 1
+wait_is "grep -ac 'a=report;moved' $DIR/out2" 1
+$INNER switch-client -c "$($OUTER display -p -t:1 '#{pane_tty}')" -t other ||
+    exit 1
+wait_is "$INNER lsc -F '#{session_name}' | grep -c other" 1
+term_sends 0 "\\033]99;i=t${PANE}_d4;\\033\\\\"
+wait_is "heard '99;i=d4;'" 1
+wait_is "told 't${PANE}_d4:p=close' $DIR/out2" 1
 
 # Another server (on the same terminal) does not give the same identifier to
 # one without: the terminal would update the first with it.
@@ -159,5 +334,21 @@ ANON="i=t[0-9]+\\.[0-9a-f.]*[0-9]"
 B=$(anon ';again' $DIR/out3)
 [ -n "$B" ] && [ "${B#i=t*.}" != "${A#i=t*.}" ] ||
     fail "the other server gave '$B' after '$A'"
+
+# The terminal a notification was activated and closed on goes: another's
+# reports for it are then heard.
+$INNER switch-client -c "$($OUTER display -p -t:1 '#{pane_tty}')" -t "$($INNER display -p -t %$PANE '#{session_name}')" ||
+    exit 1
+$INNER respawn-pane -k -t %$PANE "stty raw -echo; \
+    printf '\\033]99;i=d10:a=report:c=1;lost\\033\\\\'; exec cat -v" || exit 1
+wait_is "grep -ac 'c=1;lost' $DIR/out" 1
+wait_is "grep -ac 'c=1;lost' $DIR/out2" 1
+term_sends 1 "\\033]99;i=t${PANE}_d10;\\033\\\\\\033]99;i=t${PANE}_d10:p=close;\\033\\\\"
+wait_is "heard 'i=d10:p=close'" 1
+$INNER detach-client -t "$($OUTER display -p -t:1 '#{pane_tty}')" || exit 1
+wait_is "$INNER lsc | wc -l | tr -d ' '" 1
+term_sends 0 "\\033]99;i=t${PANE}_d10;\\033\\\\\\033]99;i=t${PANE}_d10:p=close;\\033\\\\"
+wait_is "heard 'i=d10:p=close'" 2
+[ "$(heard '99;i=d10;')" = 2 ] || fail "after its terminal went, d10's activation was heard $(heard '99;i=d10;') times, not 2"
 
 exit $exit_status
