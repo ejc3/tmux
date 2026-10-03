@@ -164,6 +164,7 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
+static void	input_osc_22(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
 static void	input_osc_11(struct input_ctx *, const char *);
 static void	input_osc_12(struct input_ctx *, const char *);
@@ -2743,6 +2744,9 @@ input_exit_osc(struct input_ctx *ictx)
 	case 9:
 		input_osc_9(ictx, p);
 		break;
+	case 22:
+		input_osc_22(ictx, p);
+		break;
 	case 10:
 		input_osc_10(ictx, p);
 		break;
@@ -3021,6 +3025,77 @@ input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
 		server_redraw_window_borders(ictx->wp->window);
 		server_status_window(ictx->wp->window);
 	}
+}
+
+/*
+ * Handle the OSC 22 sequence for the mouse pointer shape, as kitty: =name (or
+ * name) sets it, empty resets it, >a,b pushes each and < pops, and ?a,b asks
+ * for the shape set (__current__, 0 if none) or whether shapes are known. The
+ * main and alternate screens have a stack each.
+ */
+static void
+input_osc_22(struct input_ctx *ictx, const char *p)
+{
+	struct window_pane	*wp = ictx->wp;
+	struct screen		*s = ictx->ctx.s;
+	static const char *const known[] = {
+		"alias", "all-scroll", "cell", "col-resize", "context-menu",
+		"copy", "crosshair", "default", "e-resize", "ew-resize",
+		"grab", "grabbing", "help", "move", "n-resize", "ne-resize",
+		"nesw-resize", "no-drop", "not-allowed", "ns-resize",
+		"nw-resize", "nwse-resize", "pointer", "progress", "row-resize",
+		"s-resize", "se-resize", "sw-resize", "text", "vertical-text",
+		"w-resize", "wait", "zoom-in", "zoom-out"
+	};
+	char		*copy, *next, *name;
+	const char	*answer;
+	struct evbuffer	*reply;
+	u_int		 i;
+
+	if (wp == NULL)
+		return;
+	switch (*p) {
+	case '?':
+		reply = evbuffer_new();
+		if (reply == NULL)
+			fatalx("out of memory");
+		copy = next = xstrdup(p + 1);
+		while ((name = strsep(&next, ",")) != NULL) {
+			if (strcmp(name, "__current__") == 0) {
+				answer = screen_pointer(s);
+				if (answer == NULL)
+					answer = "0";
+			} else {
+				answer = "0";
+				for (i = 0; i < nitems(known); i++) {
+					if (strcmp(name, known[i]) == 0)
+						answer = "1";
+				}
+			}
+			evbuffer_add_printf(reply, "%s%s",
+			    EVBUFFER_LENGTH(reply) == 0 ? "" : ",", answer);
+		}
+		free(copy);
+		input_reply(ictx, 0, "\033]22;%.*s\033\\",
+		    (int)EVBUFFER_LENGTH(reply), EVBUFFER_DATA(reply));
+		evbuffer_free(reply);
+		return;
+	case '>':
+		screen_pointer_push(s, p + 1);
+		return;
+	case '<':
+		screen_pointer_pop(s);
+		return;
+	case '=':
+		p++;
+		break;
+	}
+	if (*p == '\0') {
+		while (screen_pointer(s) != NULL)
+			screen_pointer_pop(s);
+		return;
+	}
+	screen_pointer_set(s, p);
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */
