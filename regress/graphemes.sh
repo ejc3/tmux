@@ -69,7 +69,7 @@ wait_is "$OUTER display -p '#{pane_dead}'" 1
 [ "$(count '\033[?2027l')" = 1 ] || fail "2027 not turned off on detach"
 stop
 
-# Without it (this terminal, tmux, answers permanently set): left alone.
+# Without it (this terminal, tmux, does not answer reset): left alone.
 start 'set -g status off\n'
 $INNER detach-client
 wait_is "$OUTER display -p '#{pane_dead}'" 1
