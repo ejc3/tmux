@@ -478,6 +478,12 @@ tty_stop_tty(struct tty *tty)
 	if (tcsetattr(c->fd, TCSANOW, &tty->tio) == -1)
 		return;
 
+	if (c->pointer != NULL) {
+		if (tty->term->flags & TERM_POINTER)
+			tty_raw(tty, "\033]22;\033\\");
+		free(c->pointer);
+		c->pointer = NULL;
+	}
 	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
 	if (tty_acs_needed(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_RMACS));
@@ -746,6 +752,18 @@ tty_set_title(struct tty *tty, const char *title)
 	tty_putcode(tty, TTYC_TSL);
 	tty_puts(tty, title);
 	tty_putcode(tty, TTYC_FSL);
+}
+
+/* Set the mouse pointer shape (OSC 22); NULL for the terminal's own. */
+void
+tty_set_pointer(struct tty *tty, const char *name)
+{
+	if (~tty->term->flags & TERM_POINTER)
+		return;
+	tty_puts(tty, "\033]22;");
+	if (name != NULL)
+		tty_puts(tty, name);
+	tty_puts(tty, "\033\\");
 }
 
 void

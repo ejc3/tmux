@@ -71,6 +71,13 @@ static const struct tty_feature tty_feature_osc7 = {
 	0
 };
 
+/* Terminal sets the mouse pointer shape (OSC 22). */
+static const struct tty_feature tty_feature_pointer = {
+	"pointer",
+	NULL,
+	TERM_POINTER
+};
+
 /* Terminal has mouse support. */
 static const char *const tty_feature_mouse_capabilities[] = {
 	"kmous=\\E[M",
@@ -411,7 +418,13 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_sync,
 	&tty_feature_title,
 	&tty_feature_usstyle,
-	&tty_feature_utf8
+	&tty_feature_utf8,
+	/*
+	 * Newer features go after the others, not in name order: tmux -T
+	 * sends features as a mask of their places here, so the others keep
+	 * their bits.
+	 */
+	&tty_feature_pointer
 };
 
 /* Parse features for client. */
@@ -628,7 +641,8 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "usstyle,"
 			      "sync,"
 			      "osc7,"
-			      "hyperlinks"
+			      "hyperlinks,"
+			      "pointer"
 		},
 		{ .name = "WezTerm",
 		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
@@ -652,7 +666,21 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "osc7,"
 			      "sync,"
 			      "usstyle,"
+			      "pointer,"
 			      "progressbar"
+		},
+		{ .name = "kitty",
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "focus,"
+			      "hyperlinks,"
+			      "osc7,"
+			      "overline,"
+			      "pointer,"
+			      "sync,"
+			      "usstyle"
 		},
 		{ .name = "Rio",
 		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
