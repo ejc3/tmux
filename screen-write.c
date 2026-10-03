@@ -1882,6 +1882,23 @@ screen_write_cursormove(struct screen_write_ctx *ctx, int px, int py,
 	screen_write_set_cursor(ctx, px, py);
 }
 
+/*
+ * Put the cursor waiting to wrap at the end of its row (tmux keeps it past
+ * the last column), or end the wait: most controls act at the last column
+ * and end it, as on xterm.
+ */
+void
+screen_write_wrapnext(struct screen_write_ctx *ctx, int on)
+{
+	struct screen	*s = ctx->s;
+	u_int		 sx = screen_size_x(s);
+
+	if (on)
+		screen_write_set_cursor(ctx, sx, -1);
+	else if (s->cx > sx - 1)
+		screen_write_set_cursor(ctx, sx - 1, -1);
+}
+
 /* Reverse index (up with scroll). */
 void
 screen_write_reverseindex(struct screen_write_ctx *ctx, u_int bg)
