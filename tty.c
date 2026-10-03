@@ -44,6 +44,7 @@ static void	tty_pay_scroll(struct tty *);
 static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
 static void	tty_set_italics(struct tty *);
+static void	tty_extended_keys(struct tty *);
 static void	tty_graphemes(struct tty *);
 static int	tty_try_colour(struct tty *, int, const char *);
 static void	tty_force_cursor_colour(struct tty *, int);
@@ -217,6 +218,7 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if (tty->discarded < TTY_BLOCK_STOP(tty)) {
 		tty->flags &= ~TTY_BLOCK;
+		kgfx_client_sync(c);
 		tty_invalidate(tty);
 		return;
 	}
@@ -240,6 +242,7 @@ tty_block_start(struct tty *tty)
 	c->discarded += size;
 	c->redraw = 0;
 	tty->exempt = 0;
+	kgfx_client_dropped(c);
 
 	/* Lines counted as reaching the terminal may be among what went. */
 	tty_history_lost(tty);
@@ -251,6 +254,7 @@ tty_block_start(struct tty *tty)
 static int
 tty_block_maybe(struct tty *tty)
 {
+	struct client	*c = tty->client;
 	size_t		 size = EVBUFFER_LENGTH(tty->out);
 
 	if (size == 0)
@@ -258,7 +262,8 @@ tty_block_maybe(struct tty *tty)
 	else if (tty->flags & TTY_NOBLOCK)
 		return (0);
 
-	if (size < TTY_BLOCK_START(tty))
+	/* Images do not count: kgfx.c keeps them within a budget. */
+	if (size - kgfx_client_queued(c) < TTY_BLOCK_START(tty))
 		return (0);
 
 	if (~tty->flags & TTY_BLOCK)
@@ -283,6 +288,7 @@ tty_block_limit(struct tty *tty)
 	if (tty->flags & TTY_BLOCK)
 		return;
 	exempt = (c->redraw > tty->exempt) ? c->redraw : tty->exempt;
+	exempt += kgfx_client_queued(c);
 	if (size < exempt || size - exempt < TTY_BLOCK_LIMIT(tty))
 		return;
 	tty_block_start(tty);
@@ -322,6 +328,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 		    c->redraw);
 	} else if (tty_block_maybe(tty))
 		return;
+	kgfx_client_written(c);
 
 	if (EVBUFFER_LENGTH(tty->out) != 0)
 		event_add(&tty->event_out, NULL);
@@ -363,6 +370,20 @@ tty_open(struct tty *tty, char **cause)
 	return (0);
 }
 
+/*
+ * No more answers to tmux's requests are waited for. Answers to programs held
+ * until the terminal said whether it has kitty graphics go.
+ */
+static void
+tty_all_requests(struct tty *tty)
+{
+	int	kgfx = (tty->flags & TTY_HAVEKGFX);
+
+	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	if (!kgfx)
+		kgfx_known(tty->client);
+}
+
 static void
 tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 {
@@ -373,7 +394,7 @@ tty_start_timer_callback(__unused int fd, __unused short events, void *data)
 
 	if ((tty->flags & (TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA)) == 0)
 		tty_update_features(tty);
-	tty->flags |= TTY_ALL_REQUEST_FLAGS;
+	tty_all_requests(tty);
 
 	tty->flags &= ~(TTY_WAITBG|TTY_WAITFG);
 }
@@ -445,7 +466,12 @@ tty_start_tty(struct tty *tty)
 		tty_puts(tty, "\033[?2031h\033[?996n");
 	}
 
+	/* Stopping the terminal popped the kitty keyboard flags. */
+	if ((tty->term->flags & TERM_KKEYS) &&
+	    options_get_number(global_options, "extended-keys"))
+		tty_extended_keys(tty);
 	tty_graphemes(tty);
+
 	tty_start_start_timer(tty);
 
 	tty->flags |= TTY_STARTED;
@@ -458,6 +484,9 @@ tty_start_tty(struct tty *tty)
 	tty->mouse_drag_flag = 0;
 	tty->mouse_drag_update = NULL;
 	tty->mouse_drag_release = NULL;
+
+	/* Images made while it was stopped. */
+	kgfx_client_sync(c);
 }
 
 void
@@ -467,6 +496,14 @@ tty_send_requests(struct tty *tty)
 		return;
 
 	if (tty->term->flags & TERM_VT100LIKE) {
+		/*
+		 * The kitty graphics query goes before DA1: a terminal that
+		 * answers DA1 first does not have the protocol.
+		 */
+		if (~tty->flags & TTY_HAVEKGFX) {
+			tty_puts(tty, "\033_Gi=4294967295,s=1,v=1,a=q,t=d,"
+			    "f=24;AAAA\033\\");
+		}
 		if (~tty->flags & TTY_HAVEDA)
 			tty_puts(tty, "\033[c");
 		if (~tty->flags & TTY_HAVEDA2)
@@ -475,12 +512,17 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[>q");
 		if (~tty->flags & TTY_HAVESYNC)
 			tty_puts(tty, "\033[?2026$p");
+		if (~tty->flags & TTY_HAVEKKEYS)
+			tty_puts(tty, "\033[?u");
+		if (~tty->flags & TTY_HAVEPIXELS)
+			tty_puts(tty, "\033[?1016$p");
 		if (~tty->flags & TTY_HAVEGRAPHEMES)
 			tty_puts(tty, "\033[?2027$p");
+
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
-		tty->flags |= TTY_ALL_REQUEST_FLAGS;
+		tty_all_requests(tty);
 	tty->last_requests = time(NULL);
 }
 
@@ -527,6 +569,14 @@ tty_stop_tty(struct tty *tty)
 	evtimer_del(&tty->start_timer);
 	evtimer_del(&tty->clipboard_timer);
 
+	/*
+	 * Answers held until the terminal says whether it has kitty graphics
+	 * go now, as far as is known; the question is asked again when the
+	 * terminal starts.
+	 */
+	if (~tty->flags & TTY_HAVEKGFX)
+		kgfx_known(c);
+
 	event_del(&tty->timer);
 	tty->flags &= ~TTY_BLOCK;
 
@@ -546,6 +596,12 @@ tty_stop_tty(struct tty *tty)
 	if (tty->flags & TTY_OWESCROLL) {
 		tty->flags &= ~TTY_OWESCROLL;
 		tty_raw(tty, "\r\n");
+	}
+	if (c->pointer != NULL) {
+		if (tty->term->flags & TERM_POINTER)
+			tty_raw(tty, "\033]22;\033\\");
+		free(c->pointer);
+		c->pointer = NULL;
 	}
 	tty_raw(tty, tty_term_string_ii(tty->term, TTYC_CSR, 0, ws.ws_row - 1));
 	if (tty_acs_needed(tty))
@@ -574,6 +630,14 @@ tty_stop_tty(struct tty *tty)
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSESC));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSFCS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	if (tty->flags & TTY_KKEYS) {
+		tty_raw(tty, "\033[<u");
+		tty->flags &= ~TTY_KKEYS;
+	}
+	if (tty->flags & TTY_MOUSEPIXELS) {
+		tty_raw(tty, "\033[?1016l");
+		tty->flags &= ~TTY_MOUSEPIXELS;
+	}
 	if (tty->flags & TTY_GRAPHEMES) {
 		tty_raw(tty, "\033[?2027l");
 		tty->flags &= ~TTY_GRAPHEMES;
@@ -627,6 +691,26 @@ tty_free(struct tty *tty)
 	tty_close(tty);
 }
 
+/*
+ * Ask the terminal for extended keys: the kitty keyboard protocol if it has
+ * it (disambiguated keys, and the shifted key so shifted keys are as they are
+ * without it), pushed once and popped when the terminal is stopped;
+ * otherwise the extkeys sequence.
+ */
+static void
+tty_extended_keys(struct tty *tty)
+{
+	if (~tty->term->flags & TERM_KKEYS) {
+		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
+		return;
+	}
+	if (tty->flags & TTY_KKEYS)
+		return;
+	tty_puts(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	tty_puts(tty, "\033[>5u");
+	tty->flags |= TTY_KKEYS;
+}
+
 /* Turn grapheme cluster mode on if the terminal has it, once. */
 static void
 tty_graphemes(struct tty *tty)
@@ -649,7 +733,7 @@ tty_update_features(struct tty *tty)
 	if (tty_use_margin(tty))
 		tty_putcode(tty, TTYC_ENMG);
 	if (options_get_number(global_options, "extended-keys"))
-		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
+		tty_extended_keys(tty);
 	if (options_get_number(global_options, "focus-events"))
 		tty_puts(tty, tty_term_string(tty->term, TTYC_ENFCS));
 	tty_graphemes(tty);
@@ -846,6 +930,29 @@ tty_set_title(struct tty *tty, const char *title)
 	tty_putcode(tty, TTYC_FSL);
 }
 
+/* Pass a notification (the OSC string, without ESC ] and ST) on. */
+void
+tty_notify(struct tty *tty, const char *s)
+{
+	if (~tty->term->flags & TERM_NOTIFY)
+		return;
+	tty_puts(tty, "\033]");
+	tty_puts(tty, s);
+	tty_puts(tty, "\033\\");
+}
+
+/* Set the mouse pointer shape (OSC 22); NULL for the terminal's own. */
+void
+tty_set_pointer(struct tty *tty, const char *name)
+{
+	if (~tty->term->flags & TERM_POINTER)
+		return;
+	tty_puts(tty, "\033]22;");
+	if (name != NULL)
+		tty_puts(tty, name);
+	tty_puts(tty, "\033\\");
+}
+
 void
 tty_set_path(struct tty *tty, const char *title)
 {
@@ -996,15 +1103,29 @@ tty_update_mode(struct tty *tty, int mode, struct screen *s)
 		    screen_mode_to_string(mode));
 	}
 
-	if ((changed & ALL_MOUSE_MODES) && tty_term_has(term, TTYC_KMOUS)) {
+	if ((changed & (ALL_MOUSE_MODES|MODE_MOUSE_PIXELS)) &&
+	    tty_term_has(term, TTYC_KMOUS)) {
 		/*
 		 * If the mouse modes have changed, clear then all and apply
 		 * again. There are differences in how terminals track the
-		 * various bits.
+		 * various bits. Ask for pixels if a pane wants them and the
+		 * terminal has them, and the cell size is known to find the
+		 * cell.
 		 */
 		tty_puts(tty, "\033[?1006l\033[?1000l\033[?1002l\033[?1003l");
-		if (mode & ALL_MOUSE_MODES)
+		if (tty->flags & TTY_MOUSEPIXELS) {
+			tty_puts(tty, "\033[?1016l");
+			tty->flags &= ~TTY_MOUSEPIXELS;
+		}
+		if (mode & ALL_MOUSE_MODES) {
 			tty_puts(tty, "\033[?1006h");
+			if ((mode & MODE_MOUSE_PIXELS) &&
+			    (term->flags & TERM_MOUSEPIXELS) &&
+			    tty->xpixel != 0 && tty->ypixel != 0) {
+				tty_puts(tty, "\033[?1016h");
+				tty->flags |= TTY_MOUSEPIXELS;
+			}
+		}
 		if (mode & MODE_MOUSE_ALL)
 			tty_puts(tty, "\033[?1000h\033[?1002h\033[?1003h");
 		else if (mode & MODE_MOUSE_BUTTON)
@@ -2460,7 +2581,7 @@ tty_invalidate(struct tty *tty)
 	 * redraw: a mouse event in between would reach tmux with the mouse
 	 * off and go to the pane as keys.
 	 */
-	int	mouse = tty->mode & ALL_MOUSE_MODES;
+	int	mouse = tty->mode & (ALL_MOUSE_MODES|MODE_MOUSE_PIXELS);
 
 	if (tty->flags & TTY_STARTED)
 		tty_pay_scroll(tty);

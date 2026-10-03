@@ -71,6 +71,20 @@ static const struct tty_feature tty_feature_osc7 = {
 	0
 };
 
+/* Terminal shows notifications (OSC 9, OSC 99, OSC 777). */
+static const struct tty_feature tty_feature_notify = {
+	"notify",
+	NULL,
+	TERM_NOTIFY
+};
+
+/* Terminal sets the mouse pointer shape (OSC 22). */
+static const struct tty_feature tty_feature_pointer = {
+	"pointer",
+	NULL,
+	TERM_POINTER
+};
+
 /* Terminal has mouse support. */
 static const char *const tty_feature_mouse_capabilities[] = {
 	"kmous=\\E[M",
@@ -260,6 +274,26 @@ static const struct tty_feature tty_feature_extkeys = {
 };
 
 /*
+ * Terminal supports the kitty keyboard protocol (it answers CSI ? u). tmux
+ * asks for it instead of the extkeys sequences.
+ */
+static const struct tty_feature tty_feature_kittykeys = {
+	"kittykeys",
+	NULL,
+	TERM_KKEYS
+};
+
+/*
+ * Terminal has the kitty graphics protocol, found by asking it (a=q). tmux
+ * gives it the images programs in panes send.
+ */
+static const struct tty_feature tty_feature_kittygraphics = {
+	"kittygraphics",
+	NULL,
+	TERM_KGFX
+};
+
+/*
  * Terminal has grapheme cluster mode (2027) and can turn it on: tmux turns it
  * on, so the terminal counts a cluster's cells as tmux does (an emoji with a
  * skin tone, a ZWJ sequence, a flag, a variation selector). Found by asking
@@ -279,6 +313,16 @@ static const struct tty_feature tty_feature_textsize = {
 	"textsize",
 	NULL,
 	TERM_TEXTSIZE
+};
+
+/*
+ * Terminal reports the mouse in pixels (SGR-Pixels, mode 1016), found by
+ * asking it with DECRQM.
+ */
+static const struct tty_feature tty_feature_mousepixels = {
+	"mousepixels",
+	NULL,
+	TERM_MOUSEPIXELS
 };
 
 /* Terminal supports DECSLRM margins. */
@@ -440,6 +484,11 @@ static const struct tty_feature *const tty_features[] = {
 	 * their bits.
 	 */
 	&tty_feature_graphemes,
+	&tty_feature_kittygraphics,
+	&tty_feature_kittykeys,
+	&tty_feature_mousepixels,
+	&tty_feature_notify,
+	&tty_feature_pointer,
 	&tty_feature_textsize
 };
 
@@ -647,6 +696,7 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "sync,"
 			      "osc7,"
 			      "hyperlinks,"
+			      "notify,"
 		  	      "progressbar"
 		},
 		{ .name = "foot",
@@ -657,7 +707,9 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "usstyle,"
 			      "sync,"
 			      "osc7,"
-			      "hyperlinks"
+			      "hyperlinks,"
+			      "notify,"
+			      "pointer"
 		},
 		{ .name = "WezTerm",
 		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
@@ -667,6 +719,7 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "focus,"
 		  	      "hyperlinks,"
 			      "margins,"
+			      "notify,"
 			      "usstyle"
 		},
 		{ .name = "ghostty",
@@ -681,7 +734,24 @@ tty_default_features(struct client *c, const char *name, u_int version)
 			      "osc7,"
 			      "sync,"
 			      "usstyle,"
+			      "notify,"
+			      "pointer,"
 			      "progressbar"
+		},
+		{ .name = "kitty",
+		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","
+			      "ccolour,"
+			      "cstyle,"
+			      "extkeys,"
+			      "focus,"
+			      "hyperlinks,"
+			      "notify,"
+			      "osc7,"
+			      "overline,"
+			      "pointer,"
+			      "sync,"
+			      "textsize,"
+			      "usstyle"
 		},
 		{ .name = "Rio",
 		  .features = TTY_FEATURES_BASE_MODERN_XTERM ","

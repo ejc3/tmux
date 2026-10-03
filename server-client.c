@@ -30,6 +30,7 @@
 #include "tmux.h"
 
 static void	server_client_free(int, short, void *);
+static void	server_client_notify_lost(struct client *);
 static void	server_client_check_pane_resize(struct window_pane *);
 static void	server_client_check_pane_buffer(struct window_pane *);
 static void	server_client_check_window_resize(struct window *);
@@ -43,6 +44,8 @@ static void	server_client_check_modes(struct client *);
 static void	server_client_set_title(struct client *);
 static void	server_client_set_path(struct client *);
 static void	server_client_set_progress_bar(struct client *);
+static void	server_client_set_extras(struct client *);
+static void	server_client_set_pointer(struct client *);
 static void	server_client_reset_state(struct client *);
 static void	server_client_update_latest(struct client *);
 static int	server_client_handle_dead_key(struct window_pane *, key_code);
@@ -351,6 +354,7 @@ server_client_set_session(struct client *c, struct session *s)
 		session_update_activity(s, NULL);
 		session_theme_changed(s);
 		gettimeofday(&s->last_attached_time, NULL);
+		kgfx_client_sync(c);
 		s->curw->flags &= ~WINLINK_ALERTFLAGS;
 		alerts_check_session(s);
 		tty_update_client_offset(c);
@@ -392,6 +396,7 @@ server_client_lost(struct client *c)
 	cmd_wait_for_client_lost(c);
 	cmdq_next(c);
 	cmdq_flush_lost(c);
+	server_client_notify_lost(c);
 
 	if (c->flags & CLIENT_ATTACHED) {
 		server_client_attached_lost(c);
@@ -412,10 +417,12 @@ server_client_lost(struct client *c)
 
 	free(c->term_name);
 	free(c->term_type);
+	free(c->pointer);
 	tty_term_free_list(c->term_caps, c->term_ncaps);
 
 	status_free(c);
 	input_cancel_requests(c);
+	kgfx_client_free(c);
 
 	free(c->title);
 	free(c->path);
@@ -1799,6 +1806,7 @@ server_client_loop(void)
 		if (c->session != NULL && c->session->curw != NULL) {
 			server_client_check_modes(c);
 			server_client_check_redraw(c);
+			server_client_set_pointer(c);
 			server_client_reset_state(c);
 		}
 	}
@@ -2173,6 +2181,8 @@ server_client_reset_state(struct client *c)
 			TAILQ_FOREACH(loop, &w->panes, entry) {
 				if (loop->screen->mode & MODE_MOUSE_ALL)
 					mode |= MODE_MOUSE_ALL;
+				if (loop->screen->mode & MODE_MOUSE_PIXELS)
+					mode |= MODE_MOUSE_PIXELS;
 			}
 		}
 		if (options_get_number(oo, "focus-follows-mouse") ||
@@ -2386,6 +2396,8 @@ server_client_check_redraw(struct client *c)
 	static struct event	 ev;
 	size_t			 n;
 
+		if (c->flags & CLIENT_ALLREDRAWFLAGS)
+			server_client_set_extras(c);
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
 		return;
 	if (c->flags & CLIENT_ALLREDRAWFLAGS) {
@@ -2508,11 +2520,7 @@ server_client_check_redraw(struct client *c)
 	 * aren't here just to redraw panes).
 	 */
 	if (c->flags & CLIENT_ALLREDRAWFLAGS) {
-		if (options_get_number(s->options, "set-titles")) {
-			server_client_set_title(c);
-			server_client_set_path(c);
-		}
-		server_client_set_progress_bar(c);
+		server_client_set_extras(c);
 		redraw_screen(c);
 		redraw_client_damage(c);
 	}
@@ -2575,6 +2583,488 @@ server_client_set_path(struct client *c)
 		c->path = xstrdup(path);
 		tty_set_path(&c->tty, c->path);
 	}
+}
+
+/*
+ * Find a key (such as i= for the identifier) in the metadata of an OSC 99
+ * notification (99;metadata;payload): its value's start and length, or -1.
+ */
+static int
+server_client_notify_key(const char *s, char key, size_t *start, size_t *len)
+{
+	const char	*meta, *end, *p;
+
+	if (strncmp(s, "99;", 3) != 0)
+		return (-1);
+	meta = s + 3;
+	end = meta + strcspn(meta, ";");
+	for (p = meta; p < end; p += strcspn(p, ":;") + 1) {
+		if (p[0] == key && p[1] == '=') {
+			*start = (p + 2) - s;
+			*len = strcspn(p + 2, ":;");
+			return (0);
+		}
+		if (*p == ';' || p[strcspn(p, ":;")] != ':')
+			break;
+	}
+	return (-1);
+}
+
+/*
+ * Whether an OSC 99 notification is a query, which one terminal answers: for
+ * what is supported (p=?) or for the notifications still open (p=alive).
+ */
+int
+server_client_notify_is_query(const char *s)
+{
+	size_t	start, len;
+
+	if (server_client_notify_key(s, 'p', &start, &len) != 0)
+		return (0);
+	if (len == 1 && s[start] == '?')
+		return (1);
+	return (len == 5 && strncmp(s + start, "alive", 5) == 0);
+}
+
+/*
+ * A notification a pane asked to hear back about: an activation report
+ * (a=report) or a close event (c=1). It is on every terminal showing the
+ * pane, and each would report for it; the pane is told as one terminal would
+ * tell it:
+ *
+ * - The first terminal to report an activation is the only one whose
+ *   activations are passed on, and the notification is then closed on the
+ *   others (the user has dealt with it).
+ * - The first terminal to report a close is the only one whose closes are
+ *   passed on. The others keep the notification: one that expired on an idle
+ *   terminal is still there on the one in use.
+ * - "untracked", from a terminal that cannot tell when one is closed, is
+ *   passed on from the first terminal to say it.
+ *
+ * So with one terminal everything it reports is passed on. A pane keeps its
+ * last NOTIFY_MAX, newest last; an older one is forgotten (its reports are
+ * passed on as they come), and all go with the pane. The terminals are not
+ * referenced once lost (server_client_notify_lost).
+ */
+#define NOTIFY_MAX 64
+#define NOTIFY_IDMAX 128
+struct notify_item {
+	char			*id;		/* as given to the terminals */
+	struct client		*activator;
+	struct client		*closer;
+	struct client		*untracker;
+	TAILQ_ENTRY(notify_item) entry;
+};
+
+static struct notify_item *
+server_client_notify_find(struct window_pane *wp, const char *id, size_t len)
+{
+	struct notify_item	*ni;
+
+	TAILQ_FOREACH(ni, &wp->notifies, entry) {
+		if (strlen(ni->id) == len && strncmp(ni->id, id, len) == 0)
+			return (ni);
+	}
+	return (NULL);
+}
+
+static void
+server_client_notify_remove(struct window_pane *wp, struct notify_item *ni)
+{
+	TAILQ_REMOVE(&wp->notifies, ni, entry);
+	wp->nnotifies--;
+	free(ni->id);
+	free(ni);
+}
+
+/* The pane has gone. */
+void
+server_client_notify_free(struct window_pane *wp)
+{
+	struct notify_item	*ni;
+
+	while ((ni = TAILQ_FIRST(&wp->notifies)) != NULL)
+		server_client_notify_remove(wp, ni);
+}
+
+/* A client has gone: no notification is its to report for any more. */
+static void
+server_client_notify_lost(struct client *c)
+{
+	struct window_pane	*wp;
+	struct notify_item	*ni;
+
+	RB_FOREACH(wp, window_pane_tree, &all_window_panes) {
+		TAILQ_FOREACH(ni, &wp->notifies, entry) {
+			if (ni->activator == c)
+				ni->activator = NULL;
+			if (ni->closer == c)
+				ni->closer = NULL;
+			if (ni->untracker == c)
+				ni->untracker = NULL;
+		}
+	}
+}
+
+/* Whether a comma-separated list (len long) has word in it. */
+static int
+server_client_notify_has(const char *list, size_t len, const char *word)
+{
+	const char	*end = list + len;
+	size_t		 n, wlen = strlen(word);
+
+	while (list < end) {
+		n = strcspn(list, ",:;");
+		if (n > (size_t)(end - list))
+			n = end - list;
+		if (n == wlen && strncmp(list, word, n) == 0)
+			return (1);
+		list += n;
+		if (list < end && *list == ',')
+			list++;
+		else
+			break;
+	}
+	return (0);
+}
+
+/*
+ * Remember a notification (as given to the terminals) that asks for a report.
+ * One with the identifier of one that has been reported on is a new one.
+ */
+static void
+server_client_notify_track(struct window_pane *wp, const char *s)
+{
+	struct notify_item	*ni;
+	size_t			 start, len, istart, ilen;
+	int			 wanted = 0;
+
+	if (server_client_notify_key(s, 'i', &istart, &ilen) != 0 ||
+	    ilen == 0 || ilen > NOTIFY_IDMAX)
+		return;
+	if (server_client_notify_key(s, 'p', &start, &len) == 0 &&
+	    len == 5 && strncmp(s + start, "close", 5) == 0)
+		return;
+	ni = server_client_notify_find(wp, s + istart, ilen);
+	if (server_client_notify_key(s, 'a', &start, &len) == 0 &&
+	    server_client_notify_has(s + start, len, "report"))
+		wanted = 1;
+	if (server_client_notify_key(s, 'c', &start, &len) == 0 &&
+	    len == 1 && s[start] == '1')
+		wanted = 1;
+
+	if (ni != NULL) {
+		if (ni->activator != NULL || ni->closer != NULL)
+			ni->activator = ni->closer = ni->untracker = NULL;
+		TAILQ_REMOVE(&wp->notifies, ni, entry);
+		TAILQ_INSERT_TAIL(&wp->notifies, ni, entry);
+		return;
+	}
+	if (!wanted)
+		return;
+	ni = xcalloc(1, sizeof *ni);
+	ni->id = xstrndup(s + istart, ilen);
+	TAILQ_INSERT_TAIL(&wp->notifies, ni, entry);
+	if (++wp->nnotifies > NOTIFY_MAX)
+		server_client_notify_remove(wp, TAILQ_FIRST(&wp->notifies));
+}
+
+/* Whether a client is shown a pane's notifications. */
+static int
+server_client_notify_shown(struct client *c, struct window_pane *wp)
+{
+	if (c->session == NULL || (c->flags & CLIENT_CONTROL))
+		return (0);
+	return (session_has(c->session, wp->window));
+}
+
+/*
+ * Close a notification on every terminal but the one it was activated on:
+ * also those no longer shown the pane (a client since switched to another
+ * session may still have it up). One that never had it ignores the close.
+ */
+static void
+server_client_notify_close_others(struct client *c, struct notify_item *ni)
+{
+	struct client	*loop;
+	char		*close;
+
+	xasprintf(&close, "99;i=%s:p=close;", ni->id);
+	TAILQ_FOREACH(loop, &clients, entry) {
+		if (loop == c || loop->session == NULL ||
+		    (loop->flags & CLIENT_CONTROL))
+			continue;
+		tty_notify(&loop->tty, close);
+	}
+	free(close);
+}
+
+/*
+ * A terminal (c) reported for a notification that is remembered: 0 if the
+ * pane is to be told.
+ */
+static int
+server_client_notify_first(struct client *c, struct notify_item *ni,
+    const char *s)
+{
+	const char	*payload;
+	size_t		 start, len;
+
+	payload = s + 3 + strcspn(s + 3, ";");
+	if (*payload == ';')
+		payload++;
+
+	if (server_client_notify_key(s, 'p', &start, &len) != 0) {
+		if (ni->activator == NULL) {
+			ni->activator = c;
+			server_client_notify_close_others(c, ni);
+		}
+		return (ni->activator == c ? 0 : -1);
+	}
+	if (len != 5 || strncmp(s + start, "close", 5) != 0)
+		return (0);
+	if (strcmp(payload, "untracked") == 0) {
+		if (ni->untracker == NULL)
+			ni->untracker = c;
+		return (ni->untracker == c ? 0 : -1);
+	}
+	if (ni->closer == NULL)
+		ni->closer = c;
+	return (ni->closer == c ? 0 : -1);
+}
+
+/*
+ * A pane sent a notification: pass it to each client with the pane's window
+ * in its session, current or not. An OSC 99 identifier becomes one naming
+ * the pane, so what the terminal sends back for it (an activation report, a
+ * close event) finds the pane. (A query goes to one terminal as an input
+ * request, input.c.)
+ */
+void
+server_client_notify(struct window_pane *wp, const char *s)
+{
+	struct client	*c;
+	char		*copy;
+
+	copy = server_client_notify_rewrite(wp, s);
+	server_client_notify_track(wp, copy);
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (server_client_notify_shown(c, wp))
+			tty_notify(&c->tty, copy);
+	}
+	free(copy);
+}
+
+/*
+ * A random part for the identifiers given to notifications without one, so
+ * this server does not reuse one given by another tmux (or by this one before
+ * a restart) that the terminal may still show: it would update that one.
+ */
+static const char *
+server_client_notify_nonce(void)
+{
+	static char	nonce[9];
+
+	if (*nonce == '\0')
+		xsnprintf(nonce, sizeof nonce, "%08x", arc4random());
+	return (nonce);
+}
+
+/*
+ * A notification with its OSC 99 identifier made one naming the pane: t, the
+ * pane, _ and the program's identifier. One without an identifier is given
+ * t, the pane, ., this server's random part, . and a number, the same for
+ * each of its chunks (until d=0 is not given), and the terminal's i=0 goes
+ * back for it.
+ */
+char *
+server_client_notify_rewrite(struct window_pane *wp, const char *s)
+{
+	char	*copy;
+	size_t	 start, len;
+	int	 done;
+
+	if (strncmp(s, "99;", 3) != 0)
+		return (xstrdup(s));
+	if (server_client_notify_key(s, 'i', &start, &len) == 0) {
+		xasprintf(&copy, "%.*st%u_%s", (int)start, s, wp->id,
+		    s + start);
+		return (copy);
+	}
+	done = (server_client_notify_key(s, 'd', &start, &len) != 0 ||
+	    len != 1 || s[start] != '0');
+	xasprintf(&copy, "99;i=t%u.%s.%u%s%s", wp->id,
+	    server_client_notify_nonce(), wp->notify_anon,
+	    s[3] == ';' ? "" : ":", s + 3);
+	if (done)
+		wp->notify_anon++;
+	return (copy);
+}
+
+/*
+ * Undo server_client_notify_rewrite for an identifier the terminal sent back:
+ * the pane it names, and the program's own identifier (NULL for one without,
+ * given by this server). Returns -1 if it names no pane.
+ */
+static int
+server_client_notify_own(const char *id, size_t len, u_int *pane,
+    const char **own, size_t *ownlen)
+{
+	const char	*end = id + len, *p, *nonce;
+	size_t		 n;
+
+	if (len < 3 || *id != 't')
+		return (-1);
+	*pane = 0;
+	for (p = id + 1; p < end && *p >= '0' && *p <= '9'; p++)
+		*pane = *pane * 10 + (*p - '0');
+	if (p == id + 1 || p == end)
+		return (-1);
+	if (*p == '_') {
+		*own = p + 1;
+		*ownlen = end - *own;
+	} else if (*p == '.') {
+		nonce = server_client_notify_nonce();
+		n = strlen(nonce);
+		if ((size_t)(end - p) < n + 2 || strncmp(p + 1, nonce, n) != 0 ||
+		    p[1 + n] != '.')
+			return (-1);
+		*own = NULL;
+		*ownlen = 0;
+	} else
+		return (-1);
+	return (0);
+}
+
+/*
+ * The list of notifications still open in an answer to p=alive, for a pane:
+ * its own, with its own identifiers. (Those without one are not listed.)
+ */
+static void
+server_client_notify_alive(struct evbuffer *evb, struct window_pane *wp,
+    const char *list)
+{
+	const char	*own;
+	size_t		 len, ownlen;
+	u_int		 pane;
+	int		 first = 1;
+
+	for (;;) {
+		len = strcspn(list, ",");
+		if (server_client_notify_own(list, len, &pane, &own,
+		    &ownlen) == 0 && pane == wp->id && own != NULL) {
+			evbuffer_add_printf(evb, "%s%.*s", first ? "" : ",",
+			    (int)ownlen, own);
+			first = 0;
+		}
+		if (list[len] == '\0')
+			break;
+		list += len + 1;
+	}
+}
+
+/*
+ * A terminal sent an OSC 99 notification message (without ESC ] and the
+ * terminator, which is end): if its identifier names a pane, give it to that
+ * pane with the program's own identifier (0 for none). Returns 1 if it did.
+ */
+int
+server_client_notify_reply(struct client *c, const char *s, size_t n,
+    const char *end)
+{
+	struct window_pane	*wp;
+	struct notify_item	*ni;
+	struct evbuffer		*evb;
+	char			*copy, *meta;
+	const char		*own;
+	size_t			 start, len, ownlen, pstart, plen;
+	u_int			 pane;
+
+	copy = xstrndup(s, n);
+	if (server_client_notify_key(copy, 'i', &start, &len) != 0 ||
+	    server_client_notify_own(copy + start, len, &pane, &own,
+	    &ownlen) != 0 ||
+	    (wp = window_pane_find_by_id(pane)) == NULL || wp->event == NULL) {
+		free(copy);
+		return (0);
+	}
+	if (!server_client_notify_is_query(copy) &&
+	    (ni = server_client_notify_find(wp, copy + start, len)) != NULL &&
+	    server_client_notify_first(c, ni, copy) != 0) {
+		free(copy);
+		return (1);
+	}
+	if (own == NULL) {
+		own = "0";
+		ownlen = 1;
+	}
+	meta = copy + 3 + strcspn(copy + 3, ";");
+
+	evb = evbuffer_new();
+	if (evb == NULL)
+		fatalx("out of memory");
+	evbuffer_add_printf(evb, "\033]%.*s%.*s%.*s", (int)start, copy,
+	    (int)ownlen, own, (int)(meta - (copy + start + len)),
+	    copy + start + len);
+	if (*meta == ';') {
+		evbuffer_add(evb, ";", 1);
+		if (server_client_notify_key(copy, 'p', &pstart, &plen) == 0 &&
+		    plen == 5 && strncmp(copy + pstart, "alive", 5) == 0)
+			server_client_notify_alive(evb, wp, meta + 1);
+		else
+			evbuffer_add(evb, meta + 1, strlen(meta + 1));
+	}
+	evbuffer_add(evb, end, strlen(end));
+	evbuffer_add(evb, "", 1);
+
+	if (server_client_notify_is_query(copy))
+		input_request_reply(c, INPUT_REQUEST_NOTIFY, EVBUFFER_DATA(evb));
+	else
+		bufferevent_write(wp->event, EVBUFFER_DATA(evb),
+		    EVBUFFER_LENGTH(evb) - 1);
+	evbuffer_free(evb);
+	free(copy);
+	return (1);
+}
+
+/*
+ * What the terminal shows besides the panes: the title and path, the
+ * progress bar. Also while forwarding, when nothing is redrawn.
+ */
+static void
+server_client_set_extras(struct client *c)
+{
+	if (options_get_number(c->session->options, "set-titles")) {
+		server_client_set_title(c);
+		server_client_set_path(c);
+	}
+	server_client_set_progress_bar(c);
+}
+
+/*
+ * Show the active pane's pointer shape, if it changed. What the terminal was
+ * last given is kept only once it has been sent: the terminal may learn the
+ * pointer feature after attaching, and stopping the tty resets the shape.
+ */
+static void
+server_client_set_pointer(struct client *c)
+{
+	struct session		*s = c->session;
+	struct tty		*tty = &c->tty;
+	const char		*name;
+
+	if (s == NULL || (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED)))
+		return;
+	if ((~tty->flags & TTY_STARTED) || (~tty->term->flags & TERM_POINTER))
+		return;
+	name = window_pane_pointer(s->curw->window->active);
+	if (name == NULL && c->pointer == NULL)
+		return;
+	if (name != NULL && c->pointer != NULL && strcmp(name, c->pointer) == 0)
+		return;
+	free(c->pointer);
+	c->pointer = (name == NULL) ? NULL : xstrdup(name);
+	tty_set_pointer(tty, name);
 }
 
 /* Set client progress bar. */

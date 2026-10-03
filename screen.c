@@ -102,6 +102,7 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 	s->write_list = NULL;
 	s->write_wrap = 0;
 	s->hyperlinks = NULL;
+	memset(s->pointers, 0, sizeof s->pointers);
 
 	screen_reinit(s, 1);
 }
@@ -140,6 +141,167 @@ screen_reinit(struct screen *s, int check)
 
 	screen_set_progress_bar(s, PROGRESS_BAR_HIDDEN, 0);
 	screen_reset_hyperlinks(s);
+	screen_kkeys_reset(s);
+	screen_pointer_reset(s);
+}
+
+/* The kitty keyboard flags stack of the main or alternate screen, in use. */
+static struct screen_kkeys *
+screen_kkeys(struct screen *s)
+{
+	return (&s->kkeys[SCREEN_IS_ALTERNATE(s) ? 1 : 0]);
+}
+
+/* The kitty keyboard flags in effect. */
+u_int
+screen_kkeys_flags(struct screen *s)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	if (kk->n == 0)
+		return (0);
+	return (kk->flags[kk->n - 1]);
+}
+
+/* Push kitty keyboard flags. A full stack loses its oldest entry. */
+void
+screen_kkeys_push(struct screen *s, u_int flags)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	if (kk->n == KKEYS_DEPTH) {
+		memmove(kk->flags, kk->flags + 1, KKEYS_DEPTH - 1);
+		kk->n--;
+	}
+	kk->flags[kk->n++] = flags & KKEYS_MASK;
+}
+
+/* Pop kitty keyboard flags. */
+void
+screen_kkeys_pop(struct screen *s, u_int n)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+
+	kk->n = (n >= kk->n) ? 0 : kk->n - n;
+}
+
+/*
+ * Change the kitty keyboard flags in effect: mode 1 sets them, 2 adds to
+ * them, 3 removes from them. An empty stack gets an entry.
+ */
+void
+screen_kkeys_set(struct screen *s, u_int flags, u_int mode)
+{
+	struct screen_kkeys	*kk = screen_kkeys(s);
+	u_char			*f;
+
+	if (mode < 1 || mode > 3)
+		return;
+	if (kk->n == 0) {
+		kk->flags[0] = 0;
+		kk->n = 1;
+	}
+	f = &kk->flags[kk->n - 1];
+	switch (mode) {
+	case 1:
+		*f = flags;
+		break;
+	case 2:
+		*f |= flags;
+		break;
+	case 3:
+		*f &= ~flags;
+		break;
+	}
+	*f &= KKEYS_MASK;
+}
+
+/* Empty both kitty keyboard flags stacks. */
+void
+screen_kkeys_reset(struct screen *s)
+{
+	memset(s->kkeys, 0, sizeof s->kkeys);
+}
+
+/* The mouse pointer shape stack of the main or alternate screen, in use. */
+static struct screen_pointers *
+screen_pointers(struct screen *s)
+{
+	return (&s->pointers[SCREEN_IS_ALTERNATE(s) ? 1 : 0]);
+}
+
+/* The mouse pointer shape set, or NULL for the default. */
+const char *
+screen_pointer(struct screen *s)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n == 0)
+		return (NULL);
+	return (sp->shape[sp->n - 1]);
+}
+
+/* Set the mouse pointer shape: replace the top, or push onto an empty stack. */
+void
+screen_pointer_set(struct screen *s, const char *name)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n == 0) {
+		screen_pointer_push(s, name);
+		return;
+	}
+	free(sp->shape[sp->n - 1]);
+	sp->shape[sp->n - 1] = xstrdup(name);
+}
+
+/*
+ * Push a comma separated list of mouse pointer shapes, the last on top. A full
+ * stack loses its oldest entry.
+ */
+void
+screen_pointer_push(struct screen *s, const char *names)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+	char			*copy, *next, *name;
+
+	copy = next = xstrdup(names);
+	while ((name = strsep(&next, ",")) != NULL) {
+		if (*name == '\0')
+			continue;
+		if (sp->n == SCREEN_POINTERS) {
+			free(sp->shape[0]);
+			memmove(sp->shape, sp->shape + 1,
+			    (SCREEN_POINTERS - 1) * sizeof *sp->shape);
+			sp->n--;
+		}
+		sp->shape[sp->n++] = xstrdup(name);
+	}
+	free(copy);
+}
+
+/* Pop a mouse pointer shape. */
+void
+screen_pointer_pop(struct screen *s)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n != 0)
+		free(sp->shape[--sp->n]);
+}
+
+/* Empty both mouse pointer shape stacks. */
+void
+screen_pointer_reset(struct screen *s)
+{
+	struct screen_pointers	*sp;
+	u_int			 i;
+
+	for (i = 0; i < nitems(s->pointers); i++) {
+		sp = &s->pointers[i];
+		while (sp->n != 0)
+			free(sp->shape[--sp->n]);
+	}
 }
 
 /* Reset hyperlinks of a screen. */
@@ -175,6 +337,7 @@ screen_free(struct screen *s)
 	if (s->hyperlinks != NULL)
 		hyperlinks_free(s->hyperlinks);
 	screen_free_titles(s);
+	screen_pointer_reset(s);
 
 #ifdef ENABLE_SIXEL
 	/*
@@ -847,6 +1010,8 @@ screen_mode_to_string(int mode)
 		strlcat(tmp, "MOUSE_UTF8,", sizeof tmp);
 	if (mode & MODE_MOUSE_SGR)
 		strlcat(tmp, "MOUSE_SGR,", sizeof tmp);
+	if (mode & MODE_MOUSE_PIXELS)
+		strlcat(tmp, "MOUSE_PIXELS,", sizeof tmp);
 	if (mode & MODE_BRACKETPASTE)
 		strlcat(tmp, "BRACKETPASTE,", sizeof tmp);
 	if (mode & MODE_FOCUSON)
