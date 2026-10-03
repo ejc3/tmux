@@ -28,6 +28,14 @@ must_equal() {
 	fi
 }
 
+# scene_drawn: the outer pane shows the inside and outside fill.
+scene_drawn() {
+	$TMUX capturep -p >$TMP || exit 1
+	[ "$(sed -n '1p' $TMP | cut -c1-28)" = "IIIIIIIIIIIIIIIIIIIIIIIIIIII" ] &&
+	[ "$(sed -n '1p' $TMP | cut -c29-40)" = "OOOOOOOOOOOO" ] &&
+	[ "$(sed -n '9p' $TMP)" = "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO" ]
+}
+
 $TMUX kill-server 2>/dev/null
 $TMUX2 kill-server 2>/dev/null
 
@@ -47,7 +55,30 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+
+# Wait for the fill to be drawn, then until the inner server has gone round its
+# loop and the outer pane has stopped changing (3 equal captures, at most 5s).
+_i=0
+until scene_drawn; do
+	_i=$((_i + 1))
+	[ $_i -ge 400 ] && break
+	sleep 0.05
+done
+$TMUX2 display -p x >/dev/null || exit 1
+_prev=
+_same=0
+_i=0
+while [ $_same -lt 3 ] && [ $_i -lt 100 ]; do
+	_cur=$($TMUX capturep -p | cksum)
+	if [ "$_cur" = "$_prev" ]; then
+		_same=$((_same + 1))
+	else
+		_same=0
+	fi
+	_prev=$_cur
+	_i=$((_i + 1))
+	sleep 0.05
+done
 
 $TMUX capturep -p >$TMP || exit 1
 

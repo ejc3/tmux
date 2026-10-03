@@ -947,11 +947,11 @@ trap cleanup EXIT
 # Wait for $text to appear in a control client's output.
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 6 ]; do
+	_i=0
+	while [ "$_i" -lt 120 ]; do
 		grep -F -- "$2" "$1" >/dev/null 2>&1 && return 0
-		sleep 1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	echo "missing from $1: $2" >&2
 	cat "$1" >&2
@@ -1000,15 +1000,19 @@ wait_for "$OLDOUT" "%layout-change $wid $v1now $v1now " ||
 # clients written against it expect. v2 is new and has no such clients, so it
 # gets the single notification. Counting the delta rather than the total, with
 # a settle in between, keeps this independent of what has already been sent.
+# The settle is a command sent to the client after the change: its output
+# follows every notification the change produced.
 n1=$(grep -c "%layout-change $wid " "$OLDOUT")
 check_ok select-layout -t L:two \
 	'{"V":2,"L":{"t":"v","w":80,"h":24,"x":0,"y":0,"c":[{"t":"p","w":80,"h":9,"x":0,"y":0,"i":0,"I":"'"$q0"'"},{"t":"p","w":80,"h":14,"x":0,"y":10,"i":1,"I":"'"$q1"'"}]}}'
-sleep 2
+printf 'display-message -p settled-v2\n' >&4
+wait_for "$OLDOUT" settled-v2 || fail 'Control client did not settle'
 n2=$(grep -c "%layout-change $wid " "$OLDOUT")
 must_equal 'Notifications for a v2 layout' "$((n2 - n1))" '1'
 
 check_ok select-layout -t L:two "$(v1 "$v1vsplit")"
-sleep 2
+printf 'display-message -p settled-v1\n' >&4
+wait_for "$OLDOUT" settled-v1 || fail 'Control client did not settle'
 n3=$(grep -c "%layout-change $wid " "$OLDOUT")
 must_equal 'Notifications for a v1 layout' "$((n3 - n2))" '2'
 

@@ -403,8 +403,8 @@ check_ok send-keys -t "$ze1" C-d
 i=0
 while [ "$($TMUX display-message -p -t P:13 '#{window_panes}')" != 2 ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && { echo "Hidden pane did not exit."; exit 1; }
-	sleep 0.1
+	[ $i -gt 400 ] && { echo "Hidden pane did not exit."; exit 1; }
+	sleep 0.05
 done
 check_fmt "$ze0" '#{window_zoomed_flag}:#{pane_zoomed_flag}' '0:0'
 check_ok resize-pane -Z -t "$ze2"
@@ -412,8 +412,8 @@ check_ok send-keys -t "$ze2" C-d
 i=0
 while [ "$($TMUX display-message -p -t P:13 '#{window_panes}')" != 1 ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && { echo "Zoomed pane did not exit."; exit 1; }
-	sleep 0.1
+	[ $i -gt 400 ] && { echo "Zoomed pane did not exit."; exit 1; }
+	sleep 0.05
 done
 check_fmt "$ze0" '#{window_zoomed_flag}:#{pane_zoomed_flag}' '0:0'
 check_ok kill-window -t P:13
@@ -479,8 +479,8 @@ check_ok new-window -d -t P:8 -n dead 'true'
 i=0
 while [ "$($TMUX display-message -p -t P:8.0 '#{pane_dead}')" != "1" ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && { echo "Pane did not die."; exit 1; }
-	sleep 0.1
+	[ $i -gt 400 ] && { echo "Pane did not die."; exit 1; }
+	sleep 0.05
 done
 check_ok respawn-pane -t P:8.0 'sleep 100'
 check_fmt 'P:8.0' '#{pane_dead}' '0'
@@ -568,11 +568,11 @@ if [ -e "$tmp" ]; then
 fi
 check_ok respawn-pane -t P:10.0
 i=0
-while [ ! -e "$tmp" ]; do
+while [ ! -s "$tmp" ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && echo "respawn-pane did not start stored command" && \
+	[ $i -gt 400 ] && echo "respawn-pane did not start stored command" && \
 	    exit 1
-	sleep 0.1
+	sleep 0.05
 done
 if [ "$(cat "$tmp")" != "/tmp" ]; then
 	echo "respawn-pane did not use stored cwd"
@@ -593,11 +593,11 @@ if [ -e "$tmp" ]; then
 fi
 check_ok respawn-window -t P:11
 i=0
-while [ ! -e "$tmp" ]; do
+while [ ! -s "$tmp" ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && echo "respawn-window did not start stored command" && \
+	[ $i -gt 400 ] && echo "respawn-window did not start stored command" && \
 	    exit 1
-	sleep 0.1
+	sleep 0.05
 done
 if [ "$(cat "$tmp")" != "/tmp" ]; then
 	echo "respawn-window did not use stored cwd"
@@ -625,8 +625,8 @@ i=0
 while out=$($TMUX capture-pane -p -t "$eid" | sed -n 1p) && \
     [ "$out" != "hello" ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && { echo "split-window -e wrong: '$out'"; exit 1; }
-	sleep 0.1
+	[ $i -gt 400 ] && { echo "split-window -e wrong: '$out'"; exit 1; }
+	sleep 0.05
 done
 
 # A bad -l size is an error.
@@ -729,8 +729,8 @@ i=0
 while out=$($TMUX capture-pane -p -t P:3.1 | sed -n 1p) && \
     [ "$out" != "stdin-stuff" ]; do
 	i=$((i + 1))
-	[ $i -gt 50 ] && { echo "split-window -I wrong: '$out'"; exit 1; }
-	sleep 0.1
+	[ $i -gt 400 ] && { echo "split-window -I wrong: '$out'"; exit 1; }
+	sleep 0.05
 done
 
 # -s sets the new pane's window-style.
@@ -802,8 +802,8 @@ i=0
 while [ "$($TMUX display-message -p -t P:2.0 '#{history_size}')" != "77" ]
 do
 	i=$((i + 1))
-	[ $i -gt 50 ] && { echo "History did not fill."; exit 1; }
-	sleep 0.1
+	[ $i -gt 400 ] && { echo "History did not fill."; exit 1; }
+	sleep 0.05
 done
 check_fmt 'P:2.0' '#{cursor_y}' '4'
 check_ok resize-pane -T -t P:2.0

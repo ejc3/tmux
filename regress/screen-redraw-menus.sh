@@ -46,8 +46,48 @@ trim() {
 	mv "$TMP2" "$TMP" || exit 1
 }
 
+# Poll until a command succeeds.
+wait_until() {
+	_what=$1
+	shift
+	_i=0
+	until eval "$@"; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || fail "timed out waiting for $_what"
+		sleep 0.05
+	done
+}
+
+# Wait for a pane of the inner server to have printed all its lines.
+wait_pane() {
+	_pane=$1
+	wait_until "pane $_pane" '$TMUX2 capturep -p -t "$_pane" | grep -q MENU12'
+}
+
+# Wait until the inner server has gone round its loop and what it drew has
+# reached the outer pane: the capture is unchanged for 0.15 seconds.
+wait_settled() {
+	$TMUX2 display -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ $_i -lt 100 ]; do
+		_sum=$($TMUX capturep -pe | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ $_same -ge 3 ] && return
+		else
+			_same=0
+			_last=$_sum
+		fi
+		_i=$((_i + 1))
+		sleep 0.05
+	done
+	fail "outer pane did not settle"
+}
+
 compare() {
-	sleep 1
+	wait_settled
 	$TMUX capturep -pe >$TMP || exit 1
 	trim
 	if [ -n "$GENERATE" ]; then
@@ -81,7 +121,10 @@ setup() {
 	$TMUX set -g default-terminal "tmux-256color" || exit 1
 	$TMUX send -l "$TMUX2 attach" || exit 1
 	$TMUX send Enter || exit 1
-	sleep 1
+	# The client has settled once its terminal has answered tmux's queries.
+	wait_until "the client to attach" \
+	    '[ -n "$($TMUX2 lsc -F "#{client_termtype}" 2>/dev/null)" ]'
+	wait_pane %0
 }
 
 menu() {
@@ -90,7 +133,7 @@ menu() {
 	    "Beta item" b "" \
 	    "" "" "" \
 	    "Gamma item" g "" || exit 1
-	sleep 1
+	wait_settled
 }
 
 # Basic menu over a single pane.
@@ -101,6 +144,7 @@ compare menu-basic
 # Menu over a split: drawn on top of the pane border.
 setup 40 14
 $TMUX2 splitw -h "$C" || exit 1
+wait_pane %1
 menu -x8 -y9
 compare menu-over-split
 
@@ -112,7 +156,6 @@ $TMUX2 display-menu -T "This title must not reserve width" -C 1 \
     "Beta item" b "" \
     "" "" "" \
     "Gamma item" g "" || exit 1
-sleep 1
 compare menu-noborder
 
 # Menu border style follows the explicitly targeted window, not the current
