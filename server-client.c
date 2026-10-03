@@ -2455,7 +2455,7 @@ server_client_check_redraw(struct client *c)
 	 * status line or overlay. The terminal saves the character set with the
 	 * cursor on smcup, so leave the ACS set before switching.
 	 */
-	if (!options_get_number(global_options, "clear-on-attach") &&
+	if (!clear_on_attach &&
 	    tty_term_has(tty->term, TTYC_SMCUP) &&
 	    tty_term_has(tty->term, TTYC_RMCUP)) {
 		wp = w->active;
