@@ -1466,6 +1466,7 @@ window_pane_create(struct window *w, u_int sx, u_int sy, u_int hlimit)
 	wp->fd = -1;
 
 	TAILQ_INIT(&wp->modes);
+	TAILQ_INIT(&wp->notifies);
 
 	TAILQ_INIT (&wp->resize_queue);
 
@@ -1631,6 +1632,7 @@ window_pane_destroy(struct window_pane *wp)
 
 	window_pane_free_modes(wp);
 	screen_write_sync_clear_dirty(wp);
+	server_client_notify_free(wp);
 
 	if (wp->event != NULL) {
 		bufferevent_free(wp->event);
