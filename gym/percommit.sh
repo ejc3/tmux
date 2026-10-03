@@ -1,12 +1,12 @@
 #!/bin/sh
 # gym/percommit.sh "CASE ..." - for every commit on $PERCOMMIT_BRANCH
-# (scroll-native-v4) after its merge base with upstream/master, build tmux and run the given render-parity cases; writes
+# (scroll-native-v5) after its merge base with upstream/master, build tmux and run the given render-parity cases; writes
 # "SHA CASE pass|fail" lines to $PERCOMMIT_DIR/all.txt. The first commit where
 # a case passes is the one that fixed it.
 set -u
 R=${PERCOMMIT_DIR:-/mnt/fcvm-btrfs/tmux-percommit}
-SRC=$HOME/src/tmux-scroll-native-v4
-BRANCH=${PERCOMMIT_BRANCH:-scroll-native-v4}
+SRC=${PERCOMMIT_SRC:-$HOME/src/tmux-ref}
+BRANCH=${PERCOMMIT_BRANCH:-scroll-native-v5}
 BASE=$(git -C $SRC merge-base upstream/master $BRANCH)
 CASES="$1"
 RP=$SRC/regress/render-parity.sh

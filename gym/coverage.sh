@@ -6,7 +6,7 @@
 #
 #   sh gym/coverage.sh TMUX_REPO COMMIT BASE [FUZZ_MINUTES] [OUT_DIR]
 #
-# e.g. sh gym/coverage.sh ~/src/tmux-scroll-native-v4 87c42559 3c7b12f6^ 5
+# e.g. sh gym/coverage.sh ~/src/tmux-ref 87c42559 3c7b12f6^ 5
 # The build goes in OUT_DIR (default /tmp/tmux-coverage-COMMIT) and the map
 # in OUT_DIR/map.txt and map.json.
 set -eu
