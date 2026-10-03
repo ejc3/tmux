@@ -36,28 +36,51 @@ trap cleanup 0 1 15
 
 wait_outer_has()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$OUTER capture-pane -p -t outer:0.0 >"$CAPTURE" 2>/dev/null || true
-		grep -q "$marker" "$CAPTURE" && return 0
-		sleep 0.1
-		i=$((i + 1))
+		grep -q "$_marker" "$CAPTURE" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "outer client did not show $marker"
+	fail "outer client did not show $_marker"
 }
 
 wait_inner_has()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_marker=$1
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$INNER capture-pane -p -t "$2" 2>/dev/null |
-		    grep -q "$marker" && return 0
-		sleep 0.1
-		i=$((i + 1))
+		    grep -q "$_marker" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "inner pane $2 did not contain $marker"
+	fail "inner pane $2 did not contain $_marker"
+}
+
+# Wait until the inner server has gone round its loop and what it drew has
+# reached the outer pane: the capture is unchanged for 0.15 seconds.
+wait_outer_settled()
+{
+	$INNER display-message -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ "$_i" -lt 100 ]; do
+		_sum=$($OUTER capture-pane -p -t outer:0.0 | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ "$_same" -ge 3 ] && return 0
+		else
+			_same=0
+			_last=$_sum
+		fi
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "outer client did not settle"
 }
 
 # Covered pane: waits for the trigger, then scrolls a small region.
@@ -127,10 +150,16 @@ $OUTER respawn-pane -k -t outer:0.0 \
     exit 1
 
 wait_outer_has FFFFFFFFFF
-sleep 1
+_i=0
+until [ -n "$($INNER list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	_i=$((_i + 1))
+	[ "$_i" -lt 400 ] || fail "inner client did not settle"
+	sleep 0.05
+done
+wait_outer_settled
 : >"$TRIGGER"
 wait_inner_has COVERED "$COVERED"
-sleep 1
+wait_outer_settled
 $OUTER capture-pane -p -t outer:0.0 >"$CAPTURE"
 grep -q COVERED "$CAPTURE" && fail "covered pane drawn over floating pane"
 

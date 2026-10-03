@@ -18,7 +18,18 @@ $TMUX2 set -g status-right 'RRR' || exit 1
 $TMUX2 set -g status-left 'LLL' || exit 1
 $TMUX2 set -g window-status-current-format 'WWW' || exit 1
 $TMUX -f/dev/null new -x20 -y2 -d "$TMUX2 attach" || exit 1
-sleep 1
+_i=0
+until [ "$($TMUX capturep -p|tail -1)" = "LLLWWW           RR" ]; do
+	_i=$((_i + 1))
+	if [ $_i -ge 400 ]; then
+		echo "status line never drawn:"
+		$TMUX capturep -p
+		$TMUX kill-server 2>/dev/null
+		$TMUX2 kill-server 2>/dev/null
+		exit 1
+	fi
+	sleep 0.05
+done
 $TMUX capturep -p|tail -1 >$TMP || exit 1
 $TMUX kill-server 2>/dev/null
 $TMUX2 kill-server 2>/dev/null

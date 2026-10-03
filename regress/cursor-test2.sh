@@ -14,6 +14,14 @@ $TMUX -f/dev/null new -d -x10 -y10 \
       "cat cursor-test.txt; printf '\e[8;10H'; cat" || exit 1
 $TMUX set -g window-size manual || exit 1
 
+# Wait for the file and the cursor move to be read: the cursor at 9,7.
+n=0
+until [ "$($TMUX display -p '#{cursor_x},#{cursor_y}')" = 9,7 ]; do
+	n=$((n + 1))
+	[ $n -gt 400 ] && { echo "output not read"; exit 1; }
+	sleep 0.05
+done
+
 $TMUX display -pF '#{cursor_x} #{cursor_y} #{cursor_character}' >>$TMP
 $TMUX capturep -p|awk '{print NR-1,$0}' >>$TMP
 $TMUX resizew -x5 || exit 1
