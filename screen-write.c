@@ -25,6 +25,8 @@
 
 static struct screen_write_citem *screen_write_collect_trim(
 		    struct screen_write_ctx *, u_int, u_int, u_int, int *);
+static void	screen_write_clear(struct screen *, u_int, u_int, u_int, u_int,
+		    u_int);
 static void	screen_write_collect_insert(struct screen_write_ctx *,
 		    struct screen_write_citem *);
 static void	screen_write_collect_insert_clear(struct screen_write_ctx *,
@@ -1608,7 +1610,7 @@ screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 0, 1);
 	ttyctx.bg = bg;
 
-	grid_view_clear(s->grid, s->cx, s->cy, nx, 1, bg);
+	screen_write_clear(s, s->cx, s->cy, nx, 1, bg);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = nx;
@@ -1623,6 +1625,64 @@ screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 	screen_write_redraw_line(ctx, &ttyctx, s->cy);
 }
 
+/*
+ * Whether the row above y wraps on to it. Erasing a row or inserting or
+ * deleting rows at y ends that wrap in the grid (grid_clear_lines,
+ * grid_move_lines); terminals keep it, so the line stays joined through tmux
+ * as it would directly.
+ */
+static int
+screen_write_wrapped_above(struct screen *s, u_int y)
+{
+	struct grid	*gd = s->grid;
+
+	if (y == 0)
+		return (0);
+	return (!!(grid_get_line(gd, gd->hsize + y - 1)->flags &
+	    GRID_LINE_WRAPPED));
+}
+
+static void
+screen_write_keep_wrapped_above(struct screen *s, u_int y, int wrapped)
+{
+	struct grid	*gd = s->grid;
+
+	if (y != 0 && wrapped)
+		grid_get_line(gd, gd->hsize + y - 1)->flags |= GRID_LINE_WRAPPED;
+}
+
+/*
+ * Erase part of the screen starting at row py, keeping the wrap of the row
+ * above (the terminals keep it unless the same erase ends the row above).
+ */
+static void
+screen_write_clear(struct screen *s, u_int px, u_int py, u_int nx, u_int ny,
+    u_int bg)
+{
+	int	wrapped;
+
+	wrapped = screen_write_wrapped_above(s, py);
+	grid_view_clear(s->grid, px, py, nx, ny, bg);
+	screen_write_keep_wrapped_above(s, py, wrapped);
+}
+
+/*
+ * Scroll the scroll region up or down one line, keeping the wrap of the row
+ * above it, as an insert or delete of a line at its top does.
+ */
+static void
+screen_write_scroll_region(struct screen *s, int up, u_int bg)
+{
+	int	wrapped;
+
+	wrapped = screen_write_wrapped_above(s, s->rupper);
+	if (up)
+		grid_view_scroll_region_up(s->grid, s->rupper, s->rlower, bg);
+	else
+		grid_view_scroll_region_down(s->grid, s->rupper, s->rlower, bg);
+	screen_write_keep_wrapped_above(s, s->rupper, wrapped);
+}
+
 /* Insert ny lines. */
 void
 screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
@@ -1630,6 +1690,7 @@ screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	struct screen	*s = ctx->s;
 	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
+	int		 wrapped;
 
 	if (ny == 0)
 		ny = 1;
@@ -1654,7 +1715,9 @@ screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
+	wrapped = screen_write_wrapped_above(s, s->cy);
 	grid_view_insert_lines_region(gd, s->rlower, s->cy, ny, bg);
+	screen_write_keep_wrapped_above(s, s->cy, wrapped);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = ny;
@@ -1677,6 +1740,7 @@ screen_write_deleteline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
 	u_int		 ry;
+	int		 wrapped;
 
 	if (ny == 0)
 		ny = 1;
@@ -1702,7 +1766,9 @@ screen_write_deleteline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
+	wrapped = screen_write_wrapped_above(s, s->cy);
 	grid_view_delete_lines_region(gd, s->rlower, s->cy, ny, bg);
+	screen_write_keep_wrapped_above(s, s->cy, wrapped);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = ny;
@@ -1739,7 +1805,7 @@ screen_write_clearline(struct screen_write_ctx *ctx, u_int bg)
 
 	flags = gl->flags & GRID_LINE_OSC133_FLAGS;
 	memcpy(&od, &gl->osc133_data, sizeof od);
-	grid_view_clear(s->grid, 0, s->cy, sx, 1, bg);
+	screen_write_clear(s, 0, s->cy, sx, 1, bg);
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
 	gl->flags |= flags;
 	memcpy(&gl->osc133_data, &od, sizeof gl->osc133_data);
@@ -1776,7 +1842,7 @@ screen_write_clearendofline(struct screen_write_ctx *ctx, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
-	grid_view_clear(s->grid, s->cx, s->cy, sx - s->cx, 1, bg);
+	screen_write_clear(s, s->cx, s->cy, sx - s->cx, 1, bg);
 
 	ci->x = s->cx;
 	ci->used = sx - s->cx;
@@ -1804,9 +1870,9 @@ screen_write_clearstartofline(struct screen_write_ctx *ctx, u_int bg)
 #endif
 
 	if (s->cx > sx - 1)
-		grid_view_clear(s->grid, 0, s->cy, sx, 1, bg);
+		screen_write_clear(s, 0, s->cy, sx, 1, bg);
 	else
-		grid_view_clear(s->grid, 0, s->cy, s->cx + 1, 1, bg);
+		screen_write_clear(s, 0, s->cy, s->cx + 1, 1, bg);
 
 	ci->x = 0;
 	ci->used = s->cx + 1;
@@ -1857,7 +1923,7 @@ screen_write_reverseindex(struct screen_write_ctx *ctx, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
-	grid_view_scroll_region_down(s->grid, s->rupper, s->rlower, bg);
+	screen_write_scroll_region(s, 0, bg);
 	screen_write_collect_flush(ctx, 0, __func__);
 
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
@@ -1936,7 +2002,7 @@ screen_write_linefeed(struct screen_write_ctx *ctx, int wrapped, u_int bg)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
 
-	grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
+	screen_write_scroll_region(s, 1, bg);
 	screen_write_collect_scroll(ctx, bg);
 	ctx->scrolled++;
 }
@@ -1946,7 +2012,6 @@ void
 screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 {
 	struct screen	*s = ctx->s;
-	struct grid	*gd = s->grid;
 	u_int		 i;
 
 	if (lines == 0)
@@ -1965,7 +2030,7 @@ screen_write_scrollup(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 #endif
 
 	for (i = 0; i < lines; i++) {
-		grid_view_scroll_region_up(gd, s->rupper, s->rlower, bg);
+		screen_write_scroll_region(s, 1, bg);
 		screen_write_collect_scroll(ctx, bg);
 	}
 	ctx->scrolled += lines;
@@ -1976,7 +2041,6 @@ void
 screen_write_scrolldown(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 {
 	struct screen	*s = ctx->s;
-	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
 	u_int		 i, ry;
 
@@ -1994,7 +2058,7 @@ screen_write_scrolldown(struct screen_write_ctx *ctx, u_int lines, u_int bg)
 #endif
 
 	for (i = 0; i < lines; i++)
-		grid_view_scroll_region_down(gd, s->rupper, s->rlower, bg);
+		screen_write_scroll_region(s, 0, bg);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = lines;
@@ -2046,7 +2110,7 @@ screen_write_clearendofscreen(struct screen_write_ctx *ctx, u_int bg)
 		grid_view_clear_history(gd, bg);
 	else {
 		if (s->cx <= sx - 1)
-			grid_view_clear(gd, s->cx, s->cy, sx - s->cx, 1, bg);
+			screen_write_clear(s, s->cx, s->cy, sx - s->cx, 1, bg);
 		grid_view_clear(gd, 0, s->cy + 1, sx, sy - (s->cy + 1), bg);
 	}
 
