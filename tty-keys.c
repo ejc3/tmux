@@ -60,6 +60,7 @@ static int	tty_keys_device_attributes2(struct tty *, const char *, size_t,
 static int	tty_keys_extended_device_attributes(struct tty *, const char *,
 		    size_t, size_t *);
 static int	tty_keys_sync(struct tty *, const char *, size_t, size_t *);
+static int	tty_keys_notify(struct tty *, const char *, size_t, size_t *);
 static int	tty_keys_palette(struct tty *, const char *, size_t, size_t *);
 
 /* A key tree entry. */
@@ -784,6 +785,17 @@ tty_keys_next(struct tty *tty)
 
 	/* Is this a synchronized update mode response? */
 	switch (tty_keys_sync(tty, buf, len, &size)) {
+	case 0:		/* yes */
+		key = KEYC_UNKNOWN;
+		goto complete_key;
+	case -1:	/* no, or not valid */
+		break;
+	case 1:		/* partial */
+		goto partial_key;
+	}
+
+	/* Is this a notification message (OSC 99)? */
+	switch (tty_keys_notify(tty, buf, len, &size)) {
 	case 0:		/* yes */
 		key = KEYC_UNKNOWN;
 		goto complete_key;
@@ -1588,6 +1600,42 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 	log_debug("%s: received DECRPM %.*s", c->name, (int)*size, buf);
 	tty->flags |= TTY_HAVESYNC;
 
+	return (0);
+}
+
+/*
+ * Handle a notification message from the terminal, \033]99;...: an answer to
+ * a query, an activation report or a close event, for the pane its
+ * identifier names. Returns 0 for success, -1 for failure, 1 for partial.
+ */
+static int
+tty_keys_notify(struct tty *tty, const char *buf, size_t len, size_t *size)
+{
+	struct client	*c = tty->client;
+	size_t		 i;
+	const char	*end;
+
+	*size = 0;
+	for (i = 0; i < 5; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033]99;"[i])
+			return (-1);
+	}
+	for (; i < len; i++) {
+		if (buf[i] == '\007')
+			break;
+		if (buf[i] == '\033' && i + 1 < len && buf[i + 1] == '\\')
+			break;
+		if (buf[i] == '\033' && i + 1 == len)
+			return (1);
+	}
+	if (i == len)
+		return (1);
+	end = (buf[i] == '\007') ? "\007" : "\033\\";
+	*size = i + ((buf[i] == '\007') ? 1 : 2);
+	log_debug("%s: received notification %.*s", c->name, (int)*size, buf);
+	server_client_notify_reply(c, buf + 2, i - 2, end);
 	return (0);
 }
 
