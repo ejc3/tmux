@@ -100,6 +100,8 @@ query "decrqm-mouse-utf8-set" '^[[?1005;1$y' '\033[?1005$p' 11 '\033[?1005h'
 query "decrqm-mouse-sgr-set" '^[[?1006;1$y' '\033[?1006$p' 11 '\033[?1006h'
 query "decrqm-bracket-paste-set" '^[[?2004;1$y' '\033[?2004$p' 11 '\033[?2004h'
 query "decrqm-theme-updates-set" '^[[?2031;1$y' '\033[?2031$p' 11 '\033[?2031h'
+query "decrqm-grapheme-clusters" '^[[?2027;3$y' '\033[?2027$p' 11 ''
+query "decrqm-grapheme-clusters-reset" '^[[?2027;3$y' '\033[?2027$p' 11 '\033[?2027l'
 query "decrqss-cursor-style" '^[P1$r q0 q^[\' '\033P$q q\033\\' 12 ''
 
 query_timeout "osc-10-query" '^[]10;rgb:ffff/0000/0000^G' '\033]10;?\007' '\033]10;red\007'
