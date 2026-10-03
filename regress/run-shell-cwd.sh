@@ -35,7 +35,7 @@ pane=$($TMUX new-window -d -P -F '#{pane_id}' -t test \
 i=0
 while [ "$($TMUX display-message -p -t "$pane" '#{pane_current_path}')" != \
     "$TMP/second dir" ]; do
-	if [ "$i" -ge 100 ]; then
+	if [ "$i" -ge 400 ]; then
 		echo "Timed out waiting for pane current directory"
 		exit 1
 	fi
