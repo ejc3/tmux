@@ -3991,7 +3991,13 @@ window_copy_scroll_to(struct window_mode_entry *wme, u_int px, u_int py,
 	if (py >= gd->hsize - data->oy && py < gd->hsize - data->oy + gd->sy)
 		data->cy = py - (gd->hsize - data->oy);
 	else {
+		/*
+		 * Put the line gap rows above the bottom: at least one, or a
+		 * screen of fewer than 4 rows put it one past the bottom.
+		 */
 		gap = gd->sy / 4;
+		if (gap == 0)
+			gap = 1;
 		if (py < gd->sy) {
 			offset = 0;
 			data->cy = py;
@@ -4431,6 +4437,11 @@ window_copy_cstrtocellpos(struct grid *gd, u_int ncells, u_int *ppx, u_int *ppy,
 			}
 			d = cells[ccell].d;
 			dlen = cells[ccell].dlen;
+			if (dlen == 0) {
+				/* Padding: no text (and no pointer). */
+				ccell++;
+				continue;
+			}
 			if (dlen == 1) {
 				if (str[pos] != *d) {
 					match = 0;
@@ -5077,25 +5088,45 @@ window_copy_match_start_end(struct window_copy_mode_data *data, u_int at,
 		(*end)--;
 }
 
+/*
+ * The search mark index of the copy cursor in *at. With emacs keys the cursor
+ * can be past the last column, after a full row: that is not a cell (the
+ * index would be the next row's, or past the marks for the last row), so *at
+ * is the row's last cell and *after is set. Returns -1 if the cursor is not
+ * on the screen.
+ */
+static int
+window_copy_cursor_mark(struct window_copy_mode_data *data, u_int *at,
+    int *after)
+{
+	u_int	cx = data->cx, sx = screen_size_x(data->backing), cy;
+
+	cy = screen_hsize(data->backing) - data->oy + data->cy;
+	*after = (cx >= sx);
+	if (*after)
+		cx = sx - 1;
+	return (window_copy_search_mark_at(data, cx, cy, at));
+}
+
 static char *
 window_copy_match_at_cursor(struct window_copy_mode_data *data)
 {
 	struct grid	*gd = data->backing->grid;
 	struct grid_cell gc;
-	u_int		 at, start, end, cy, px, py;
+	u_int		 at, start, end, px, py;
 	u_int		 sx = screen_size_x(data->backing);
 	char		*buf = NULL;
 	size_t		 len = 0;
+	int		 after;
 
 	if (data->searchmark == NULL)
 		return (NULL);
 
-	cy = screen_hsize(data->backing) - data->oy + data->cy;
-	if (window_copy_search_mark_at(data, data->cx, cy, &at) != 0)
+	if (window_copy_cursor_mark(data, &at, &after) != 0)
 		return (NULL);
 	if (data->searchmark[at] == 0) {
 		/* Allow one position after the match. */
-		if (at == 0 || data->searchmark[--at] == 0)
+		if (after || at == 0 || data->searchmark[--at] == 0)
 			return (NULL);
 	}
 	window_copy_match_start_end(data, at, &start, &end);
@@ -5135,7 +5166,7 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 	struct window_pane		*wp = wme->wp;
 	struct window_copy_mode_data	*data = wme->data;
 	u_int				 mark, start, end, cy, cursor, current;
-	int				 inv = 0, found = 0;
+	int				 inv = 0, found = 0, after;
 	int				 keys;
 
 	cy = screen_hsize(data->backing) - data->oy + data->cy;
@@ -5170,16 +5201,17 @@ window_copy_update_style(struct window_mode_entry *wme, u_int fx, u_int fy,
 	if (mark == 0)
 		return;
 
-	if (window_copy_search_mark_at(data, data->cx, cy, &cursor) == 0) {
+	if (window_copy_cursor_mark(data, &cursor, &after) == 0) {
 		keys = options_get_number(wp->window->options, "mode-keys");
-		if (cursor != 0 &&
+		if ((after || cursor != 0) &&
 		    keys == MODEKEY_EMACS &&
 		    data->searchdirection) {
-			if (data->searchmark[cursor - 1] == mark) {
+			/* The cell before the cursor. */
+			if (!after)
 				cursor--;
+			if (data->searchmark[cursor] == mark)
 				found = 1;
-			}
-		} else if (data->searchmark[cursor] == mark)
+		} else if (!after && data->searchmark[cursor] == mark)
 			found = 1;
 		if (found) {
 			window_copy_match_start_end(data, cursor, &start, &end);
