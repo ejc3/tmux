@@ -16,7 +16,6 @@ import os, signal, subprocess, sys, tempfile, time
 tmux = sys.argv[1]
 tmp = tempfile.mkdtemp()
 server = [tmux, "-Ltest%d" % os.getpid(), "-f/dev/null"]
-hooks = os.path.join(tmp, "hooks")
 
 def run(*args):
     return subprocess.run(server + list(args), stdout=subprocess.PIPE,
@@ -55,8 +54,12 @@ class Client:
         return None
 
 run("new-session", "-d", "-x", "40", "-y", "10", "exec cat >/dev/null")
-run("set-hook", "-g", "client-active",
-    "run-shell 'echo #{client_name} >>%s'" % hooks)
+run("set", "-g", "@active", "")
+run("set-hook", "-g", "client-active", "set -gaF @active ' #{client_name}'")
+
+# The clients made latest so far, in order.
+def active():
+    return run("show", "-gv", "@active").split()
 go = os.path.join(tmp, "go")
 done = os.path.join(tmp, "done")
 run("bind", "-n", "F5", "run-shell",
@@ -68,19 +71,15 @@ b = Client()
 wait(lambda: (b.drain() or True) and b.name() is not None, "client b")
 an, bn = a.name(), b.name()
 
-# A presses F5 (its job waits) and more keys; then B types and is latest.
+# A presses F5 (its job waits) and more keys and is latest; then B types and
+# is latest.
+n = len(active())
 os.write(a.fd, b"\033[15~xyzxyz")
-time.sleep(0)
+wait(lambda: (a.drain() or True) and active()[n:] == [an], "a to be latest")
 os.write(b.fd, b"b")
-def latest_b():
-    a.drain(); b.drain()
-    try:
-        lines = open(hooks).read().split()
-    except FileNotFoundError:
-        return False
-    return lines and lines[-1] == bn
-wait(latest_b, "b to be latest")
-before = len(open(hooks).read().split())
+wait(lambda: (b.drain() or True) and active()[n:] == [an, bn],
+    "b to be latest")
+before = len(active())
 
 os.kill(a.pid, signal.SIGKILL)
 os.waitpid(a.pid, 0)
@@ -91,7 +90,7 @@ wait(lambda: os.path.exists(done), "the job to end")
 run("display", "-p", "x")
 run("display", "-p", "x")
 
-after = open(hooks).read().split()[before:]
+after = active()[before:]
 run("kill-server")
 os.kill(b.pid, signal.SIGKILL)
 # B was already the latest: losing A must not fire client-active at all
