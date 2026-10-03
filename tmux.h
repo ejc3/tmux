@@ -931,6 +931,24 @@ struct grid_line {
 	u_short			 flags;
 };
 
+/*
+ * How lines went into a grid's history, so a terminal that missed them can be
+ * given them the same way: a scroll of the whole screen or of a region (its
+ * top line), or a clear moving the screen there (ED 2, or ED 0 from the top
+ * left).
+ */
+#define GRID_PUSH_SCROLL 0
+#define GRID_PUSH_REGION 1
+#define GRID_PUSH_CLEAR 2
+#define GRID_PUSH_CLEARBELOW 3
+struct grid_push {
+	u_int			 type;
+	u_int			 upper;
+	u_int			 lower;
+	u_int			 n;
+};
+#define GRID_PUSHES 32
+
 /* Entire grid of cells. */
 struct grid {
 	int			 flags;
@@ -944,8 +962,28 @@ struct grid {
 	u_int			 hlimit;
 
 	u_int			 scroll_added;
+	u_int			 scroll_view;	/* lines pushed into history */
+	struct grid_push	 pushes[GRID_PUSHES]; /* the latest, how */
+	u_int			 npushes;
+	int			 rpush_wrapped;	/* last push, from a region */
+	u_int			 rpush_upper;
+	u_int			 rpush_lower;
+
+	/*
+	 * The last reflow: where each old row (from reflow_first, to the end
+	 * of the screen and one past) went, the pushes, history rows and
+	 * screen rows then, and history rows after.
+	 */
+	u_int			*reflow_map;
+	u_int			 reflow_first;
+	u_int			 reflow_view;
+	u_int			 reflow_hsize;
+	u_int			 reflow_osy;
+	u_int			 reflow_newh;
+	u_int			 reflow_gen;
 	u_int			 scroll_collected;
 	u_int			 scroll_generation;
+	u_int			 scroll_cleared;	/* times history was cleared */
 
 	struct grid_line	*linedata;
 };
@@ -1111,6 +1149,7 @@ struct screen {
 	struct grid			*saved_grid;
 	struct grid_cell		 saved_cell;
 	int				 saved_flags;
+	int				 saved_hwrap;
 
 	bitstr_t			*tabs;
 	struct screen_sel		*sel;
@@ -1121,6 +1160,7 @@ struct screen {
 #endif
 
 	struct screen_write_cline	*write_list;
+	u_int				 write_wrap;	/* row + 1 */
 
 	struct hyperlinks		*hyperlinks;
 	struct progress_bar		 progress_bar;
@@ -1143,6 +1183,7 @@ struct screen_write_ctx {
 
 	struct screen_write_citem	*item;
 	u_int				 scrolled;
+	int				 scroll_wrapped;
 	u_int				 bg;
 };
 
@@ -1400,6 +1441,7 @@ struct window_pane {
 	struct window_pane_resizes resize_queue;
 	struct event	 resize_timer;
 	struct event	 sync_timer;
+	u_int		 sync_view;	/* grid scroll_view at sync start */
 
 	struct input_ctx *ictx;
 
@@ -1851,12 +1893,29 @@ struct tty {
 #define TTY_BRACKETPASTE 0x8000
 #define TTY_HAVESYNC 0x10000
 #define TTY_ALTSCREEN 0x20000
+#define TTY_OWESCROLL 0x40000
+#define TTY_WRAPNEXT 0x80000
+#define TTY_WRAPPED0 0x100000
 #define TTY_HAVEGRAPHEMES 0x4000000
 #define TTY_GRAPHEMES 0x8000000
+#define TTY_HISTWRITTEN 0x20000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC| \
-	 TTY_HAVEGRAPHEMES)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC|TTY_HAVEGRAPHEMES)
 	int		 flags;
+
+	/*
+	 * The pane whose history this terminal's scrollback is (UINT_MAX if
+	 * none), and how many of the lines pushed into its history (grid
+	 * scroll_view) have reached it: see tty_sync_history. TTY_HISTWRITTEN
+	 * is set once tmux has written to the scrollback since the terminal
+	 * started.
+	 */
+	u_int		 hist_pane;
+	u_int		 hist_seen;
+	u_int		 hist_gen;	/* grid scroll_generation of hist_seen */
+	u_int		 hist_cleared;	/* grid scroll_cleared of hist_seen */
+	u_int		 hist_shown;	/* history rows on the screen to end */
+	int		 hist_wrapped;	/* scrollback ends wrapping on to row 0 */
 
 	struct tty_term	*term;
 
@@ -1887,6 +1946,7 @@ struct tty_ctx {
 	tty_ctx_redraw_cb	 redraw_cb;
 	tty_ctx_set_client_cb	 set_client_cb;
 	void			*arg;
+	struct window_pane	*wp;	/* the pane written, not an overlay's */
 
 	const struct grid_cell	*cell;
 	int                      flags;
@@ -1896,6 +1956,8 @@ struct tty_ctx {
 #define TTY_CTX_SYNC 0x8
 #define TTY_CTX_CELL_INVALIDATE 0x20
 #define TTY_CTX_PANE_OBSCURED 0x40
+#define TTY_CTX_WRAPWIDE 0x80
+#define TTY_CTX_SCROLLEDIN 0x100
 
 	union {
 		u_int			 n;
@@ -2602,6 +2664,7 @@ extern struct timeval	 start_time;
 extern const char	*socket_path;
 extern const char	*shell_command;
 extern int		 ptm_fd;
+extern int		 clear_on_attach;
 extern const char	*shell_command;
 int		 checkshell(const char *);
 void		 setblocking(int, int);
@@ -3008,6 +3071,13 @@ void	tty_cmd_insertcharacter(struct tty *, const struct tty_ctx *);
 void	tty_cmd_insertline(struct tty *, const struct tty_ctx *);
 void	tty_cmd_linefeed(struct tty *, const struct tty_ctx *);
 void	tty_cmd_scrollup(struct tty *, const struct tty_ctx *);
+void	tty_cmd_history(struct tty *, const struct tty_ctx *);
+void	tty_cmd_clearhistory(struct tty *, const struct tty_ctx *);
+int	tty_sync_history(struct tty *, struct window_pane *);
+void	tty_forget_history(struct window_pane *);
+int	tty_pane_is_terminal(struct tty *, struct window_pane *);
+int	tty_pane_covered(struct window_pane *);
+void	tty_forget_wraps(struct tty *, struct window_pane *, int);
 void	tty_cmd_scrolldown(struct tty *, const struct tty_ctx *);
 void	tty_cmd_reverseindex(struct tty *, const struct tty_ctx *);
 void	tty_cmd_setselection(struct tty *, const struct tty_ctx *);
@@ -3516,6 +3586,7 @@ time_t	 grid_line_time(const struct grid_line *);
 void	 grid_collect_history(struct grid *, int);
 void	 grid_remove_history(struct grid *, u_int );
 void	 grid_scroll_history(struct grid *, u_int);
+void	 grid_add_push(struct grid *, u_int, u_int, u_int, u_int);
 void	 grid_scroll_history_region(struct grid *, u_int, u_int, u_int);
 void	 grid_clear_history(struct grid *);
 const struct grid_line *grid_peek_line(struct grid *, u_int);
@@ -3575,7 +3646,7 @@ void	 grid_view_set_cell(struct grid *, u_int, u_int,
 void	 grid_view_set_padding(struct grid *, u_int, u_int, int);
 void	 grid_view_set_cells(struct grid *, u_int, u_int,
 	     const struct grid_cell *, const char *, size_t);
-void	 grid_view_clear_history(struct grid *, u_int);
+u_int	 grid_view_clear_history(struct grid *, u_int);
 int	 grid_view_clear(struct grid *, u_int, u_int, u_int, u_int, u_int);
 void	 grid_view_scroll_region_up(struct grid *, u_int, u_int, u_int);
 void	 grid_view_scroll_region_down(struct grid *, u_int, u_int, u_int);
@@ -3592,6 +3663,8 @@ char	*grid_view_string_cells(struct grid *, u_int, u_int, u_int);
 /* screen-write.c */
 void	 screen_write_make_list(struct screen *);
 void	 screen_write_free_list(struct screen *);
+int	 screen_write_full_window(struct window_pane *);
+int	 screen_write_passthrough(struct window_pane *);
 void	 screen_write_start_pane(struct screen_write_ctx *,
 	     struct window_pane *, struct screen *);
 void	 screen_write_start(struct screen_write_ctx *, struct screen *);
