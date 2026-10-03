@@ -624,6 +624,15 @@ window_pane_send_resize(struct window_pane *wp, u_int sx, u_int sy)
 		fatal("ioctl failed");
 }
 
+/* The pointer shape a pane set with OSC 22, or NULL for the default. */
+const char *
+window_pane_pointer(struct window_pane *wp)
+{
+	if (wp == NULL)
+		return (NULL);
+	return (screen_pointer(&wp->base));
+}
+
 int
 window_has_floating_panes(struct window *w)
 {

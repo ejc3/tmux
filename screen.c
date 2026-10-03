@@ -100,6 +100,7 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 
 	s->write_list = NULL;
 	s->hyperlinks = NULL;
+	memset(s->pointers, 0, sizeof s->pointers);
 
 	screen_reinit(s, 1);
 }
@@ -138,6 +139,88 @@ screen_reinit(struct screen *s, int check)
 
 	screen_set_progress_bar(s, PROGRESS_BAR_HIDDEN, 0);
 	screen_reset_hyperlinks(s);
+	screen_pointer_reset(s);
+}
+
+/* The mouse pointer shape stack of the main or alternate screen, in use. */
+static struct screen_pointers *
+screen_pointers(struct screen *s)
+{
+	return (&s->pointers[SCREEN_IS_ALTERNATE(s) ? 1 : 0]);
+}
+
+/* The mouse pointer shape set, or NULL for the default. */
+const char *
+screen_pointer(struct screen *s)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n == 0)
+		return (NULL);
+	return (sp->shape[sp->n - 1]);
+}
+
+/* Set the mouse pointer shape: replace the top, or push onto an empty stack. */
+void
+screen_pointer_set(struct screen *s, const char *name)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n == 0) {
+		screen_pointer_push(s, name);
+		return;
+	}
+	free(sp->shape[sp->n - 1]);
+	sp->shape[sp->n - 1] = xstrdup(name);
+}
+
+/*
+ * Push a comma separated list of mouse pointer shapes, the last on top. A full
+ * stack loses its oldest entry.
+ */
+void
+screen_pointer_push(struct screen *s, const char *names)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+	char			*copy, *next, *name;
+
+	copy = next = xstrdup(names);
+	while ((name = strsep(&next, ",")) != NULL) {
+		if (*name == '\0')
+			continue;
+		if (sp->n == SCREEN_POINTERS) {
+			free(sp->shape[0]);
+			memmove(sp->shape, sp->shape + 1,
+			    (SCREEN_POINTERS - 1) * sizeof *sp->shape);
+			sp->n--;
+		}
+		sp->shape[sp->n++] = xstrdup(name);
+	}
+	free(copy);
+}
+
+/* Pop a mouse pointer shape. */
+void
+screen_pointer_pop(struct screen *s)
+{
+	struct screen_pointers	*sp = screen_pointers(s);
+
+	if (sp->n != 0)
+		free(sp->shape[--sp->n]);
+}
+
+/* Empty both mouse pointer shape stacks. */
+void
+screen_pointer_reset(struct screen *s)
+{
+	struct screen_pointers	*sp;
+	u_int			 i;
+
+	for (i = 0; i < nitems(s->pointers); i++) {
+		sp = &s->pointers[i];
+		while (sp->n != 0)
+			free(sp->shape[--sp->n]);
+	}
 }
 
 /* Reset hyperlinks of a screen. */
@@ -173,6 +256,7 @@ screen_free(struct screen *s)
 	if (s->hyperlinks != NULL)
 		hyperlinks_free(s->hyperlinks);
 	screen_free_titles(s);
+	screen_pointer_reset(s);
 
 #ifdef ENABLE_SIXEL
 	/*
