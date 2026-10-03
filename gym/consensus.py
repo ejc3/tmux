@@ -11,6 +11,7 @@ Compared: every row of scrollback and screen, the rows with soft-wrapped
 lines joined, and the cursor.
 
     python3 gym/consensus.py [--fuzz N] [--only NAME] [--no-shrink]
+                             [--engines ghostty,libvterm,...]
 """
 
 import os
@@ -148,6 +149,9 @@ def main():
     only = args[args.index('--only') + 1] if '--only' in args else None
     tmp = tempfile.mkdtemp(prefix='gym-consensus.')
     eng = engines(tmp)
+    if '--engines' in args:
+        names = args[args.index('--engines') + 1].split(',')
+        eng = [e for e in eng if e.name == 'tmux' or e.name in names]
     try:
         cases = validate.parity_cases(tmp) + \
             [(f'vtfuzz-{i:03d}', fuzz.stream(i)) for i in range(nfuzz)]
