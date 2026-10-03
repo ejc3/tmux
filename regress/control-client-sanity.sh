@@ -12,7 +12,6 @@ trap "rm -f $TMP" 0 1 15
 
 $TMUX -f/dev/null new -d -x200 -y200 || exit 1
 $TMUX -f/dev/null splitw || exit 1
-sleep 1
 cat <<EOF|$TMUX -C a >$TMP
 refresh-client -C 200x200
 selectp -t%0
@@ -28,18 +27,23 @@ splitw
 selectl tiled
 killw
 EOF
-sleep 1
 $TMUX has || exit 1
 # Use a control client to request legacy layouts, keeping only pane lines
-# from the control protocol output.
-$TMUX -C lsp -aF '#{pane_id} #{window_layout}' |
-	grep '^%[0-9]' >$TMP || exit 1
-cat <<EOF|cmp $TMP - || exit 1
+# from the control protocol output. Poll until the layouts settle.
+i=0
+while :; do
+	$TMUX -C lsp -aF '#{pane_id} #{window_layout}' |
+		grep '^%[0-9]' >$TMP || exit 1
+	cat <<EOF|cmp -s $TMP - && break
 %0 f5ab,200x200,0,0[200x50,0,0,0,200x149,0,51,3]
 %3 f5ab,200x200,0,0[200x50,0,0,0,200x149,0,51,3]
 %2 dcbd,200x200,0,0[200x100,0,0,2,200x99,0,101,4]
 %4 dcbd,200x200,0,0[200x100,0,0,2,200x99,0,101,4]
 EOF
+	i=$((i + 1))
+	[ $i -gt 400 ] && { echo "layouts did not settle:" >&2; cat $TMP >&2; exit 1; }
+	sleep 0.05
+done
 $TMUX kill-server 2>/dev/null
 
 exit 0
