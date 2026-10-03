@@ -1591,6 +1591,7 @@ window_pane_destroy(struct window_pane *wp)
 
 	window_pane_free_modes(wp);
 	screen_write_sync_clear_dirty(wp);
+	kgfx_pane_free(wp);
 
 	if (wp->fd != -1) {
 #ifdef HAVE_UTEMPTER
