@@ -1753,6 +1753,7 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_NOTIFY 0x200
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -2955,6 +2956,7 @@ void	tty_repeat_requests(struct tty *, int);
 void	tty_stop_tty(struct tty *);
 void	tty_set_title(struct tty *, const char *);
 void	tty_set_path(struct tty *, const char *);
+void	tty_notify(struct tty *, const char *);
 void	tty_set_progress_bar(struct tty *, struct progress_bar *);
 void	tty_default_attributes(struct tty *, u_int,
 	    const struct tty_style_ctx *);
@@ -3315,6 +3317,7 @@ u_int	 server_client_how_many(void);
 void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
+void	 server_client_notify(struct window_pane *, const char *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);
 int	 server_client_handle_key(struct client *, struct key_event *);
