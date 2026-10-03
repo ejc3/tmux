@@ -213,7 +213,7 @@ server_lock_client(struct client *c)
 	 * and tty_start_tty does not expect it to be: stay off it.
 	 */
 	tty_stop_tty(&c->tty);
-	if (clear_on_attach)
+	if (options_get_number(global_options, "clear-on-attach"))
 		tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_SMCUP));
 	tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_CLEAR));
 	tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_E3));
