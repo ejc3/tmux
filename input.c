@@ -108,6 +108,12 @@ struct input_ctx {
 	u_int				old_cy;
 	int				old_mode;
 
+	/* The other screen's saved state (DECSC is per screen). */
+	struct input_cell		alt_old_cell;
+	u_int				alt_old_cx;
+	u_int				alt_old_cy;
+	int				alt_old_mode;
+
 	u_char				interm_buf[4];
 	size_t				interm_len;
 
@@ -841,6 +847,39 @@ input_reset_cell(struct input_ctx *ictx)
 	memcpy(&ictx->old_cell, &ictx->cell, sizeof ictx->old_cell);
 	ictx->old_cx = 0;
 	ictx->old_cy = 0;
+	ictx->old_mode = 0;
+
+	memcpy(&ictx->alt_old_cell, &ictx->cell, sizeof ictx->alt_old_cell);
+	ictx->alt_old_cx = 0;
+	ictx->alt_old_cy = 0;
+	ictx->alt_old_mode = 0;
+}
+
+/*
+ * Switch the saved state to the other screen's: as in xterm, each screen has
+ * its own, and 1049 saves and restores the main screen's.
+ */
+static void
+input_swap_state(struct input_ctx *ictx)
+{
+	struct input_cell	cell;
+	u_int			cx, cy;
+	int			mode;
+
+	memcpy(&cell, &ictx->old_cell, sizeof cell);
+	cx = ictx->old_cx;
+	cy = ictx->old_cy;
+	mode = ictx->old_mode;
+
+	memcpy(&ictx->old_cell, &ictx->alt_old_cell, sizeof ictx->old_cell);
+	ictx->old_cx = ictx->alt_old_cx;
+	ictx->old_cy = ictx->alt_old_cy;
+	ictx->old_mode = ictx->alt_old_mode;
+
+	memcpy(&ictx->alt_old_cell, &cell, sizeof ictx->alt_old_cell);
+	ictx->alt_old_cx = cx;
+	ictx->alt_old_cy = cy;
+	ictx->alt_old_mode = mode;
 }
 
 /* Save screen state. */
@@ -1925,6 +1964,7 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct grid_cell	*gc = &ictx->cell.cell;
 	u_int			 i;
+	int			 alt;
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		switch (input_get(ictx, i, 0, -1)) {
@@ -1968,10 +2008,25 @@ input_csi_dispatch_rm_private(struct input_ctx *ictx)
 			break;
 		case 47:
 		case 1047:
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateoff(sctx, gc, 0);
+			if (alt && !SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			break;
+		case 1048:
+			input_restore_state(ictx);
 			break;
 		case 1049:
-			screen_write_alternateoff(sctx, gc, 1);
+			/* Restore the cursor even if not in the alternate screen. */
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
+			if (alt)
+				screen_write_alternateoff(sctx, gc, 1);
+			if (alt && !SCREEN_IS_ALTERNATE(sctx->s)) {
+				input_swap_state(ictx);
+				memcpy(&ictx->cell, &ictx->old_cell,
+				    sizeof ictx->cell);
+			} else
+				input_restore_state(ictx);
 			break;
 		case 2004:
 			screen_write_mode_clear(sctx, MODE_BRACKETPASTE);
@@ -2022,6 +2077,7 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 	struct screen_write_ctx	*sctx = &ictx->ctx;
 	struct grid_cell	*gc = &ictx->cell.cell;
 	u_int			 i;
+	int			 alt;
 
 	for (i = 0; i < ictx->param_list_len; i++) {
 		switch (input_get(ictx, i, 0, -1)) {
@@ -2071,10 +2127,20 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 			break;
 		case 47:
 		case 1047:
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateon(sctx, gc, 0);
+			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
+			break;
+		case 1048:
+			input_save_state(ictx);
 			break;
 		case 1049:
+			input_save_state(ictx);
+			alt = SCREEN_IS_ALTERNATE(sctx->s);
 			screen_write_alternateon(sctx, gc, 1);
+			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
+				input_swap_state(ictx);
 			break;
 		case 2004:
 			screen_write_mode_set(sctx, MODE_BRACKETPASTE);
