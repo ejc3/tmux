@@ -208,8 +208,13 @@ server_lock_client(struct client *c)
 	if (*cmd == '\0' || strlen(cmd) + 1 > MAX_IMSGSIZE - IMSG_HEADER_SIZE)
 		return;
 
+	/*
+	 * With clear-on-attach off the terminal is not on its alternate screen
+	 * and tty_start_tty does not expect it to be: stay off it.
+	 */
 	tty_stop_tty(&c->tty);
-	tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_SMCUP));
+	if (options_get_number(global_options, "clear-on-attach"))
+		tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_SMCUP));
 	tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_CLEAR));
 	tty_raw(&c->tty, tty_term_string(c->tty.term, TTYC_E3));
 
