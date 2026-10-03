@@ -259,6 +259,18 @@ static const struct tty_feature tty_feature_extkeys = {
 	0
 };
 
+/*
+ * Terminal has grapheme cluster mode (2027) and can turn it on: tmux turns it
+ * on, so the terminal counts a cluster's cells as tmux does (an emoji with a
+ * skin tone, a ZWJ sequence, a flag, a variation selector). Found by asking
+ * the terminal (DECRQM answers reset).
+ */
+static const struct tty_feature tty_feature_graphemes = {
+	"graphemes",
+	NULL,
+	TERM_GRAPHEMES
+};
+
 /* Terminal supports DECSLRM margins. */
 static const char *const tty_feature_margins_capabilities[] = {
 	"Enmg=\\E[?69h",
@@ -411,7 +423,13 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_sync,
 	&tty_feature_title,
 	&tty_feature_usstyle,
-	&tty_feature_utf8
+	&tty_feature_utf8,
+	/*
+	 * Newer features go after the others, not in name order: tmux -T
+	 * sends features as a mask of their places here, so the others keep
+	 * their bits.
+	 */
+	&tty_feature_graphemes
 };
 
 /* Parse features for client. */
