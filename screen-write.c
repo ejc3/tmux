@@ -27,6 +27,7 @@ static struct screen_write_citem *screen_write_collect_trim(
 		    struct screen_write_ctx *, u_int, u_int, u_int, int *);
 static void	screen_write_clear(struct screen *, u_int, u_int, u_int, u_int,
 		    u_int);
+static void	screen_write_end_wrap(struct screen *, u_int);
 static void	screen_write_collect_insert(struct screen_write_ctx *,
 		    struct screen_write_citem *);
 static void	screen_write_collect_insert_clear(struct screen_write_ctx *,
@@ -1570,6 +1571,7 @@ screen_write_deletecharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 	ttyctx.bg = bg;
 
 	grid_view_delete_cells(s->grid, s->cx, s->cy, nx, bg);
+	screen_write_end_wrap(s, s->cy);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = nx;
@@ -1611,6 +1613,8 @@ screen_write_clearcharacter(struct screen_write_ctx *ctx, u_int nx, u_int bg)
 	ttyctx.bg = bg;
 
 	screen_write_clear(s, s->cx, s->cy, nx, 1, bg);
+	if (s->cx + nx == screen_size_x(s))
+		screen_write_end_wrap(s, s->cy);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = nx;
@@ -1664,6 +1668,18 @@ screen_write_clear(struct screen *s, u_int px, u_int py, u_int nx, u_int ny,
 	wrapped = screen_write_wrapped_above(s, py);
 	grid_view_clear(s->grid, px, py, nx, ny, bg);
 	screen_write_keep_wrapped_above(s, py, wrapped);
+}
+
+/*
+ * An edit left the last cell of row y blank (EL, DCH, an ECH reaching it):
+ * the row no longer wraps on to the next, as on xterm-like terminals.
+ */
+static void
+screen_write_end_wrap(struct screen *s, u_int y)
+{
+	struct grid	*gd = s->grid;
+
+	grid_get_line(gd, gd->hsize + y)->flags &= ~GRID_LINE_WRAPPED;
 }
 
 /*
@@ -1834,6 +1850,8 @@ screen_write_clearendofline(struct screen_write_ctx *ctx, u_int bg)
 	}
 
 	gl = grid_get_line(s->grid, s->grid->hsize + s->cy);
+	if (s->cx <= sx - 1)
+		screen_write_end_wrap(s, s->cy);
 	if (s->cx > sx - 1 || (s->cx >= gl->cellsize && COLOUR_DEFAULT(bg)))
 		return;
 
