@@ -60,6 +60,7 @@ static int	tty_keys_device_attributes2(struct tty *, const char *, size_t,
 static int	tty_keys_extended_device_attributes(struct tty *, const char *,
 		    size_t, size_t *);
 static int	tty_keys_sync(struct tty *, const char *, size_t, size_t *);
+static int	tty_keys_kkeys(struct tty *, const char *, size_t, size_t *);
 static int	tty_keys_palette(struct tty *, const char *, size_t, size_t *);
 
 /* A key tree entry. */
@@ -139,6 +140,11 @@ static const struct tty_default_key_raw tty_default_raw_keys[] = {
 
 	{ "\033[H", KEYC_HOME },
 	{ "\033[F", KEYC_END },
+
+	/* Kitty keyboard protocol function keys without modifiers. */
+	{ "\033[P", KEYC_F1 },
+	{ "\033[Q", KEYC_F2 },
+	{ "\033[S", KEYC_F4 },
 
 	{ "\033\033[H", KEYC_HOME|KEYC_META|KEYC_IMPLIED_META },
 	{ "\033\033[F", KEYC_END|KEYC_META|KEYC_IMPLIED_META },
@@ -237,6 +243,7 @@ static const struct tty_default_key_xterm tty_default_xterm_keys[] = {
 	{ "\033O1;_R", KEYC_F3 },
 	{ "\033O_R", KEYC_F3 },
 	{ "\033[1;_S", KEYC_F4 },
+	{ "\033[13;_~", KEYC_F3 },	/* kitty keyboard protocol */
 	{ "\033O1;_S", KEYC_F4 },
 	{ "\033O_S", KEYC_F4 },
 	{ "\033[15;_~", KEYC_F5 },
@@ -793,6 +800,17 @@ tty_keys_next(struct tty *tty)
 		goto partial_key;
 	}
 
+	/* Is this a kitty keyboard flags response? */
+	switch (tty_keys_kkeys(tty, buf, len, &size)) {
+	case 0:		/* yes */
+		key = KEYC_UNKNOWN;
+		goto complete_key;
+	case -1:	/* no, or not valid */
+		break;
+	case 1:		/* partial */
+		goto partial_key;
+	}
+
 	/* Is this a primary device attributes response? */
 	switch (tty_keys_device_attributes(tty, buf, len, &size)) {
 	case 0:		/* yes */
@@ -1081,9 +1099,90 @@ tty_keys_callback(__unused int fd, __unused short events, void *data)
 }
 
 /*
+ * Kitty keyboard protocol numbers (in the Private Use Area) for keypad keys
+ * and the keys tmux has.
+ */
+static const struct {
+	u_int		number;
+	key_code	key;
+} tty_keys_kitty_table[] = {
+	{ 57399, KEYC_KP_ZERO|KEYC_KEYPAD },
+	{ 57400, KEYC_KP_ONE|KEYC_KEYPAD },
+	{ 57401, KEYC_KP_TWO|KEYC_KEYPAD },
+	{ 57402, KEYC_KP_THREE|KEYC_KEYPAD },
+	{ 57403, KEYC_KP_FOUR|KEYC_KEYPAD },
+	{ 57404, KEYC_KP_FIVE|KEYC_KEYPAD },
+	{ 57405, KEYC_KP_SIX|KEYC_KEYPAD },
+	{ 57406, KEYC_KP_SEVEN|KEYC_KEYPAD },
+	{ 57407, KEYC_KP_EIGHT|KEYC_KEYPAD },
+	{ 57408, KEYC_KP_NINE|KEYC_KEYPAD },
+	{ 57409, KEYC_KP_PERIOD|KEYC_KEYPAD },
+	{ 57410, KEYC_KP_SLASH|KEYC_KEYPAD },
+	{ 57411, KEYC_KP_STAR|KEYC_KEYPAD },
+	{ 57412, KEYC_KP_MINUS|KEYC_KEYPAD },
+	{ 57413, KEYC_KP_PLUS|KEYC_KEYPAD },
+	{ 57414, KEYC_KP_ENTER|KEYC_KEYPAD },
+	{ 57415, '=' },
+	{ 57416, ',' },
+	{ 57417, KEYC_LEFT },
+	{ 57418, KEYC_RIGHT },
+	{ 57419, KEYC_UP },
+	{ 57420, KEYC_DOWN },
+	{ 57421, KEYC_PPAGE },
+	{ 57422, KEYC_NPAGE },
+	{ 57423, KEYC_HOME },
+	{ 57424, KEYC_END },
+	{ 57425, KEYC_IC },
+	{ 57426, KEYC_DC },
+};
+
+/*
+ * Parse the fields of a kitty keyboard protocol key,
+ * number[:shifted[:base]][;modifiers[:event][;text]]; an empty field is left
+ * at its default.
+ */
+static int
+tty_keys_kitty_fields(const char *s, u_int *number, u_int *shifted,
+    u_int *modifiers, u_int *event)
+{
+	char	*end;
+
+	*shifted = 0;
+	*modifiers = 1;
+	*event = 1;
+
+	if (!isdigit((u_char)*s))
+		return (-1);
+	*number = strtoul(s, &end, 10);
+	if (*end == ':') {
+		if (isdigit((u_char)end[1]))
+			*shifted = strtoul(end + 1, &end, 10);
+		else
+			end++;
+		if (*end == ':' && isdigit((u_char)end[1]))
+			strtoul(end + 1, &end, 10);
+	}
+	if (*end == '\0')
+		return (0);
+	if (*end != ';')
+		return (-1);
+	s = end + 1;
+	end = (char *)s;
+	if (isdigit((u_char)*s)) {
+		*modifiers = strtoul(s, &end, 10);
+		if (*end == ':' && isdigit((u_char)end[1]))
+			*event = strtoul(end + 1, &end, 10);
+	}
+	if (*end != '\0' && *end != ';')
+		return (-1);
+	return (0);
+}
+
+/*
  * Handle extended key input. This has two forms: \033[27;m;k~ and \033[k;mu,
- * where k is key as a number and m is a modifier. Returns 0 for success, -1
- * for failure, 1 for partial;
+ * where k is key as a number and m is a modifier; the second may be the kitty
+ * keyboard protocol's, with more fields. Returns 0 for success, -1 for
+ * failure, 1 for partial;
  */
 static int
 tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
@@ -1091,7 +1190,7 @@ tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
 {
 	struct client	*c = tty->client;
 	size_t		 end;
-	u_int		 number, modifiers;
+	u_int		 i, number, modifiers, shifted = 0, event = 1;
 	char		 tmp[64];
 	cc_t		 bspace;
 	key_code	 nkey, onlykey;
@@ -1112,12 +1211,13 @@ tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
 
 	/*
 	 * Look for a terminator. Stop at either '~' or anything that isn't a
-	 * number or ';'.
+	 * number, ';' or ':'.
 	 */
 	for (end = 2; end < len && end != sizeof tmp; end++) {
 		if (buf[end] == '~')
 			break;
-		if (!isdigit((u_char)buf[end]) && buf[end] != ';')
+		if (!isdigit((u_char)buf[end]) && buf[end] != ';' &&
+		    buf[end] != ':')
 			break;
 	}
 	if (end == len)
@@ -1134,10 +1234,26 @@ tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
 		if (sscanf(tmp, "27;%u;%u", &modifiers, &number) != 2)
 			return (-1);
 	} else {
-		if (sscanf(tmp ,"%u;%u", &number, &modifiers) != 2)
+		if (tty_keys_kitty_fields(tmp, &number, &shifted, &modifiers,
+		    &event) != 0)
 			return (-1);
 	}
 	*size = end + 1;
+
+	/* A release (not asked for) is not a key. */
+	if (event == 3) {
+		*key = KEYC_UNKNOWN;
+		return (0);
+	}
+
+	/*
+	 * With Shift and without Ctrl, use the shifted key if the terminal
+	 * gives it, as the key is without the kitty keyboard protocol.
+	 */
+	if (shifted != 0 && modifiers > 0 && ((modifiers - 1) & 5) == 1) {
+		number = shifted;
+		modifiers -= 1;
+	}
 
 	/* Store the key. */
 	bspace = tty->tio.c_cc[VERASE];
@@ -1146,8 +1262,28 @@ tty_keys_extended_key(struct tty *tty, const char *buf, size_t len,
 	else
 		nkey = number;
 
+	/*
+	 * Keys from the Private Use Area (kitty keyboard protocol). F13 to F35
+	 * are as from terminfo: F13 to F24 are S-F1 to S-F12, and F25 on are
+	 * C-F1 on.
+	 */
+	if (number >= 57376 && number <= 57398) {
+		i = number - 57376;
+		nkey = (KEYC_F1 + i % 12)|(i < 12 ? KEYC_SHIFT : KEYC_CTRL);
+	} else if (number >= 57344 && number <= 63743) {
+		for (i = 0; i < nitems(tty_keys_kitty_table); i++) {
+			if (tty_keys_kitty_table[i].number == number)
+				break;
+		}
+		if (i == nitems(tty_keys_kitty_table)) {
+			*key = KEYC_UNKNOWN;
+			return (0);
+		}
+		nkey = tty_keys_kitty_table[i].key;
+	}
+
 	/* Convert UTF-32 codepoint into internal representation. */
-	if (nkey != KEYC_BSPACE && nkey & ~0x7f) {
+	if (nkey == number && nkey != KEYC_BSPACE && nkey & ~0x7f) {
 		if (utf8_fromwc(nkey, &ud) == UTF8_DONE &&
 		    utf8_from_data(&ud, &uc) == UTF8_DONE)
 			nkey = uc;
@@ -1588,6 +1724,42 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size)
 	log_debug("%s: received DECRPM %.*s", c->name, (int)*size, buf);
 	tty->flags |= TTY_HAVESYNC;
 
+	return (0);
+}
+
+/*
+ * Handle a kitty keyboard flags response, \033[?Nu: the terminal has the
+ * kitty keyboard protocol. Returns 0 for success, -1 for failure, 1 for
+ * partial.
+ */
+static int
+tty_keys_kkeys(struct tty *tty, const char *buf, size_t len, size_t *size)
+{
+	struct client	*c = tty->client;
+	size_t		 i;
+
+	*size = 0;
+	for (i = 0; i < 3; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033[?"[i])
+			return (-1);
+	}
+	for (; i < len && i < 8 && isdigit((u_char)buf[i]); i++)
+		/* nothing */;
+	if (i == len)
+		return (1);
+	if (i == 3 || buf[i] != 'u')
+		return (-1);
+	*size = i + 1;
+	log_debug("%s: received kitty keyboard flags %.*s", c->name,
+	    (int)*size, buf);
+
+	if (~tty->flags & TTY_HAVEKKEYS) {
+		tty->flags |= TTY_HAVEKKEYS;
+		tty_parse_client_features(c, "kittykeys", ",");
+		tty_update_features(tty);
+	}
 	return (0);
 }
 
