@@ -3166,6 +3166,7 @@ int	 forward_eligible(struct client *, struct window_pane *);
 void	 forward_pane_output(struct window_pane *, const u_char *, size_t);
 void	 forward_pane_parsed(struct window_pane *);
 void	 forward_stop(struct client *);
+void	 forward_stop_pane(struct window_pane *);
 
 /* kgfx.c */
 void	 kgfx_command(struct window_pane *, struct screen_write_ctx *,

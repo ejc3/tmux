@@ -674,6 +674,21 @@ forward_stop(struct client *c)
 	server_redraw_client(c);
 }
 
+/*
+ * tmux itself is about to change a pane's screen (respawn-pane, send-keys
+ * -R): clients forwarding the pane draw it from the grid again.
+ */
+void
+forward_stop_pane(struct window_pane *wp)
+{
+	struct client	*c;
+
+	TAILQ_FOREACH(c, &clients, entry) {
+		if (c->forward_pane == wp->id)
+			forward_stop(c);
+	}
+}
+
 /* Check every forwarding client still qualifies. */
 void
 forward_check(void)
