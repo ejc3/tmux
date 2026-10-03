@@ -1,14 +1,8 @@
 #!/bin/sh
 
-# Mouse in pixels (mode 1016) against a terminal tmux can only learn about
-# from its answers and its size. The test is the terminal: it answers tmux's
-# queries as kitty or xterm would, sets the size tmux reads (in cells and
-# pixels) and writes mouse reports.
-#
-# - kitty and ghostty send pixels from 0, xterm (and foot and WezTerm) from 1:
-#   a pane in tmux gets them from 0 either way, as kitty sends them.
-# - With the cell size unknown, a pane that asked for pixels gets the cell's
-#   top left in the cell size tmux gave it, not the cell number.
+# In-band resize (mode 2048) when only the size of the terminal's cells in
+# pixels changes: it is a resize, and the pane is told its new size. The test
+# is the terminal: it sets the size tmux reads, in cells and pixels.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -62,8 +56,6 @@ class Terminal:
     def answer(self, data):
         if b"\033[>q" in data and self.xda is not None:
             os.write(self.fd, b"\033P>|" + self.xda + b"\033\\")
-        if b"\033[?1016$p" in data:
-            os.write(self.fd, b"\033[?1016;2$y")
 
     def pump(self, until, timeout=20):
         """Read what tmux writes, answering it, until until() is true."""
@@ -85,8 +77,6 @@ class Terminal:
         os.write(self.fd, data)
 
     def close(self):
-        # Leave a pane without the mouse for the next terminal.
-        run("respawnp", "-k", "exec sleep 1000")
         os.kill(self.pid, signal.SIGTERM)
         os.waitpid(self.pid, 0)
         os.close(self.fd)
@@ -94,42 +84,20 @@ class Terminal:
 def capture():
     return run("capturep", "-p").split("\n")[0].rstrip()
 
-# The pane asks for pixels; once it has them (and tmux has asked the
-# terminal for them with pixels set), the terminal sends report.
-def check_mouse(term, report, want, pixels):
-    mark = len(term.out)
-    run("respawnp", "-k",
-        "stty raw -echo; printf '\\033[?1000h\\033[?1016h'; exec cat -v")
-    if not term.pump(lambda: run("display", "-p", "#{mouse_pixels_flag}")
-            == "1\n"):
-        fail("pane did not ask for pixels")
-        return
-    if pixels and not term.pump(lambda: b"\033[?1016h" in term.out[mark:]):
-        fail("tmux did not ask the terminal for pixels")
-        return
-    term.send(report)
-    if not term.pump(lambda: capture() == want, timeout=10):
-        fail("%r: pane got %r, not %r" % (report, capture(), want))
-
 run("new", "-d", "-x80", "-y10", "exec sleep 1000")
 run("set", "-g", "status", "off")
 
-# kitty: pixels from 0.
-term = Terminal(b"kitty(0.49.1)", 10, 20)
-check_mouse(term, b"\033[<0;10;20M", "^[[<0;10;20M", True)
-term.close()
-
-# xterm: pixels from 1, so xterm's 11,21 is 10,20 from 0.
-term = Terminal(b"XTerm(400)", 10, 20)
-check_mouse(term, b"\033[<0;11;21M", "^[[<0;10;20M", True)
-term.close()
-
-# Cell size unknown (no pixels in the size, the CSI 14 t query unanswered):
-# the terminal reports cells (it is not asked for pixels); cell 3,2 (from 0,
-# 2,1) is at 2*16,1*32 in tmux's default cell size, which the pane was given.
-term = Terminal(b"XTerm(400)", 0, 0)
-check_mouse(term, b"\033[<0;3;2M", "^[[<0;32;32M", False)
-
+term = Terminal(None, 16, 32)
+run("respawnp", "-k",
+    "stty raw -echo; printf '\\033[?2048h'; exec cat -v")
+want = "^[[48;10;80;320;1280t"
+if not term.pump(lambda: capture() == want):
+    fail("2048 report is %r, not %r" % (capture(), want))
+set_size(term.fd, 10, 80, 9, 18)
+os.kill(term.pid, signal.SIGWINCH)
+want = "^[[48;10;80;320;1280t^[[48;10;80;180;720t"
+if not term.pump(lambda: capture() == want):
+    fail("after a pixel resize the pane has %r, not %r" % (capture(), want))
 term.close()
 
 run("kill-server")

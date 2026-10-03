@@ -1,9 +1,9 @@
 #!/bin/sh
 
-# What a terminal gets for a character given a width (OSC 66 w=N) beyond
-# text-sizing.sh: a row of them drawn again in one go, and the text measured
-# as a terminal with grapheme clusters measures it. An outer tmux stands in
-# for the terminal and records what the inner tmux sends it.
+# A character given a width (OSC 66 w=N) in output forwarded as written to a
+# terminal without the text sizing protocol: the terminal gets the text in
+# that many cells, padded, not the OSC 66 it would ignore. An outer tmux
+# stands in for the terminal and records what the inner tmux sends it.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -73,27 +73,19 @@ go() {
 	wait_is "$OUTER capturep -p | grep -c =END=" 1
 }
 
-# A whole row of them, each with the most text a cell holds, drawn again:
-# every one reaches the terminal whole.
-X=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-program "$(i=0; while [ $i -lt 30 ]; do
-	printf '\\033]66;w=1;%s\\007' $X; i=$((i + 1)); done)"
-start 'set -as terminal-features ",*:textsize"\n'
-go
-$INNER refresh-client || exit 1
+# (Forwarding starts with output after tmux has drawn the pane: the program
+# writes =A=, waits for it to be drawn, then the rest.)
+program '\033]66;w=2;b\007c\033]66;w=0;de\007'
+sed -i "s|^printf |printf =A=; while [ ! -e $DIR/go3 ]; do sleep 0.05; done; printf |" \
+    $DIR/p.sh
+start 'set -s clear-on-attach off\n'
+touch $DIR/go2
+wait_is "grep -acF =A= $DIR/out" 1
 $INNER display -p x >/dev/null
-want=$(i=0; while [ $i -lt 30 ]; do
-	printf '^[]66;w=1;%s^[\\' $X; i=$((i + 1)); done)
-wait_is "$OUTER capturep -ep | head -1 | cat -v" "$want"
-stop
-
-# A terminal with grapheme clusters and without the protocol gets all of a
-# cluster that fits: an emoji and its skin tone in 2 cells.
-program '\033]66;w=2;\360\237\221\215\360\237\217\275\007X'
-start 'set -as terminal-features ",*:graphemes"\n'
-go
-wait_is "$OUTER capturep -p | head -1 | sed 's/ *\$//'" \
-    "$(printf '\360\237\221\215\360\237\217\275X=END=')"
+touch $DIR/go3
+wait_is "grep -acF =END= $DIR/out" 1
+grep -aq ']66;' $DIR/out && fail "OSC 66 was forwarded"
+grep -aqF 'b cde=END=' $DIR/out || fail "the text was not forwarded padded"
 stop
 
 exit $exit_status

@@ -1,9 +1,10 @@
 #!/bin/sh
 
-# What a terminal gets for a character given a width (OSC 66 w=N) beyond
-# text-sizing.sh: a row of them drawn again in one go, and the text measured
-# as a terminal with grapheme clusters measures it. An outer tmux stands in
-# for the terminal and records what the inner tmux sends it.
+# A line ending with a character given a width of more than 2 cells (OSC 66)
+# and continuing on the next row, on a terminal keeping its own scrollback
+# (clear-on-attach off): after the row above is drawn again the terminal
+# still has the two rows as one line. An outer tmux stands in for the
+# terminal.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -73,27 +74,11 @@ go() {
 	wait_is "$OUTER capturep -p | grep -c =END=" 1
 }
 
-# A whole row of them, each with the most text a cell holds, drawn again:
-# every one reaches the terminal whole.
-X=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-program "$(i=0; while [ $i -lt 30 ]; do
-	printf '\\033]66;w=1;%s\\007' $X; i=$((i + 1)); done)"
-start 'set -as terminal-features ",*:textsize"\n'
+program 'aaaaaaaaaaaaaaaaaaaaaaaaaaa\033]66;w=3;xyz\007bb\033[1;1HQ\033[3;1H'
+start 'set -s clear-on-attach off\nset -s forward-output off\n'
 go
-$INNER refresh-client || exit 1
-$INNER display -p x >/dev/null
-want=$(i=0; while [ $i -lt 30 ]; do
-	printf '^[]66;w=1;%s^[\\' $X; i=$((i + 1)); done)
-wait_is "$OUTER capturep -ep | head -1 | cat -v" "$want"
-stop
-
-# A terminal with grapheme clusters and without the protocol gets all of a
-# cluster that fits: an emoji and its skin tone in 2 cells.
-program '\033]66;w=2;\360\237\221\215\360\237\217\275\007X'
-start 'set -as terminal-features ",*:graphemes"\n'
-go
-wait_is "$OUTER capturep -p | head -1 | sed 's/ *\$//'" \
-    "$(printf '\360\237\221\215\360\237\217\275X=END=')"
+[ "$($OUTER capturep -pJ | head -1)" = Qaaaaaaaaaaaaaaaaaaaaaaaaaaxyzbb ] ||
+    fail "the line is '$($OUTER capturep -pJ | head -1)'"
 stop
 
 exit $exit_status

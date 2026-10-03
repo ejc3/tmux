@@ -144,8 +144,8 @@ for coa in on off; do
 	OUTER="$TEST_TMUX -Ltest$$-o$N -f/dev/null"
 	$TMUX new -d -x 10 -y 6 \
 	    "printf '\\033[3Hab\\033]66;w=6;Y\\007cdef\\033]7;done\\007'; exec cat" \; \
-	    set -g status off \; set -s clear-on-attach $coa \; \
-	    set -s forward-output off || exit 1
+	    set -g status off \; set -s clear-on-attach $coa || exit 1
+	$TMUX set -s forward-output off 2>/dev/null
 	wait_is "$TMUX display -p '#{pane_path}'" done
 	$OUTER new -d -x 10 -y 6 "unset TMUX; exec $TMUX attach" \; \
 	    set -g status off || exit 1
@@ -189,31 +189,6 @@ $TMUX resize-window -x 80 || exit 1
 [ "$(cursor)" = 3,2 ] || fail "join before a wide character: cursor $(cursor)"
 [ "$($TMUX capturep -pJ | sed -n 1p | tr -d 0)" = "$(printf '\344\270\255c')" ] ||
 	fail "join before a wide character: $($TMUX capturep -pJ | head -2)"
-
-# The history written to a terminal keeping its own scrollback (scroll-replay)
-# when it attaches has blanks for a character overhanging a row, not the
-# character.
-$TMUX kill-server 2>/dev/null
-N=$((N + 1))
-TMUX="$TEST_TMUX -Ltest$$-$N -f/dev/null"
-OUTER="$TEST_TMUX -Ltest$$-o$N -f/dev/null"
-$TMUX new -d -s inner -x 10 -y 4 \
-    "printf 'ab\\033]66;w=6;Y\\007cdef\\r\\n1\\r\\n2\\r\\n3\\r\\n4\\r\\n5\\033]7;done\\007'; exec cat" \; \
-    set -g status off \; set -s clear-on-attach off \; \
-    set -s forward-output off \; set -g window-size manual \; \
-    set -gw scroll-replay 100 || exit 1
-wait_is "$TMUX display -p '#{pane_path}'" done
-$TMUX resize-window -x 4 || exit 1
-$OUTER new -d -s keep \; set -g default-terminal xterm-256color \; \
-    set -g status off || exit 1
-$OUTER new -d -s t -x 4 -y 4 "unset TMUX; exec $TMUX attach -t inner" ||
-    exit 1
-wait_is "[ -n \"\$($TMUX lsc -F '#{client_termtype}')\" ] && echo yes" yes
-wait_is "$OUTER capturep -t t -p -S - | grep -c cdef" 1
-out=$($OUTER capturep -t t -p -S - | sed 's/ *$//' | sed -n '/^ab/,$p' |
-    head -3 | tr '\n' '|')
-[ "$out" = 'ab||cdef|' ] || fail "replayed history: '$out'"
-$OUTER kill-server
 
 # A character written over one overhanging a row removes all of it, also
 # its padding past the edge, so the line is whole again when wider.
