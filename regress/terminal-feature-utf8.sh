@@ -32,19 +32,20 @@ $INNER set-option -g status off || exit 1
 
 # A clean C-locale environment avoids the ordinary UTF-8 detection paths.
 # -T utf8 is therefore solely responsible for setting client_utf8.
-client_command="env -i PATH=/bin:/usr/bin TERM=screen LC_ALL=C $TEST_TMUX -T utf8 -LtestI$$ -f/dev/null attach-session -t inner"
+# TMUX_TMPDIR is kept so the client finds the server wherever it is.
+client_command="env -i PATH=/bin:/usr/bin TERM=screen LC_ALL=C TMUX_TMPDIR=${TMUX_TMPDIR:-} $TEST_TMUX -T utf8 -LtestI$$ -f/dev/null attach-session -t inner"
 $OUTER new-session -d -s outer -x40 -y10 "$client_command" || exit 1
 $OUTER set-option -g status off || exit 1
 
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 100 ]; do
 	client=$($INNER list-clients -F '#{client_name}' 2>/dev/null)
 	utf8=$($INNER list-clients -F '#{client_utf8}' 2>/dev/null)
 	[ -n "$client" ] && [ "$utf8" = 1 ] && break
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "utf8 terminal feature did not set client_utf8"
+[ "$i" -lt 100 ] || fail "utf8 terminal feature did not set client_utf8"
 
 features=$($INNER list-clients -F '#{client_termfeatures}')
 case ",$features," in

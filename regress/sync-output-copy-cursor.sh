@@ -36,38 +36,66 @@ trap cleanup 0 1 15
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$INNER list-clients -F '#{client_termfeatures}' 2>/dev/null |
 		    grep -q 'sync' && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "sync-capable client did not attach"
 }
 
 wait_for_sync()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		[ "$($INNER display-message -p \
 		    '#{synchronized_output_flag}' 2>/dev/null)" = 1 ] &&
 		    return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "application did not enter synchronized output"
 }
 
+# Wait until the inner server has gone round its loop and the outer pane's
+# screen and cursor have not changed for 0.15 seconds, so earlier drawing has
+# reached the outer pane.
+wait_for_settled()
+{
+	$INNER display-message -p x >/dev/null || exit 1
+	_i=0
+	_last=
+	_same=0
+	while [ "$_i" -lt 100 ]; do
+		_sum=$({ $OUTER capture-pane -pe -t outer:0.0
+		    $OUTER display-message -p -t outer:0.0 \
+		    '#{cursor_x},#{cursor_y}'; } 2>/dev/null | cksum)
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ "$_same" -ge 3 ] && return 0
+		else
+			_same=0
+			_last=$_sum
+		fi
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "outer pane did not settle"
+}
+
+# The two second limit is the test: a deferred cursor would only arrive when
+# the synchronized update ends.
 wait_for_cursor_position()
 {
-	position=$(printf '\033[%d;%dH' "$2" "$1")
-	i=0
-	while [ "$i" -lt 20 ]; do
-		grep -Fq "$position" "$CLIENT_BYTES" 2>/dev/null &&
+	_position=$(printf '\033[%d;%dH' "$2" "$1")
+	_i=0
+	while [ "$_i" -lt 40 ]; do
+		grep -Fq "$_position" "$CLIENT_BYTES" 2>/dev/null &&
 		    return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "copy-mode cursor position did not reach client"
 }
@@ -110,8 +138,8 @@ $OUTER set-option -g window-size manual || exit 1
 wait_for_client
 
 i=0
-while [ "$i" -lt 50 ] && [ ! -e "$DIR/ready" ]; do
-	sleep 0.1
+while [ "$i" -lt 100 ] && [ ! -e "$DIR/ready" ]; do
+	sleep 0.05
 	i=$((i + 1))
 done
 [ -e "$DIR/ready" ] || fail "application emitter did not become ready"
@@ -123,10 +151,9 @@ before=$($INNER display-message -p -t inner:0.0 '#{copy_cursor_x}') ||
 
 : >"$CONTROL"
 wait_for_sync
-sleep 0.5
+wait_for_settled
 
 $OUTER pipe-pane -O -t outer:0.0 "cat >'$CLIENT_BYTES'" || exit 1
-sleep 0.1
 $INNER send-keys -t inner:0.0 -X cursor-left || exit 1
 after=$($INNER display-message -p -t inner:0.0 '#{copy_cursor_x}') ||
     exit 1

@@ -47,14 +47,35 @@ trap cleanup 0 1 15
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$INNER list-clients -F '#{client_termfeatures}' 2>/dev/null |
 		    grep -q 'sync' && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "sync-capable client did not attach"
+}
+
+# wait_settled: wait until the bytes piped from the outer pane stop changing.
+wait_settled()
+{
+	_i=0
+	_last=
+	_same=0
+	while [ "$_i" -lt 100 ]; do
+		_sum=$(cksum <"$CLIENT_BYTES")
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+			[ "$_same" -ge 3 ] && return 0
+		else
+			_same=0
+			_last=$_sum
+		fi
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "client output did not settle"
 }
 
 cat >"$EMITTER" <<'PERL'
@@ -142,19 +163,34 @@ wait_for_client
 
 if [ "$MODE" = prompt ]; then
 	$OUTER send-keys -t outer:0.0 C-b : || exit 1
-	sleep 0.2
+	i=0
+	until $OUTER capture-pane -p -t outer:0.0 | tail -1 | grep -q '^:'; do
+		i=$((i + 1))
+		[ "$i" -lt 400 ] || fail "command prompt did not open"
+		sleep 0.05
+	done
 fi
 
 i=0
-while [ "$i" -lt 50 ] && [ ! -e "$DIR/ready" ]; do
-	sleep 0.1
+while [ "$i" -lt 100 ] && [ ! -e "$DIR/ready" ]; do
+	sleep 0.05
 	i=$((i + 1))
 done
 [ -e "$DIR/ready" ] || fail "application emitter did not become ready"
 
 $OUTER pipe-pane -O -t outer:0.0 "cat >'$CLIENT_BYTES'" || exit 1
 : >"$CONTROL"
-sleep 2
+# Wait for the last frame (a backslash) and the end of its synchronized update
+# to be read, then for what they draw to reach the outer pane.
+i=0
+until $INNER capture-pane -p -t inner | head -1 | grep -qF 'Working \' &&
+    [ "$($INNER display -p -t inner '#{synchronized_output_flag}')" = 0 ]; do
+	i=$((i + 1))
+	[ "$i" -lt 400 ] || fail "application emitter did not finish"
+	sleep 0.05
+done
+$INNER display -p x >/dev/null || exit 1
+wait_settled
 $OUTER pipe-pane -t outer:0.0 || exit 1
 
 MODE=$MODE perl "$ASSERT" "$CLIENT_BYTES"
