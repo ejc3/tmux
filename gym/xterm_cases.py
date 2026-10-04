@@ -3,7 +3,11 @@ that shows one fix, run in a real xterm (under Xvfb) and in a pane of two tmux
 builds. Prints a markdown table of which build ends with xterm's rows and
 cursor, and fails if the second build differs from xterm anywhere.
 
-    python3 gym/xterm_cases.py UPSTREAM_TMUX TMUX [-v]
+    python3 gym/xterm_cases.py UPSTREAM_TMUX TMUX [-v] [--images DIR]
+
+--images DIR draws each case as DIR/xterm-NN.png: xterm's screen, upstream's
+and the build's, one above another, the cells that differ from xterm's
+outlined (gym/evidence.py).
 
 xterm's printout has no soft-wrap marks, so the fixes to which rows are
 wrapped are not here (gym/consensus.py judges those with Ghostty, libvterm
@@ -45,9 +49,26 @@ def key(r):
     return (r[0], r[2])        # rows and cursor
 
 
+def draw(path, x, u, r):
+    import evidence
+    panels = [('xterm', list(x[0])), ('upstream tmux', list(u[0])),
+              ('tmux with the fix', list(r[0]))]
+    rows = max(len(p[1]) for p in panels)
+    for p in panels:
+        p[1].extend([''] * (rows - len(p[1])))
+    evidence.compare(panels, C.COLS, context=1, max_rows=8, stack=True,
+                     window=32, scale=2).save(path)
+
+
 def main():
     args = [a for a in sys.argv[1:] if a != '-v']
     verbose = '-v' in sys.argv
+    images = None
+    if '--images' in args:
+        i = args.index('--images')
+        images = args[i + 1]
+        del args[i:i + 2]
+        os.makedirs(images, exist_ok=True)
     tmp = tempfile.mkdtemp(prefix='xtc')
     xterm = [e for e in C.confirming(tmp) if e.name == 'xterm'][0]
     got = {name: [xterm.render(data, tmp)] for name, data in CASES}
@@ -61,8 +82,10 @@ def main():
     print('| case | upstream as xterm | this build as xterm |')
     print('|---|---|---|')
     bad = 0
-    for name, _ in CASES:
+    for n, (name, _) in enumerate(CASES):
         x, u, r = got[name]
+        if images and not name.startswith('control'):
+            draw(os.path.join(images, 'xterm-%02d.png' % n), x, u, r)
         print('| %s | %s | %s |' % (name, 'yes' if key(u) == key(x) else 'no',
                                     'yes' if key(r) == key(x) else 'no'))
         if key(r) != key(x):
