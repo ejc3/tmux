@@ -1,8 +1,9 @@
 #!/bin/sh
 
 # A terminal that stops taking output (a frozen ssh connection, flow control
-# left on) while a pane keeps writing: the server must stop queueing output
-# for it and start discarding, as it does for a terminal that is only slow.
+# left on) while a pane keeps writing: what the server queues for it must
+# stay bounded, discarding past the limit as it does for a terminal that is
+# only slow.
 # Whether a terminal is behind was only checked after it took something, so
 # for one taking nothing the queue grew without limit, by megabytes a second.
 #
@@ -69,9 +70,26 @@ touch $DIR/stop
 sleep 0.2
 touch $DIR/go
 
-wait_for "[ \"\$($TMUX lsc -F '#{client_discarded}')\" != 0 ]" 200 || {
-	echo "nothing discarded for a stalled terminal:" \
-	    "$($TMUX lsc -F '#{client_written} written')"
-	exit 1
+# What is queued for the terminal must stay bounded. client_written counts
+# what was added to the queue and client_discarded what was dropped from it;
+# the terminal takes almost nothing now, so their difference is about the
+# queue. A fast build queues past the limit within a second and starts
+# discarding; a slow one (built with a sanitizer) may never get that far
+# behind. Without the limit the queue grows by megabytes a second.
+queued() {
+	$TMUX lsc -F '#{client_written} #{client_discarded}' |
+	    awk '{ print $1 - $2 }'
 }
+START=$(queued)
+END=$(($(date +%s) + 10))
+while [ $(date +%s) -lt $END ]; do
+	GROWTH=$(($(queued) - START))
+	if [ $GROWTH -gt 4194304 ]; then
+		echo "the queue for a stalled terminal grows: $GROWTH bytes," \
+		    "$($TMUX lsc -F '#{client_discarded}') discarded"
+		exit 1
+	fi
+	[ "$($TMUX lsc -F '#{client_discarded}')" != 0 ] && break
+	sleep 0.05
+done
 exit 0
