@@ -54,6 +54,10 @@ check() {
 	out=$($OUTER capturep -pJ | sed -n 1p | tr -d ' ')
 	$OUTER kill-server 2>/dev/null
 	$INNER kill-server 2>/dev/null
+	# The next check starts servers on the same sockets: wait until these
+	# have gone (a slow exit, as with a sanitizer, is still connected to).
+	poll "! $OUTER ls >/dev/null 2>&1 && ! $INNER ls >/dev/null 2>&1" ||
+	    { echo "$2: servers did not exit"; exit 1; }
 	rm -f $TMP/go $TMP/done
 	[ "$out" = aaaaaaaaaaaaaaaaaaaac ] || {
 		echo "$2: line 1 '$out', want 'aaaaaaaaaaaaaaaaaaaac'"
