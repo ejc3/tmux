@@ -1726,133 +1726,6 @@ tty_keys_sync(struct tty *tty, const char *buf, size_t len, size_t *size,
 }
 
 /*
- * Handle a notification message from the terminal, \033]99;...: an answer to
- * a query, an activation report or a close event, for the pane its
- * identifier names. Returns 0 for success, -1 for failure, 1 for partial.
- */
-static int
-tty_keys_notify(struct tty *tty, const char *buf, size_t len, size_t *size,
-    int apply)
-{
-	struct client	*c = tty->client;
-	size_t		 i;
-	const char	*end;
-
-	*size = 0;
-	for (i = 0; i < 5; i++) {
-		if (i == len)
-			return (1);
-		if (buf[i] != "\033]99;"[i])
-			return (-1);
-	}
-	for (; i < len; i++) {
-		if (buf[i] == '\007')
-			break;
-		if (buf[i] == '\033' && i + 1 < len && buf[i + 1] == '\\')
-			break;
-		if (buf[i] == '\033' && i + 1 == len)
-			return (1);
-	}
-	if (i == len)
-		return (1);
-	end = (buf[i] == '\007') ? "\007" : "\033\\";
-	*size = i + ((buf[i] == '\007') ? 1 : 2);
-	if (!apply)
-		return (0);
-	log_debug("%s: received notification %.*s", c->name, (int)*size, buf);
-	server_client_notify_reply(c, buf + 2, i - 2, end);
-	return (0);
-}
-
-/*
- * Handle a kitty graphics response, \033_G...\033\\. The answer to tmux's
- * query (the largest id) saying OK means the terminal has the protocol.
- * Returns 0 for success, -1 for failure, 1 for partial.
- */
-static int
-tty_keys_kgfx(struct tty *tty, const char *buf, size_t len, size_t *size,
-    int apply)
-{
-	struct client		*c = tty->client;
-	static const char	 query[] = "\033_Gi=4294967295;";
-	size_t			 i;
-
-	*size = 0;
-	for (i = 0; i < 3; i++) {
-		if (i == len)
-			return (1);
-		if (buf[i] != "\033_G"[i])
-			return (-1);
-	}
-	for (; i + 1 < len; i++) {
-		if (buf[i] == '\033' && buf[i + 1] == '\\')
-			break;
-	}
-	if (i + 1 >= len)
-		return (1);
-	*size = i + 2;
-	if (!apply)
-		return (0);
-	log_debug("%s: received kitty graphics %.*s", c->name, (int)*size,
-	    buf);
-
-	/* An OK after tmux stopped waiting (after DA1, say) still counts. */
-	if (*size < (sizeof query) - 1 ||
-	    memcmp(buf, query, (sizeof query) - 1) != 0)
-		return (0);
-	if (memcmp(buf + (sizeof query) - 1, "OK", 2) == 0 &&
-	    (~tty->term->flags & TERM_KGFX)) {
-		tty_parse_client_features(c, "kittygraphics", ",");
-		tty_update_features(tty);
-		kgfx_client_sync(c);
-	}
-	if (~tty->flags & TTY_HAVEKGFX) {
-		tty->flags |= TTY_HAVEKGFX;
-		kgfx_known(c);
-	}
-	return (0);
-}
-
-/*
- * Handle a kitty keyboard flags response, \033[?Nu: the terminal has the
- * kitty keyboard protocol. Returns 0 for success, -1 for failure, 1 for
- * partial.
- */
-static int
-tty_keys_kkeys(struct tty *tty, const char *buf, size_t len, size_t *size,
-    int apply)
-{
-	struct client	*c = tty->client;
-	size_t		 i;
-
-	*size = 0;
-	for (i = 0; i < 3; i++) {
-		if (i == len)
-			return (1);
-		if (buf[i] != "\033[?"[i])
-			return (-1);
-	}
-	for (; i < len && i < 8 && isdigit((u_char)buf[i]); i++)
-		/* nothing */;
-	if (i == len)
-		return (1);
-	if (i == 3 || buf[i] != 'u')
-		return (-1);
-	*size = i + 1;
-	if (!apply)
-		return (0);
-	log_debug("%s: received kitty keyboard flags %.*s", c->name,
-	    (int)*size, buf);
-
-	if (~tty->flags & TTY_HAVEKKEYS) {
-		tty->flags |= TTY_HAVEKKEYS;
-		tty_parse_client_features(c, "kittykeys", ",");
-		tty_update_features(tty);
-	}
-	return (0);
-}
-
-/*
  * Handle secondary device attributes input. Returns 0 for success, -1 for
  * failure, 1 for partial.
  */
@@ -2260,4 +2133,131 @@ tty_keys_winsz(struct tty *tty, const char *buf, size_t len, size_t *size,
 
 	log_debug("%s: unrecognized window size sequence: %s", c->name, tmp);
 	return (-1);
+}
+
+/*
+ * Handle a notification message from the terminal, \033]99;...: an answer to
+ * a query, an activation report or a close event, for the pane its
+ * identifier names. Returns 0 for success, -1 for failure, 1 for partial.
+ */
+static int
+tty_keys_notify(struct tty *tty, const char *buf, size_t len, size_t *size,
+    int apply)
+{
+	struct client	*c = tty->client;
+	size_t		 i;
+	const char	*end;
+
+	*size = 0;
+	for (i = 0; i < 5; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033]99;"[i])
+			return (-1);
+	}
+	for (; i < len; i++) {
+		if (buf[i] == '\007')
+			break;
+		if (buf[i] == '\033' && i + 1 < len && buf[i + 1] == '\\')
+			break;
+		if (buf[i] == '\033' && i + 1 == len)
+			return (1);
+	}
+	if (i == len)
+		return (1);
+	end = (buf[i] == '\007') ? "\007" : "\033\\";
+	*size = i + ((buf[i] == '\007') ? 1 : 2);
+	if (!apply)
+		return (0);
+	log_debug("%s: received notification %.*s", c->name, (int)*size, buf);
+	server_client_notify_reply(c, buf + 2, i - 2, end);
+	return (0);
+}
+
+/*
+ * Handle a kitty graphics response, \033_G...\033\\. The answer to tmux's
+ * query (the largest id) saying OK means the terminal has the protocol.
+ * Returns 0 for success, -1 for failure, 1 for partial.
+ */
+static int
+tty_keys_kgfx(struct tty *tty, const char *buf, size_t len, size_t *size,
+    int apply)
+{
+	struct client		*c = tty->client;
+	static const char	 query[] = "\033_Gi=4294967295;";
+	size_t			 i;
+
+	*size = 0;
+	for (i = 0; i < 3; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033_G"[i])
+			return (-1);
+	}
+	for (; i + 1 < len; i++) {
+		if (buf[i] == '\033' && buf[i + 1] == '\\')
+			break;
+	}
+	if (i + 1 >= len)
+		return (1);
+	*size = i + 2;
+	if (!apply)
+		return (0);
+	log_debug("%s: received kitty graphics %.*s", c->name, (int)*size,
+	    buf);
+
+	/* An OK after tmux stopped waiting (after DA1, say) still counts. */
+	if (*size < (sizeof query) - 1 ||
+	    memcmp(buf, query, (sizeof query) - 1) != 0)
+		return (0);
+	if (memcmp(buf + (sizeof query) - 1, "OK", 2) == 0 &&
+	    (~tty->term->flags & TERM_KGFX)) {
+		tty_parse_client_features(c, "kittygraphics", ",");
+		tty_update_features(tty);
+		kgfx_client_sync(c);
+	}
+	if (~tty->flags & TTY_HAVEKGFX) {
+		tty->flags |= TTY_HAVEKGFX;
+		kgfx_known(c);
+	}
+	return (0);
+}
+
+/*
+ * Handle a kitty keyboard flags response, \033[?Nu: the terminal has the
+ * kitty keyboard protocol. Returns 0 for success, -1 for failure, 1 for
+ * partial.
+ */
+static int
+tty_keys_kkeys(struct tty *tty, const char *buf, size_t len, size_t *size,
+    int apply)
+{
+	struct client	*c = tty->client;
+	size_t		 i;
+
+	*size = 0;
+	for (i = 0; i < 3; i++) {
+		if (i == len)
+			return (1);
+		if (buf[i] != "\033[?"[i])
+			return (-1);
+	}
+	for (; i < len && i < 8 && isdigit((u_char)buf[i]); i++)
+		/* nothing */;
+	if (i == len)
+		return (1);
+	if (i == 3 || buf[i] != 'u')
+		return (-1);
+	*size = i + 1;
+	if (!apply)
+		return (0);
+	log_debug("%s: received kitty keyboard flags %.*s", c->name,
+	    (int)*size, buf);
+
+	if (~tty->flags & TTY_HAVEKKEYS) {
+		tty->flags |= TTY_HAVEKKEYS;
+		tty_parse_client_features(c, "kittykeys", ",");
+		tty_update_features(tty);
+	}
+	return (0);
 }
