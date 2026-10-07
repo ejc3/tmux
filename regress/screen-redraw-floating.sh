@@ -76,12 +76,29 @@ wait_attached() {
 	done
 }
 
+wait_for_pids() {
+	for pid in $1; do
+		tries=0
+		while kill -0 "$pid" 2>/dev/null; do
+			tries=$((tries + 1))
+			[ "$tries" -lt 100 ] || \
+				fail "timed out waiting for pane $pid to exit"
+			sleep 0.05
+		done
+	done
+}
+
 # new_scene <width> <height>: fresh inner window of the given window size.
 new_scene() {
+	if [ -n "$window" ]; then
+		pids=$($TMUX2 list-panes -t"$window" -F '#{pane_pid}') || exit 1
+		$TMUX2 killw -t"$window" || exit 1
+		wait_for_pids "$pids"
+	fi
+
 	window=$($TMUX2 neww -dP -F '#{window_id}' \
 	    "sh -c 'printf base; exec sleep 100'") || exit 1
 	$TMUX2 selectw -t"$window" || exit 1
-	$TMUX2 killw -a -t"$window" || exit 1
 	$TMUX2 resizew -x$1 -y$2 || exit 1
 }
 
@@ -111,6 +128,7 @@ $TMUX kill-server 2>/dev/null
 $TMUX2 kill-server 2>/dev/null
 
 $TMUX2 new -d -x40 -y12 "sh -c 'printf base; exec sleep 100'" || exit 1
+window=
 $TMUX2 set -g status off || exit 1
 $TMUX2 set -g window-size manual || exit 1
 $TMUX2 set -g pane-border-format " #{pane_title} " || exit 1
