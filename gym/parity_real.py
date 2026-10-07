@@ -117,10 +117,12 @@ def tmux_bin(args):
 def main():
     args = sys.argv[1:]
     global DEFAULT_MODE, FORWARD
-    has_forward = subprocess.run([tmux_bin(args), '-f/dev/null', '-L', 'gym-probe$$',
+    # A socket of this run's own: two runs at once must not ask each other's server.
+    probe = 'gym-probe%d' % os.getpid()
+    has_forward = subprocess.run([tmux_bin(args), '-f/dev/null', '-L', probe,
                                   'start', ';', 'show', '-s', 'forward-output'],
                                  capture_output=True).returncode == 0
-    subprocess.run([tmux_bin(args), '-L', 'gym-probe$$', 'kill-server'], capture_output=True)
+    subprocess.run([tmux_bin(args), '-L', probe, 'kill-server'], capture_output=True)
     modes = [args[args.index('--mode') + 1]] if '--mode' in args else \
         (['scrollback', 'translate', 'default'] if has_forward else ['scrollback', 'default'])
     tmux = args[args.index('--tmux') + 1] if '--tmux' in args else 'tmux'
