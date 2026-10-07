@@ -58,10 +58,20 @@ sent() {
 	cat $DIR/out
 }
 
+# Wait until all the inner tmux has written to the terminal so far is in
+# $DIR/out, which it reaches through the outer pane and pipe-pane: give the
+# terminal a new title and wait for it.
+FLUSH=0
+flushed() {
+	FLUSH=$((FLUSH + 1))
+	$INNER set -g set-titles-string "flushed$FLUSH" || exit 1
+	wait_is "sent | grep -aq 'flushed$FLUSH' && echo y" y
+}
+
 RED='/wAA/wAA/wAA/wAA'	# 2x2 RGB
 
-printf 'set -g status off\nset -as terminal-features ",*:kittygraphics"\n' \
-    >$DIR/conf
+printf '%s\n' 'set -g status off' 'set -g set-titles on' \
+    'set -as terminal-features ",*:kittygraphics:title"' >$DIR/conf
 $INNER -f$DIR/conf new -d -x 40 -y 10 'exec sleep 1000' || exit 1
 $OUTER new -d -x 40 -y 10 \
     "while [ ! -e $DIR/go ]; do sleep 0.05; done; unset TMUX; exec $INNER attach" \
@@ -102,6 +112,7 @@ run "\\033_Ga=T,q=2,f=24,s=2,v=2,c=2,r=2;$RED\\033\\\\\\033_Ga=d,d=A\\033\\\\"
 wait_is placeholders 0
 
 # Chunks make one image.
+flushed
 n=$(sent | grep -ao "m=0;$RED" | wc -l)
 run "\\033_Ga=T,i=6,f=24,s=2,v=2,c=1,r=1,m=1;/wAA/wAA\\033\\\\\\033_Gm=0;/wAA/wAA\\033\\\\"
 wait_is placeholders 1
@@ -124,18 +135,25 @@ wait_is "$INNER capturep -pJt0 | grep -o 'ENOENT:Put[^^]*'" \
 # tmux's.
 run "\\033_Ga=T,q=2,U=1,i=7,f=24,s=2,v=2,c=2,r=1;$RED\\033\\\\\\033[38;5;7m$PH\\314\\205\\314\\205$PH\\314\\205\\314\\215\\033[39m"
 wait_is placeholders 2
+flushed
 gid=$(sent | grep -ao 'a=p,U=1,q=2,i=[0-9]*,p=[0-9]*,c=2,r=1' | tail -1 |
     sed 's/.*,i=\([0-9]*\),.*/\1/')
 wait_is "$INNER capturep -ept0 | grep -o '38;2;0;0;$gid' | head -1" \
     "38;2;0;0;$gid"
 
 # tmux's id for an image: run $1, which transmits one, and set G to the id
-# the terminal was sent it with, and RGB to it as a colour.
+# the terminal was sent it with, and RGB to it as a colour. The image's last
+# pixel is made different each time, so its transmission is told from the
+# others, which can still be on their way to the terminal.
+TX=0
 transmit() {
-	_n=$(sent | grep -ao 'a=t,q=2,i=' | wc -l)
-	run "$1"
-	wait_is "sent | grep -ao 'a=t,q=2,i=' | wc -l" $((_n + 1))
-	G=$(sent | grep -ao 'a=t,q=2,i=[0-9]*' | tail -1 | sed 's/.*i=//')
+	TX=$((TX + 1))
+	_p=$({ printf '\377\000\000\377\000\000\377\000\000\377\000'
+	    printf "\\$(printf %o $TX)"; } | base64 | tr -d '\n')
+	run "$(printf '%s' "$1" | sed "s|$RED|$_p|")"
+	wait_is "sent | grep -aq 'a=t,q=2,i=[0-9]*[^;]*;$_p' && echo sent" sent
+	G=$(sent | grep -ao "a=t,q=2,i=[0-9]*[^;]*;$_p" | head -1 |
+	    sed 's/^a=t,q=2,i=\([0-9]*\).*/\1/')
 	RGB="$((G >> 16));$(((G >> 8) & 255));$((G & 255))"
 }
 
@@ -246,6 +264,7 @@ wait_is "sent | grep -ao 'a=f,q=2,i=$G,s=1,v=1,f=24,m=0;AP8A' | wc -l" 1
 
 # A pane that goes takes its images from the terminal too.
 $INNER splitw -d 'exec sleep 1000' || exit 1
+flushed
 n=$(sent | grep -ao 'a=d,d=I' | wc -l)
 $INNER kill-pane -t0
 wait_is "[ \$(sent | grep -ao 'a=d,d=I' | wc -l) -gt $n ] && echo gone" gone
