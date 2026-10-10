@@ -164,6 +164,7 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
+static int	input_osc_9_conemu(const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
 static void	input_osc_11(struct input_ctx *, const char *);
 static void	input_osc_12(struct input_ctx *, const char *);
@@ -2741,16 +2742,28 @@ input_exit_osc(struct input_ctx *ictx)
 		input_osc_8(ictx, p);
 		break;
 	case 9:
-		/* 9;4 is a progress bar; other forms are notifications. */
+		/*
+		 * 9;4 is a progress bar; the other ConEmu commands (9;1 to
+		 * 9;12, such as 9;9 with the directory) are not notifications.
+		 */
 		if (*p == '4' && (p[1] == ';' || p[1] == '\0'))
 			input_osc_9(ictx, p);
-		else if (wp != NULL)
+		else if (wp != NULL && !input_osc_9_conemu(p))
 			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 99:
+		/*
+		 * A query (for what is supported, or for the notifications
+		 * still open) goes to one terminal, and answers after it wait
+		 * for its answer.
+		 */
+		if (wp != NULL && server_client_notify_is_query(ictx->input_buf))
+			input_add_request(ictx, INPUT_REQUEST_NOTIFY, 0);
+		else if (wp != NULL)
+			server_client_notify(wp, ictx->input_buf);
+		break;
 	case 777:
-		/* Notifications, but not a query for what is supported. */
-		if (wp != NULL && strstr(p, "p=?") == NULL)
+		if (wp != NULL)
 			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 10:
@@ -3031,6 +3044,19 @@ input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
 		server_redraw_window_borders(ictx->wp->window);
 		server_status_window(ictx->wp->window);
 	}
+}
+
+/* Whether OSC 9 is a ConEmu command (9;1 to 9;12) rather than a notification. */
+static int
+input_osc_9_conemu(const char *p)
+{
+	u_int	n = 0;
+
+	if (*p < '1' || *p > '9')
+		return (0);
+	while (*p >= '0' && *p <= '9' && n <= 12)
+		n = n * 10 + *p++ - '0';
+	return (n <= 12 && (*p == ';' || *p == '\0'));
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */
@@ -3588,7 +3614,7 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	struct window		*w;
 	struct client		*c = NULL, *loop;
 	struct input_request	*ir;
-	char			 s[64];
+	char			 s[64], *copy;
 
 	if (wp == NULL)
 		return (-1);
@@ -3608,6 +3634,8 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 	}
 	if (c == NULL)
 		return (-1);
+	if (type == INPUT_REQUEST_NOTIFY && (~c->tty.term->flags & TERM_NOTIFY))
+		return (-1);
 
 	ir = input_make_request(ictx, type);
 	ir->c = c;
@@ -3622,6 +3650,11 @@ input_add_request(struct input_ctx *ictx, enum input_request_type type, int idx)
 		break;
 	case INPUT_REQUEST_CLIPBOARD:
 		tty_putcode_ss(&c->tty, TTYC_MS, "", "?");
+		break;
+	case INPUT_REQUEST_NOTIFY:
+		copy = server_client_notify_rewrite(wp, ictx->input_buf);
+		tty_notify(&c->tty, copy);
+		free(copy);
 		break;
 	case INPUT_REQUEST_QUEUE:
 		break;
@@ -3685,7 +3718,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 			found = ir;
 			break;
 		}
-		if (type == INPUT_REQUEST_CLIPBOARD) {
+		if (type == INPUT_REQUEST_CLIPBOARD ||
+		    type == INPUT_REQUEST_NOTIFY) {
 			found = ir;
 			break;
 		}
@@ -3703,6 +3737,8 @@ input_request_reply(struct client *c, enum input_request_type type, void *data)
 				input_request_palette_reply(ir, data);
 			else if (ir->type == INPUT_REQUEST_CLIPBOARD)
 				input_request_clipboard_reply(ir, data);
+			else if (ir->type == INPUT_REQUEST_NOTIFY)
+				input_send_reply(ir->ictx, data);
 			complete = 1;
 		}
 		input_free_request(ir);
