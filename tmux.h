@@ -708,6 +708,7 @@ enum tty_code_code {
 #define MODE_KEYS_EXTENDED_2 0x40000
 #define MODE_THEME_UPDATES 0x80000
 #define MODE_SYNC 0x100000
+#define MODE_MOUSE_PIXELS 0x400000
 
 #define ALL_MODES 0xffffff
 #define ALL_MOUSE_MODES (MODE_MOUSE_STANDARD|MODE_MOUSE_BUTTON|MODE_MOUSE_ALL)
@@ -1732,6 +1733,12 @@ struct mouse_event {
 
 	u_int		sgr_type;
 	u_int		sgr_b;
+
+	int		pixels;	/* px and py are from the terminal */
+	u_int		px;
+	u_int		py;
+	u_int		xpixel;	/* the terminal's cell size */
+	u_int		ypixel;
 };
 
 /* Key event. */
@@ -1764,6 +1771,7 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_MOUSEPIXELS 0x1000
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -1845,8 +1853,12 @@ struct tty {
 #define TTY_WAITBG 0x4000
 #define TTY_BRACKETPASTE 0x8000
 #define TTY_HAVESYNC 0x10000
+#define TTY_HAVEPIXELS 0x800000
+#define TTY_MOUSEPIXELS 0x1000000
+#define TTY_PIXELSFROM0 0x10000000
 #define TTY_ALL_REQUEST_FLAGS \
-	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC)
+	(TTY_HAVEDA|TTY_HAVEDA2|TTY_HAVEXDA|TTY_HAVESYNC| \
+	 TTY_HAVEPIXELS)
 	int		 flags;
 
 	struct tty_term	*term;
@@ -3454,7 +3466,7 @@ void	 input_key_build(void);
 int	 input_key_pane(struct window_pane *, key_code, struct mouse_event *);
 int	 input_key(struct screen *, struct bufferevent *, key_code);
 int	 input_key_get_mouse(struct screen *, struct mouse_event *, u_int,
-	     u_int, const char **, size_t *);
+	     u_int, u_int, u_int, const char **, size_t *);
 
 /* colour.c */
 int	 colour_find_rgb(u_char, u_char, u_char);
