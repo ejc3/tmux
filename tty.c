@@ -80,6 +80,7 @@ static void	tty_write_one(void (*)(struct tty *, const struct tty_ctx *),
 #define TTY_BLOCK_INTERVAL (100000 /* 100 milliseconds */)
 #define TTY_BLOCK_START(tty) (1 + ((tty)->sx * (tty)->sy) * 8)
 #define TTY_BLOCK_STOP(tty) (1 + ((tty)->sx * (tty)->sy) / 8)
+#define TTY_BLOCK_LIMIT(tty) (1024 * 1024 + TTY_BLOCK_START(tty))
 
 #define TTY_QUERY_TIMEOUT 5
 #define TTY_REQUEST_LIMIT 30
@@ -214,12 +215,31 @@ tty_timer_callback(__unused int fd, __unused short events, void *data)
 	evtimer_add(&tty->timer, &tv);
 }
 
-static int
-tty_block_maybe(struct tty *tty)
+/* Discard what is queued for a terminal and what is written to it from now. */
+static void
+tty_block_start(struct tty *tty)
 {
 	struct client	*c = tty->client;
 	size_t		 size = EVBUFFER_LENGTH(tty->out);
 	struct timeval	 tv = { .tv_usec = TTY_BLOCK_INTERVAL };
+
+	tty->flags |= TTY_BLOCK;
+
+	log_debug("%s: can't keep up, %zu discarded", c->name, size);
+
+	evbuffer_drain(tty->out, size);
+	c->discarded += size;
+	c->redraw = 0;
+	tty->exempt = 0;
+
+	tty->discarded = 0;
+	evtimer_add(&tty->timer, &tv);
+}
+
+static int
+tty_block_maybe(struct tty *tty)
+{
+	size_t		 size = EVBUFFER_LENGTH(tty->out);
 
 	if (size == 0)
 		tty->flags &= ~TTY_NOBLOCK;
@@ -229,18 +249,42 @@ tty_block_maybe(struct tty *tty)
 	if (size < TTY_BLOCK_START(tty))
 		return (0);
 
-	if (tty->flags & TTY_BLOCK)
-		return (1);
-	tty->flags |= TTY_BLOCK;
-
-	log_debug("%s: can't keep up, %zu discarded", c->name, size);
-
-	evbuffer_drain(tty->out, size);
-	c->discarded += size;
-
-	tty->discarded = 0;
-	evtimer_add(&tty->timer, &tv);
+	if (~tty->flags & TTY_BLOCK)
+		tty_block_start(tty);
 	return (1);
+}
+
+/*
+ * A pane's output is about to be queued for a terminal. Whether a terminal is
+ * behind is found when it takes something (tty_write_callback), so one that
+ * takes nothing is never found to be: its queue would grow for as long as
+ * panes write. Discard here once the queue is far longer than a terminal
+ * taking output leaves it, not counting what is deliberately long: the redraw
+ * being waited for and the writes marked with tty_no_block.
+ */
+static void
+tty_block_limit(struct tty *tty)
+{
+	struct client	*c = tty->client;
+	size_t		 size = EVBUFFER_LENGTH(tty->out), exempt;
+
+	if (tty->flags & TTY_BLOCK)
+		return;
+	exempt = (c->redraw > tty->exempt) ? c->redraw : tty->exempt;
+	if (size < exempt || size - exempt < TTY_BLOCK_LIMIT(tty))
+		return;
+	tty_block_start(tty);
+}
+
+/*
+ * What is queued for the terminal up to here is one long write that must
+ * arrive whole: it is not a sign of the terminal being behind.
+ */
+static void
+tty_no_block(struct tty *tty)
+{
+	tty->flags |= TTY_NOBLOCK;
+	tty->exempt = EVBUFFER_LENGTH(tty->out);
 }
 
 static void
@@ -255,6 +299,7 @@ tty_write_callback(__unused int fd, __unused short events, void *data)
 	if (nwrite == -1)
 		return;
 	log_debug("%s: wrote %d bytes (of %zu)", c->name, nwrite, size);
+	tty->exempt = (tty->exempt > (size_t)nwrite) ? tty->exempt - nwrite : 0;
 
 	if (c->redraw > 0) {
 		if ((size_t)nwrite >= c->redraw)
@@ -1582,6 +1627,7 @@ tty_write(void (*cmdfn)(struct tty *, const struct tty_ctx *),
 				break;
 			if (state == 0)
 				continue;
+			tty_block_limit(&c->tty);
 			cmdfn(&c->tty, ctx);
 		}
 	}
@@ -2019,8 +2065,8 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 	encoded = xmalloc(size);
 
 	b64_ntop(buf, len, encoded, size);
-	tty->flags |= TTY_NOBLOCK;
 	tty_putcode_ss(tty, TTYC_MS, clip, encoded);
+	tty_no_block(tty);
 
 	free(encoded);
 }
@@ -2028,8 +2074,8 @@ tty_set_selection(struct tty *tty, const char *clip, const char *buf,
 void
 tty_cmd_rawstring(struct tty *tty, const struct tty_ctx *ctx)
 {
-	tty->flags |= TTY_NOBLOCK;
 	tty_add(tty, ctx->data.data, ctx->data.size);
+	tty_no_block(tty);
 	tty_invalidate(tty);
 }
 
@@ -2074,8 +2120,8 @@ tty_cmd_sixelimage(struct tty *tty, const struct tty_ctx *ctx)
 		tty_margin_off(tty);
 		tty_cursor(tty, x, y);
 
-		tty->flags |= TTY_NOBLOCK;
 		tty_add(tty, data, size);
+		tty_no_block(tty);
 		tty_invalidate(tty);
 		free(data);
 	}
