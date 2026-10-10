@@ -467,10 +467,10 @@ utf8_from_data(const struct utf8_data *ud, utf8_char *uc)
 {
 	u_int	index;
 
-	if (ud->width > 2)
+	if (ud->width > UTF8_MAXWIDTH)
 		fatalx("invalid UTF-8 width: %u", ud->width);
 
-	if (ud->size > UTF8_SIZE)
+	if (ud->size > UTF8_MAXSIZE)
 		goto fail;
 	if (ud->size <= 3) {
 		index = (((utf8_char)ud->data[2] << 16)|
@@ -816,6 +816,38 @@ utf8_stravisx(char **dst, const char *src, size_t srclen, int flag)
 
 	*dst = xrealloc(buf, len + 1);
 	return (len);
+}
+
+/*
+ * Read the next character of a string into ud: printable ASCII or a complete,
+ * valid UTF-8 character. Moves *sp past it and returns 1, or past one byte
+ * that does not begin one and returns 0. Nothing is read past a NUL.
+ */
+int
+utf8_next(const char **sp, struct utf8_data *ud)
+{
+	const u_char	*s = (const u_char *)*sp;
+	enum utf8_state	 more = UTF8_ERROR;
+	size_t		 n;
+
+	(*sp)++;
+	if (*s < 0x80) {
+		if (*s < 0x20 || *s == 0x7f)
+			return (0);
+		utf8_set(ud, *s);
+		return (1);
+	}
+	if (utf8_open(ud, *s) != UTF8_MORE)
+		return (0);
+	for (n = 1; n < ud->size; n++) {
+		if ((s[n] & 0xc0) != 0x80)
+			return (0);
+		more = utf8_append(ud, s[n]);
+	}
+	if (more != UTF8_DONE)
+		return (0);
+	*sp += ud->size - 1;
+	return (1);
 }
 
 /* Does this string contain anything that isn't valid UTF-8? */

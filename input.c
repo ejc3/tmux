@@ -164,6 +164,7 @@ static void	input_report_current_theme(struct input_ctx *);
 static void	input_osc_4(struct input_ctx *, const char *);
 static void	input_osc_8(struct input_ctx *, const char *);
 static void	input_osc_9(struct input_ctx *, const char *);
+static void	input_osc_66(struct input_ctx *, const char *);
 static void	input_osc_10(struct input_ctx *, const char *);
 static void	input_osc_11(struct input_ctx *, const char *);
 static void	input_osc_12(struct input_ctx *, const char *);
@@ -2743,6 +2744,9 @@ input_exit_osc(struct input_ctx *ictx)
 	case 9:
 		input_osc_9(ictx, p);
 		break;
+	case 66:
+		input_osc_66(ictx, p);
+		break;
 	case 10:
 		input_osc_10(ictx, p);
 		break;
@@ -3021,6 +3025,96 @@ input_set_progress_bar(struct input_ctx *ictx, enum progress_bar_state state,
 		server_redraw_window_borders(ictx->wp->window);
 		server_status_window(ictx->wp->window);
 	}
+}
+
+/*
+ * Handle the OSC 66 sequence (kitty's text sizing protocol), metadata;text:
+ * the width part only. With w=0 (the default), the text is written as any
+ * other; with w=1 to 7, all of it is one character that many cells wide
+ * (tmux keeps it in at most 6 and a blank cell). The scale (s) and the
+ * fractional scale (n, d, v, h) are not supported, so a program asking (with
+ * CPR) finds the width part and not the scale part.
+ */
+static void
+input_osc_66(struct input_ctx *ictx, const char *p)
+{
+	struct screen_write_ctx	*sctx = &ictx->ctx;
+	struct grid_cell	 gc;
+	const char		*text;
+	u_int			 w, sx = screen_size_x(sctx->s);
+
+	if ((text = input_sized_parse(p, &w)) == NULL)
+		return;
+	if (w > sx)
+		return;		/* too wide for the screen: discarded */
+
+	memcpy(&gc, &ictx->cell.cell, sizeof gc);
+	if (w == 0) {
+		/* The text as if written: a character at a time. */
+		while (*text != '\0') {
+			if (utf8_next(&text, &gc.data))
+				screen_write_collect_add(sctx, &gc);
+		}
+		return;
+	}
+
+	/* All of the text, as much as a cell holds, as one character. */
+	if (!input_sized_data(text, w, &gc.data))
+		return;
+	gc.attr |= GRID_ATTR_SIZED;
+	screen_write_collect_add(sctx, &gc);
+	if (w > UTF8_MAXWIDTH) {
+		memcpy(&gc, &ictx->cell.cell, sizeof gc);
+		utf8_set(&gc.data, ' ');
+		screen_write_collect_add(sctx, &gc);
+	}
+}
+
+/*
+ * The width (0 to 7, 0 if not given) from OSC 66 metadata;text and the text
+ * after it, or NULL if there is no text.
+ */
+const char *
+input_sized_parse(const char *p, u_int *w)
+{
+	const char	*text, *key;
+
+	*w = 0;
+	if ((text = strchr(p, ';')) == NULL)
+		return (NULL);
+	for (key = p; key < text; key += strcspn(key, ":;") + 1) {
+		if (key[0] == 'w' && key[1] == '=' && key[2] >= '0' &&
+		    key[2] <= '7' && (key[3] == ':' || key[3] == ';'))
+			*w = key[2] - '0';
+		if (key[strcspn(key, ":;")] == ';')
+			break;
+	}
+	return (text + 1);
+}
+
+/*
+ * All of the text given width w (1 to 7) as one character in ud: its valid
+ * characters, as many as a cell keeps. Returns 0 if there are none.
+ */
+int
+input_sized_data(const char *text, u_int w, struct utf8_data *ud)
+{
+	struct utf8_data	one;
+
+	memset(ud, 0, sizeof *ud);
+	while (*text != '\0') {
+		if (!utf8_next(&text, &one))
+			continue;
+		if (ud->size + one.size > UTF8_MAXSIZE)
+			break;
+		memcpy(ud->data + ud->size, one.data, one.size);
+		ud->size += one.size;
+	}
+	if (ud->size == 0)
+		return (0);
+	ud->have = ud->size;
+	ud->width = (w > UTF8_MAXWIDTH) ? UTF8_MAXWIDTH : w;
+	return (1);
 }
 
 /* Handle the OSC 9;4 sequence for progress bars. */
