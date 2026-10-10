@@ -50,9 +50,9 @@ $TMUX setw -g automatic-rename off || exit 1
 exec 8<"$FIFO"
 
 n=0
-while [ $n -lt 50 ]; do
+while [ $n -lt 100 ]; do
 	$TMUX lsc -F '#{client_name}' 2>/dev/null | grep -q . && break
-	sleep 0.1
+	sleep 0.05
 	n=$((n + 1))
 done
 $TMUX lsc -F '#{client_name}' 2>/dev/null | grep -q . ||
@@ -70,9 +70,9 @@ READER=$!
 # Wait until the client is demonstrably backed up: the output only keeps
 # growing at the slow-drain rate while the flood is outrunning the reader.
 n=0
-while [ $n -lt 100 ]; do
+while [ $n -lt 200 ]; do
 	[ "$(wc -c <"$OUT")" -ge 8000 ] && break
-	sleep 0.1
+	sleep 0.05
 	n=$((n + 1))
 done
 [ "$(wc -c <"$OUT")" -ge 8000 ] || { echo "client output did not back up"; exit 1; }
@@ -88,7 +88,9 @@ while [ $i -lt 5 ]; do
 	$TMUX rename-window -t rt:0 "$MARKER$i"
 	i=$((i + 1))
 done
-sleep 0.5
+# A round trip: the server has gone round its loop, so any notification for
+# the renames has been queued by now.
+$TMUX display -p x >/dev/null
 
 # Drain fast (bounded) so the backlog, and any notification queued behind it,
 # reaches OUT. A watchdog keeps this from blocking.

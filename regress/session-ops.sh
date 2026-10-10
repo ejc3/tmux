@@ -110,22 +110,22 @@ check_windows()
 # Wait for the only test client to be attached to $expected.
 wait_client_session()
 {
-	expected=$1
-	i=0
+	_expected=$1
+	_i=0
 
-	while [ $i -lt 30 ]; do
-		out=$($TMUX list-clients -F '#{client_session}' 2>/dev/null ||
+	while [ $_i -lt 400 ]; do
+		_out=$($TMUX list-clients -F '#{client_session}' 2>/dev/null ||
 		    true)
-		if [ "$out" = "$expected" ]; then
+		if [ "$_out" = "$_expected" ]; then
 			return
 		fi
-		i=$((i + 1))
-		sleep 0.1
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 
 	echo "Client session wrong."
-	echo "Expected: '$expected'"
-	echo "But got:  '$out'"
+	echo "Expected: '$_expected'"
+	echo "But got:  '$_out'"
 	exit 1
 }
 
@@ -160,17 +160,21 @@ check_attached_destroy()
 	"$TEST_TMUX" -LtestInner$$-$mode -f/dev/null new \\; \
 		set -g detach-on-destroy $mode \\; send exit Enter
 	printf '%s\n' \$? >"$rcfile"
+	printf '\033]7;done\007'
 	EOF
 	chmod +x "$script" || exit 1
 
 	check_ok new-session -d -s "$outer" -x 80 -y 24
 	check_ok send-keys -t "$outer:0.0" "sh $script" Enter
 
-	i=0
-	while [ $i -lt 50 ]; do
-		[ -f "$rcfile" ] && break
-		i=$((i + 1))
-		sleep 0.1
+	# The script ends with an OSC 7 marker once the rc file is written;
+	# everything the inner tmux printed has been read before it.
+	_i=0
+	while [ $_i -lt 400 ]; do
+		[ "$($TMUX display -pt "$outer:0.0" '#{pane_path}')" = done ] &&
+			break
+		_i=$((_i + 1))
+		sleep 0.05
 	done
 
 	pane=$($TMUX capture-pane -pt "$outer:0.0" -S -)

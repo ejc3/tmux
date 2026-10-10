@@ -14,6 +14,21 @@ OUT=$(mktemp)
 SCRIPT=$(mktemp)
 trap "rm -f $TMP $OUT $SCRIPT" 0 1 15
 
+# Wait for the server to exit, so every pane has run. The server is started
+# with env -i, so its socket is in the default directory, not $TMUX_TMPDIR. A
+# dying server can still accept a connection and drop it, so only a refused
+# connection (or no socket) means it is gone.
+wait_gone()
+{
+	_i=0
+	until env -i $TMUX ls 2>&1 |
+	    grep -q -e 'no server running' -e 'No such file or directory'; do
+		_i=$((_i + 1))
+		[ $_i -lt 400 ] || { echo "server did not exit"; exit 1; }
+		sleep 0.05
+	done
+}
+
 cat <<EOF >$SCRIPT
 (
 echo TERM=\$TERM
@@ -30,7 +45,7 @@ EOF
 
 (cd /; env -i TERM=ansi TEST=test1 PATH=1 SHELL=/bin/sh \
 	$TMUX -f$TMP start) || exit 1
-sleep 1
+wait_gone
 (cat <<EOF|cmp -s - $OUT) || exit 1
 TERM=$TERM
 PWD=/
@@ -41,7 +56,7 @@ EOF
 
 (cd /; env -i TERM=ansi TEST=test2 PATH=2 SHELL=/bin/sh \
 	$TMUX -f$TMP new -d -- /bin/sh $SCRIPT) || exit 1
-sleep 1
+wait_gone
 (cat <<EOF|cmp -s - $OUT) || exit 1
 TERM=$TERM
 PWD=/
@@ -52,7 +67,7 @@ EOF
 
 (cd /; env -i TERM=ansi TEST=test3 PATH=3 SHELL=/bin/sh \
 	$TMUX -f/dev/null new -d source $TMP) || exit 1
-sleep 1
+wait_gone
 (cat <<EOF|cmp -s - $OUT) || exit 1
 TERM=$TERM
 PWD=/
