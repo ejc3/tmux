@@ -21,7 +21,15 @@ cleanup_servers()
 {
 	$TMUX kill-server 2>/dev/null
 	$OUT kill-server 2>/dev/null
-	sleep 0.5
+	_i=0
+	while ! $TMUX ls 2>&1 | grep -qE 'no server running|No such file' || ! $OUT ls 2>&1 | grep -qE 'no server running|No such file'; do
+		_i=$((_i + 1))
+		if [ "$_i" -ge 400 ]; then
+			echo "servers did not exit after kill-server" >&2
+			exit 1
+		fi
+		sleep 0.05
+	done
 }
 
 cleanup()
@@ -43,36 +51,89 @@ capture()
 	$OUT capture-pane -p -t out:0 2>/dev/null
 }
 
+# Keys sent with send-keys have gone through the mode by the time it returns;
+# a round trip makes sure the server has also finished its loop.
 settle()
 {
-	sleep 0.3
+	$TMUX display-message -p x >/dev/null || fail "server round trip failed"
+}
+
+# Wait until the outer pane shows every argument; leaves it in $screen.
+wait_screen()
+{
+	_i=0
+	while :; do
+		screen=$(capture)
+		_miss=
+		for _n in "$@"; do
+			echo "$screen" | grep -F -q "$_n" || _miss=$_n
+		done
+		[ -z "$_miss" ] && return 0
+		_i=$((_i + 1))
+		[ "$_i" -ge 400 ] && fail "screen never showed '$_miss': $screen"
+		sleep 0.05
+	done
+}
+
+# Wait until the outer pane has stopped changing (3 equal captures, at most
+# 5s); leaves it in $screen.
+settle_screen()
+{
+	settle
+	_prev=
+	_same=0
+	_i=0
+	while [ "$_same" -lt 3 ] && [ "$_i" -lt 100 ]; do
+		_cur=$(capture | cksum)
+		if [ "$_cur" = "$_prev" ]; then
+			_same=$((_same + 1))
+		else
+			_same=0
+		fi
+		_prev=$_cur
+		_i=$((_i + 1))
+		sleep 0.05
+	done
+	screen=$(capture)
 }
 
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "expected $1 clients, have $c"
+	fail "expected $1 clients, have $_c"
 }
 
 wait_mode()
 {
-	want=$1
-
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($TMUX display-message -p -t cm:0 '#{pane_in_mode}' \
+	_i=0
+	while [ "$_i" -lt 200 ]; do
+		_got=$($TMUX display-message -p -t cm:0 '#{pane_in_mode}' \
 		    2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.2
-		i=$((i + 1))
+		[ "$_got" = "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane mode state is $got, expected $want"
+	fail "pane mode state is $_got, expected $1"
+}
+
+# Wait until window cm:0 has $1 panes (the editor is a floating pane).
+wait_panes()
+{
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_got=$($TMUX display-message -p -t cm:0 '#{window_panes}' \
+		    2>/dev/null)
+		[ "$_got" = "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "window has $_got panes, expected $1"
 }
 
 assert_alive()
@@ -287,8 +348,7 @@ test_user_hook()
 	open_customize '#{==:#{option_name},@cm_hook}'
 	repeat_key j 3
 	send Right j
-	settle
-	screen=$(capture)
+	wait_screen "@cm_hook" "This hook has been fired 1 times, last "
 	assert_contains "$screen" "@cm_hook" "user hook shown as hook"
 	assert_contains "$screen" "This hook has been fired 1 times, last " \
 		"user hook fire count and time"
@@ -311,8 +371,7 @@ test_hook_array()
 	open_customize '#{==:#{option_name},after-new-session}'
 	repeat_key j 3
 	send Right j
-	settle
-	screen=$(capture)
+	wait_screen "This hook has been fired " ", last "
 	assert_contains "$screen" "This hook has been fired " \
 		"array hook fire count"
 	assert_contains "$screen" ", last " "array hook fire time"
@@ -357,8 +416,8 @@ test_changed_only()
 	send C
 	settle
 	send M-+
-	settle
-	screen=$(capture)
+	wait_screen "@cm_changed" "User1"
+	settle_screen
 	assert_contains "$screen" "@cm_changed" "changed-only user option"
 	assert_contains "$screen" "User1" "changed-only key"
 	assert_not_contains "$screen" "Global Environment" \
@@ -474,10 +533,10 @@ test_editor()
 	send j Right j e
 
 	i=0
-	while [ "$i" -lt 50 ]; do
+	while [ "$i" -lt 200 ]; do
 		value=$($TMUX show-option -gqv @cm_edit)
 		[ "$value" = "edited" ] && break
-		sleep 0.2
+		sleep 0.05
 		i=$((i + 1))
 	done
 	assert_equals "$value" "edited" "edit option in editor"
@@ -492,10 +551,10 @@ test_editor()
 	repeat_key j 10
 	send Right j Right j e
 	i=0
-	while [ "$i" -lt 50 ]; do
+	while [ "$i" -lt 200 ]; do
 		value=$($TMUX list-keys -T prefix -F '#{key_command}' User2)
 		[ "$value" = "display-message edited" ] && break
-		sleep 0.2
+		sleep 0.05
 		i=$((i + 1))
 	done
 	assert_equals "$value" "display-message edited" \
@@ -505,10 +564,10 @@ test_editor()
 		fail "write editor key note failed"
 	send j e
 	i=0
-	while [ "$i" -lt 50 ]; do
+	while [ "$i" -lt 200 ]; do
 		value=$($TMUX list-keys -T prefix -F '#{key_note}' User2)
 		[ "$value" = "edited note" ] && break
-		sleep 0.2
+		sleep 0.05
 		i=$((i + 1))
 	done
 	assert_equals "$value" "edited note" "edit key note in editor"
@@ -523,10 +582,10 @@ test_editor()
 	repeat_key j 6
 	send Right j e
 	i=0
-	while [ "$i" -lt 50 ]; do
+	while [ "$i" -lt 200 ]; do
 		value=$($TMUX show-environment -t cm CM_EDIT_ENV)
 		[ "$value" = "CM_EDIT_ENV=env-edited" ] && break
-		sleep 0.2
+		sleep 0.05
 		i=$((i + 1))
 	done
 	assert_equals "$value" "CM_EDIT_ENV=env-edited" \
@@ -639,14 +698,25 @@ test_prompt_invalidation()
 	wait_mode 0
 }
 
+# Let the waiting editor finish; its result has been applied (or dropped)
+# once its floating pane is gone.
+finish_editor()
+{
+	$TMUX wait-for -S cm_editor_go || fail "signal editor failed"
+	wait_panes 1
+}
+
 test_editor_invalidation()
 {
 	start_client
 
+	# The editor holds until the test has made its external change.
+	sock=$($TMUX display-message -p '#{socket_path}') ||
+		fail "get socket path failed"
 	editor="$TMP/slow-editor.sh"
 	{
 		echo '#!/bin/sh'
-		echo 'sleep 1'
+		echo "$TEST_TMUX -S '$sock' wait-for cm_editor_go"
 		echo 'printf edited > "$1"'
 	} > "$editor" || fail "write slow editor helper failed"
 	chmod +x "$editor" || fail "chmod slow editor helper failed"
@@ -656,10 +726,10 @@ test_editor_invalidation()
 		fail "set editor stale option failed"
 	open_customize '#{==:#{option_name},@cm_editor_stale}'
 	send j Right j e
-	settle
+	wait_panes 2
 	$TMUX set-option -gu @cm_editor_stale ||
 		fail "external unset editor option failed"
-	sleep 2
+	finish_editor
 	assert_empty "$($TMUX show-option -gqv @cm_editor_stale)" \
 		"editor stale option should not be recreated"
 	assert_alive "stale option editor"
@@ -671,10 +741,10 @@ test_editor_invalidation()
 	open_customize '#{==:#{key},User5}'
 	repeat_key j 10
 	send Right j Right j e
-	settle
+	wait_panes 2
 	$TMUX unbind-key -T prefix User5 ||
 		fail "external unbind editor key failed"
-	sleep 2
+	finish_editor
 	$TMUX list-keys -T prefix User5 >/dev/null 2>&1 &&
 		fail "editor stale key should stay unbound"
 	assert_alive "stale key editor"
@@ -686,10 +756,10 @@ test_editor_invalidation()
 	open_customize '#{==:#{environment_name},CM_EDITOR_STALE}'
 	repeat_key j 6
 	send Right j e
-	settle
+	wait_panes 2
 	$TMUX set-environment -t cm -u CM_EDITOR_STALE ||
 		fail "external unset editor environment failed"
-	sleep 2
+	finish_editor
 	assert_equals "$($TMUX show-environment -t cm CM_EDITOR_STALE)" \
 		"CM_EDITOR_STALE=edited" "editor stale environment is reset"
 	assert_alive "stale environment editor"

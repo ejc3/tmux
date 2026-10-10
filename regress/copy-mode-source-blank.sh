@@ -52,8 +52,8 @@ $TMUX respawn-pane -k -t test:0.0 \
 i=0
 while [ "$($TMUX display-message -p -t test:0.0 '#{cursor_y}')" != 4 ]; do
 	i=$((i + 1))
-	[ "$i" -lt 10 ] || fail "source output did not arrive"
-	sleep 1
+	[ "$i" -lt 400 ] || fail "source output did not arrive"
+	sleep 0.05
 done
 $TMUX copy-mode -s test:0.0 -t test:1.0 || exit 1
 [ "$($TMUX display-message -p -t test:1.0 \

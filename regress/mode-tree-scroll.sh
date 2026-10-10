@@ -44,51 +44,51 @@ capture()
 
 # wait_for $marker
 #
-# Wait (up to ~10s) until the rendered screen contains $marker. The matching
+# Wait (up to 20s) until the rendered screen contains $marker. The matching
 # capture is left in CAPTURED.
 wait_for()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 400 ]; do
 		CAPTURED=$(capture)
 		if printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1'"
 }
 
 # wait_gone $marker
 #
-# Wait (up to ~10s) until the rendered screen no longer contains $marker. The
+# Wait (up to 20s) until the rendered screen no longer contains $marker. The
 # matching capture is left in CAPTURED.
 wait_gone()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 400 ]; do
 		CAPTURED=$(capture)
 		if ! printf '%s\n' "$CAPTURED" | grep -F -q "$1"; then
 			return 0
 		fi
-		sleep 0.2
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "timed out waiting for '$1' to disappear"
 }
 
 # wait_clients $n
 #
-# Wait (up to ~10s) until the test server has exactly $n clients attached.
+# Wait (up to 20s) until the test server has exactly $n clients attached.
 wait_clients()
 {
-	i=0
-	while [ "$i" -lt 10 ]; do
-		c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
-		[ "$c" -eq "$1" ] && return 0
-		sleep 1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_c=$($TMUX list-clients -F x 2>/dev/null | grep -c x)
+		[ "$_c" -eq "$1" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	return 1
 }

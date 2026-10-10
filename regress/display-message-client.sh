@@ -33,7 +33,7 @@ $INNER set-option -g status off || exit 1
 # Each client has a distinct TERM so that client_termname identifies it.
 attach()
 {
-	echo "env -i PATH=/bin:/usr/bin TERM=$1 LC_ALL=C.UTF-8 $TEST_TMUX -LtestI$$ -f/dev/null attach-session -t $2"
+	echo "env -i PATH=/bin:/usr/bin TERM=$1 LC_ALL=C.UTF-8 ${TMUX_TMPDIR:+TMUX_TMPDIR=$TMUX_TMPDIR} $TEST_TMUX -LtestI$$ -f/dev/null attach-session -t $2"
 }
 $OUTER new-session -d -s outer -x40 -y10 "$(attach screen one)" || exit 1
 $OUTER new-window -d "$(attach xterm two)" || exit 1
