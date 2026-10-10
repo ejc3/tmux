@@ -1081,6 +1081,14 @@ struct progress_bar {
 /* Virtual screen. */
 struct screen_sel;
 struct screen_titles;
+
+/* A stack of mouse pointer shapes (OSC 22). */
+#define SCREEN_POINTERS 16
+struct screen_pointers {
+	char				*shape[SCREEN_POINTERS];
+	u_int				 n;
+};
+
 struct screen {
 	char				*title;
 	char				*path;
@@ -1121,6 +1129,7 @@ struct screen {
 
 	struct hyperlinks		*hyperlinks;
 	struct progress_bar		 progress_bar;
+	struct screen_pointers		 pointers[2]; /* main, alternate */
 };
 
 /* Screen write context. */
@@ -1764,6 +1773,7 @@ struct tty_term {
 #define TERM_SIXEL 0x40
 #define TERM_INVALIDMS 0x80
 #define TERM_NOREPLACE 0x100
+#define TERM_POINTER 0x400
 	int		 flags;
 
 	LIST_ENTRY(tty_term) entry;
@@ -2253,6 +2263,7 @@ struct client {
 	int			 term_features;
 	int		 	 term_nofeatures;
 	char			*term_type;
+	char			*pointer;	/* shape set, or NULL */
 	char		       **term_caps;
 	u_int			 term_ncaps;
 
@@ -2968,6 +2979,7 @@ void	tty_repeat_requests(struct tty *, int);
 void	tty_stop_tty(struct tty *);
 void	tty_set_title(struct tty *, const char *);
 void	tty_set_path(struct tty *, const char *);
+void	tty_set_pointer(struct tty *, const char *);
 void	tty_set_progress_bar(struct tty *, struct progress_bar *);
 void	tty_default_attributes(struct tty *, u_int,
 	    const struct tty_style_ctx *);
@@ -3328,6 +3340,7 @@ u_int	 server_client_how_many(void);
 void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
+const char *window_pane_pointer(struct window_pane *);
 const char *server_client_get_key_table(struct client *);
 int	 server_client_check_nested(struct client *);
 int	 server_client_handle_key(struct client *, struct key_event *);
@@ -3684,6 +3697,11 @@ int	 screen_set_path(struct screen *, const char *, int);
 void	 screen_push_title(struct screen *);
 void	 screen_pop_title(struct screen *);
 void	 screen_set_progress_bar(struct screen *, enum progress_bar_state, int);
+const char *screen_pointer(struct screen *);
+void	 screen_pointer_set(struct screen *, const char *);
+void	 screen_pointer_push(struct screen *, const char *);
+void	 screen_pointer_pop(struct screen *);
+void	 screen_pointer_reset(struct screen *);
 void	 screen_resize(struct screen *, u_int, u_int, int);
 void	 screen_resize_cursor(struct screen *, u_int, u_int, int, int, int);
 void	 screen_set_selection(struct screen *, u_int, u_int, u_int, u_int,
