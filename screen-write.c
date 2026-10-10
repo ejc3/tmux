@@ -1630,40 +1630,21 @@ screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	struct screen	*s = ctx->s;
 	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
-	u_int		 sy = screen_size_y(s);
 
 	if (ny == 0)
 		ny = 1;
 
+	/*
+	 * Outside the scroll region, IL and DL do nothing (DEC; xterm and other
+	 * terminals ignore them too).
+	 */
+	if (s->cy < s->rupper || s->cy > s->rlower)
+		return;
+
 #ifdef ENABLE_SIXEL
-	if (image_check_line(s, s->cy, sy - s->cy) && ctx->wp != NULL)
+	if (image_check_line(s, s->cy, screen_size_y(s) - s->cy) && ctx->wp != NULL)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
-
-	if (s->cy < s->rupper || s->cy > s->rlower) {
-		if (ny > sy - s->cy)
-			ny = sy - s->cy;
-		if (ny == 0)
-			return;
-
-		screen_write_initctx(ctx, &ttyctx, 1, 1);
-		ttyctx.bg = bg;
-
-		grid_view_insert_lines(gd, s->cy, ny, bg);
-
-		screen_write_collect_flush(ctx, 0, __func__);
-		ttyctx.n = ny;
-
-		if (!screen_write_should_draw_lines(ctx, s->cy, sy - s->cy))
-			return;
-		if (~ttyctx.flags & TTY_CTX_PANE_OBSCURED || ctx->wp == NULL) {
-			tty_write(tty_cmd_insertline, &ttyctx);
-			return;
-		}
-
-		screen_write_redraw_pane(ctx, &ttyctx);
-		return;
-	}
 
 	if (ny > s->rlower + 1 - s->cy)
 		ny = s->rlower + 1 - s->cy;
@@ -1673,10 +1654,7 @@ screen_write_insertline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
-	if (s->cy < s->rupper || s->cy > s->rlower)
-		grid_view_insert_lines(gd, s->cy, ny, bg);
-	else
-		grid_view_insert_lines_region(gd, s->rlower, s->cy, ny, bg);
+	grid_view_insert_lines_region(gd, s->rlower, s->cy, ny, bg);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = ny;
@@ -1698,41 +1676,22 @@ screen_write_deleteline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	struct screen	*s = ctx->s;
 	struct grid	*gd = s->grid;
 	struct tty_ctx	 ttyctx;
-	u_int		 sy = screen_size_y(s), ry;
+	u_int		 ry;
 
 	if (ny == 0)
 		ny = 1;
 
+	/*
+	 * Outside the scroll region, IL and DL do nothing (DEC; xterm and other
+	 * terminals ignore them too).
+	 */
+	if (s->cy < s->rupper || s->cy > s->rlower)
+		return;
+
 #ifdef ENABLE_SIXEL
-	if (image_check_line(s, s->cy, sy - s->cy) && ctx->wp != NULL)
+	if (image_check_line(s, s->cy, screen_size_y(s) - s->cy) && ctx->wp != NULL)
 		ctx->wp->flags |= PANE_REDRAW;
 #endif
-
-	if (s->cy < s->rupper || s->cy > s->rlower) {
-		if (ny > sy - s->cy)
-			ny = sy - s->cy;
-		if (ny == 0)
-			return;
-
-		screen_write_initctx(ctx, &ttyctx, 1, 1);
-		ttyctx.bg = bg;
-
-		grid_view_delete_lines(gd, s->cy, ny, bg);
-
-		screen_write_collect_flush(ctx, 0, __func__);
-		ttyctx.n = ny;
-
-		ry = s->rlower + 1 - s->rupper;
-		if (!screen_write_should_draw_lines(ctx, s->rupper, ry))
-			return;
-		if (~ttyctx.flags & TTY_CTX_PANE_OBSCURED || ctx->wp == NULL) {
-			tty_write(tty_cmd_deleteline, &ttyctx);
-			return;
-		}
-
-		screen_write_redraw_pane(ctx, &ttyctx);
-		return;
-	}
 
 	ry = s->rlower + 1 - s->cy;
 	if (ny > ry)
@@ -1743,10 +1702,7 @@ screen_write_deleteline(struct screen_write_ctx *ctx, u_int ny, u_int bg)
 	screen_write_initctx(ctx, &ttyctx, 1, 1);
 	ttyctx.bg = bg;
 
-	if (s->cy < s->rupper || s->cy > s->rlower)
-		grid_view_delete_lines(gd, s->cy, ny, bg);
-	else
-		grid_view_delete_lines_region(gd, s->rlower, s->cy, ny, bg);
+	grid_view_delete_lines_region(gd, s->rlower, s->cy, ny, bg);
 
 	screen_write_collect_flush(ctx, 0, __func__);
 	ttyctx.n = ny;
