@@ -1315,12 +1315,18 @@ struct visible_ranges {
 	u_int			 size;    /* allocated capacity of ranges */
 };
 
+/* Notifications a pane waits to hear back about (server-client.c). */
+struct notify_item;
+TAILQ_HEAD(notify_items, notify_item);
+
 /* Child window structure. */
 struct window_pane {
 	u_int		 id;
 	int		 references;
 	u_int		 active_point;
 	u_int		 notify_anon;	/* OSC 99 without an identifier */
+	struct notify_items notifies;	/* OSC 99 awaiting reports */
+	u_int		 nnotifies;
 
 	struct window	*window;
 	struct options	*options;
@@ -3334,6 +3340,7 @@ void	 server_client_ensure_ranges(struct visible_ranges *, u_int);
 int	 server_client_ranges_is_empty(struct visible_ranges *);
 void	 server_client_set_key_table(struct client *, const char *);
 void	 server_client_notify(struct window_pane *, const char *);
+void	 server_client_notify_free(struct window_pane *);
 char	*server_client_notify_rewrite(struct window_pane *, const char *);
 int	 server_client_notify_is_query(const char *);
 int	 server_client_notify_reply(struct client *, const char *, size_t,

@@ -5209,6 +5209,12 @@ mouse sequences.
 .It notify
 Shows desktop notifications (OSC 9, OSC 99 and OSC 777): notifications from
 panes are passed on to it.
+What it reports for one (that it was activated or closed) goes back to the
+pane.
+With the notification on several terminals, the pane is told as one terminal
+would tell it: activations are passed on from the first terminal to report
+one, closes from the first to report one, and an activation closes the
+notification on the other terminals.
 .It osc7
 Supports the OSC 7 working directory extension.
 .It overline
