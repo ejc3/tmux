@@ -2741,7 +2741,17 @@ input_exit_osc(struct input_ctx *ictx)
 		input_osc_8(ictx, p);
 		break;
 	case 9:
-		input_osc_9(ictx, p);
+		/* 9;4 is a progress bar; other forms are notifications. */
+		if (*p == '4' && (p[1] == ';' || p[1] == '\0'))
+			input_osc_9(ictx, p);
+		else if (wp != NULL)
+			server_client_notify(wp, ictx->input_buf);
+		break;
+	case 99:
+	case 777:
+		/* Notifications, but not a query for what is supported. */
+		if (wp != NULL && strstr(p, "p=?") == NULL)
+			server_client_notify(wp, ictx->input_buf);
 		break;
 	case 10:
 		input_osc_10(ictx, p);
