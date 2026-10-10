@@ -32,52 +32,36 @@ fail()
 	exit 1
 }
 
-settle()
-{
-	sleep 0.5
-}
-
 wait_option()
 {
-	option=$1
-	expected=$2
-	i=0
+	_i=0
 
-	while [ "$i" -lt 30 ]; do
-		value=$($IN show -gqv "$option" 2>/dev/null || true)
-		[ "$value" = "$expected" ] && return 0
-		i=$((i + 1))
-		sleep 0.2
+	while [ "$_i" -lt 120 ]; do
+		_value=$($IN show -gqv "$1" 2>/dev/null || true)
+		[ "$_value" = "$2" ] && return 0
+		_i=$((_i + 1))
+		sleep 0.05
 	done
-	fail "expected $option to be '$expected' but got '$value'"
+	fail "expected $1 to be '$2' but got '$_value'"
 }
+
+# The keys reach the inner server in order through the client's terminal, so
+# the prompt is open before its input arrives: no waits are needed between them.
 
 accept_prompt()
 {
-	key=$1
-	value=$2
-
-	$OUT send-keys "$key" || exit 1
-	settle
-	$OUT send-keys -l "$value" || exit 1
+	$OUT send-keys "$1" || exit 1
+	$OUT send-keys -l "$2" || exit 1
 	$OUT send-keys Enter || exit 1
-	settle
 }
 
 accept_two_prompts()
 {
-	key=$1
-	first=$2
-	second=$3
-
-	$OUT send-keys "$key" || exit 1
-	settle
-	$OUT send-keys -l "$first" || exit 1
+	$OUT send-keys "$1" || exit 1
+	$OUT send-keys -l "$2" || exit 1
 	$OUT send-keys Enter || exit 1
-	settle
-	$OUT send-keys -l "$second" || exit 1
+	$OUT send-keys -l "$3" || exit 1
 	$OUT send-keys Enter || exit 1
-	settle
 }
 
 reset_options()
@@ -121,7 +105,14 @@ $OUT set -g status off || exit 1
 $OUT set -g window-size manual || exit 1
 $OUT send-keys -l "$IN attach" || exit 1
 $OUT send-keys Enter || exit 1
-sleep 1
+
+# Wait until the inner client has attached and answered tmux's queries.
+i=0
+until [ -n "$($IN list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	i=$((i + 1))
+	[ "$i" -ge 400 ] && fail "inner client did not attach"
+	sleep 0.05
+done
 
 reset_options
 

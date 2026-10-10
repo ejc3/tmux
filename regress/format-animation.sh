@@ -10,10 +10,11 @@
 # window runs sleep and every other status line is blanked, so the capture
 # contains the frame and nothing else.
 #
-# Each frame lasts 700 milliseconds and the capture is repeated once a second,
-# so consecutive samples always land on a different frame: no exact period is
-# assumed and nothing in the test asks for a redraw, so seeing the frame change
-# means the status line animated on its own.
+# Each frame lasts 700 milliseconds and the capture is repeated until a second
+# frame is seen, giving up after 5 seconds (well inside the 15 second
+# status-interval): no exact period is assumed and nothing in the test asks for
+# a redraw, so seeing the frame change means the status line animated on its
+# own.
 
 PATH=/bin:/usr/bin
 TERM=screen
@@ -59,15 +60,26 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+
+# Wait for the inner tmux to draw its first frame.
+i=0
+while :; do
+	frame=$(capture)
+	case "$frame" in
+	AAAA|BBBB|CCCC) break ;;
+	esac
+	i=$((i + 1))
+	[ $i -lt 400 ] || fail "status line is '$frame', not a frame"
+	sleep 0.05
+done
 
 # Sample the frames. Every sample must be one of the frames and at least two
 # different ones must be seen; status-interval is 15 seconds so only the cycle
 # timer can have redrawn the status line.
-seen=""
+seen=" $frame"
 i=0
-while [ $i -lt 4 ]; do
-	[ $i -eq 0 ] || sleep 1
+while :; do
+	sleep 0.05
 	frame=$(capture)
 	case "$frame" in
 	AAAA|BBBB|CCCC) ;;
@@ -77,10 +89,11 @@ while [ $i -lt 4 ]; do
 	*" $frame "*) ;;
 	*) seen="$seen $frame" ;;
 	esac
+	set -- $seen
+	[ $# -ge 2 ] && break
 	i=$((i + 1))
+	[ $i -lt 100 ] || fail "status line did not animate, only saw$seen"
 done
-set -- $seen
-[ $# -ge 2 ] || fail "status line did not animate, only saw$seen"
 
 # Outside a status format there is no animation at all.
 out=$($TMUX2 display-message -p "#{A:ZZZZ,YYYY}") || exit 1
@@ -90,8 +103,16 @@ out=$($TMUX2 list-panes -F "#{A:ZZZZ,YYYY}") || exit 1
 
 # Nor inside #(), where the frames would change the command on every frame.
 $TMUX2 set -g status-format[0] '#(echo "[#{A:ZZZZ,YYYY}]")' || exit 1
-sleep 1
-out=$(capture)
+i=0
+while :; do
+	out=$(capture)
+	case "$out" in
+	*"["*) break ;;
+	esac
+	i=$((i + 1))
+	[ $i -lt 400 ] || fail "job output did not appear, status is '$out'"
+	sleep 0.05
+done
 case "$out" in
 *ZZZZ*|*YYYY*) fail "job command saw a frame: '$out'" ;;
 *"[]"*) ;;
