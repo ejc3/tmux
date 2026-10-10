@@ -182,6 +182,7 @@ server_client_create(int fd)
 	c->queue = cmdq_new();
 	RB_INIT(&c->files);
 
+	c->forward_pane = UINT_MAX;
 	c->tty.sx = 80;
 	c->tty.sy = 24;
 
@@ -1800,6 +1801,9 @@ server_client_loop(void)
 		}
 	}
 
+	/* Stop forwarding to clients that no longer qualify. */
+	forward_check();
+
 	/* Check clients. */
 	TAILQ_FOREACH(c, &clients, entry) {
 		server_client_check_exit(c, 0);
@@ -2096,9 +2100,14 @@ server_client_reset_state(struct client *c)
 		    screen_mode_to_string(mode));
 	}
 
-	/* Reset region and margin. */
-	tty_region_off(tty);
-	tty_margin_off(tty);
+	/*
+	 * Reset region and margin - unless forwarding: then the program's own
+	 * output has put the region, margins and cursor where it wants them.
+	 */
+	if (c->forward_pane == UINT_MAX) {
+		tty_region_off(tty);
+		tty_margin_off(tty);
+	}
 
 	/* Move cursor to pane cursor and offset. */
 	if (c->prompt != NULL) {
@@ -2163,7 +2172,8 @@ server_client_reset_state(struct client *c)
 		mode &= ~MODE_CURSOR;
 	if (~pane_mode & MODE_SYNC) {
 		log_debug("%s: cursor to %u,%u", __func__, cx, cy);
-		tty_cursor(tty, cx, cy);
+		if (c->forward_pane == UINT_MAX)
+			tty_cursor(tty, cx, cy);
 	} else {
 		mode &= ~CURSOR_MODES;
 		mode |= tty->mode & CURSOR_MODES;
@@ -2396,8 +2406,17 @@ server_client_check_redraw(struct client *c)
 	static struct event	 ev;
 	size_t			 n;
 
+	/*
+	 * Forwarding: the terminal is drawn by the program's own output; what
+	 * would be redrawn is already there.
+	 */
+	if (c->forward_pane != UINT_MAX) {
 		if (c->flags & CLIENT_ALLREDRAWFLAGS)
 			server_client_set_extras(c);
+		c->flags &= ~CLIENT_ALLREDRAWFLAGS;
+		return;
+	}
+
 	if (c->flags & (CLIENT_CONTROL|CLIENT_SUSPENDED))
 		return;
 	if (c->flags & CLIENT_ALLREDRAWFLAGS) {
