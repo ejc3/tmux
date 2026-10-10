@@ -36,27 +36,54 @@ capture()
 
 wait_mode()
 {
-	want=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
-		got=$($INNER display-message -p -t clock:0 '#{pane_mode}' 2>/dev/null)
-		[ "$got" = "$want" ] && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_want=$1
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_got=$($INNER display-message -p -t clock:0 '#{pane_mode}' 2>/dev/null)
+		[ "$_got" = "$_want" ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "pane mode is '$got', expected '$want'"
+	fail "pane mode is '$_got', expected '$_want'"
 }
 
 wait_hashes()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
-		captured=$(capture)
-		printf '%s\n' "$captured" | grep -q '#' && return 0
-		sleep 0.1
-		i=$((i + 1))
+	_i=0
+	while [ "$_i" -lt 400 ]; do
+		_captured=$(capture)
+		printf '%s\n' "$_captured" | grep -q '#' && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "large clock did not render"
+}
+
+# Wait for the outer pane to settle (unchanged for 0.15 s), then for the clock
+# to be redrawn: its one-second timer has run and seen a new second.
+wait_tick()
+{
+	_prev=$(capture)
+	_n=0
+	_i=0
+	while [ "$_n" -lt 3 ]; do
+		sleep 0.05
+		_cur=$(capture)
+		if [ "$_cur" = "$_prev" ]; then
+			_n=$((_n + 1))
+		else
+			_n=0
+			_prev=$_cur
+		fi
+		_i=$((_i + 1))
+		[ "$_i" -lt 400 ] || fail "clock did not settle"
+	done
+	_i=0
+	while [ "$(capture)" = "$_prev" ]; do
+		_i=$((_i + 1))
+		[ "$_i" -lt 400 ] || fail "clock timer did not redraw"
+		sleep 0.05
+	done
 }
 
 $INNER new-session -d -s clock -x80 -y24 'exec sleep 100' || exit 1
@@ -66,7 +93,12 @@ $INNER set-option -w clock-mode-colour red || exit 1
 $OUTER new-session -d -s outer -x80 -y24 "$INNER attach -t clock" || exit 1
 $OUTER set-option -g status off || exit 1
 $OUTER set-option -g window-size manual || exit 1
-sleep 1
+i=0
+until [ -n "$($INNER list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	i=$((i + 1))
+	[ "$i" -lt 400 ] || fail "inner client did not attach"
+	sleep 0.05
+done
 
 for style in 12 24 12-with-seconds 24-with-seconds; do
 	$INNER set-option -w -t clock:0 clock-mode-style "$style" || exit 1
@@ -74,7 +106,7 @@ for style in 12 24 12-with-seconds 24-with-seconds; do
 	wait_mode clock-mode
 	wait_hashes
 	# Let at least one timer callback observe a new second.
-	[ "$style" != 12-with-seconds ] || sleep 1.2
+	[ "$style" != 12-with-seconds ] || wait_tick
 	$INNER send-keys -t clock:0 x || exit 1
 	wait_mode ''
 done
@@ -85,13 +117,13 @@ $INNER clock-mode -t clock:0 || exit 1
 wait_mode clock-mode
 $INNER resize-window -t clock:0 -x20 -y5 || exit 1
 i=0
-while [ "$i" -lt 50 ]; do
+while [ "$i" -lt 400 ]; do
 	captured=$(capture)
 	printf '%s\n' "$captured" | grep -Eq '[0-9][0-9]?:[0-9][0-9]' && break
-	sleep 0.1
+	sleep 0.05
 	i=$((i + 1))
 done
-[ "$i" -lt 50 ] || fail "compact clock did not render after resize"
+[ "$i" -lt 400 ] || fail "compact clock did not render after resize"
 printf '%s\n' "$captured" | grep -q '#' &&
 	fail "compact clock still used large glyphs"
 $INNER send-keys -t clock:0 Enter || exit 1

@@ -20,14 +20,40 @@ trap "$TMUX kill-server 2>/dev/null; $TMUX_OUTER kill-server 2>/dev/null" 0 1 15
 
 # Start outer tmux that will capture the inner tmux's rendering
 $TMUX_OUTER -f/dev/null new -d -x80 -y24 "$TMUX -f/dev/null new -x78 -y22" || exit 1
-sleep 1
+
+# Wait for the inner client to attach and get its terminal's answers.
+_i=0
+until [ -n "$($TMUX list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+    _i=$((_i + 1))
+    [ $_i -lt 400 ] || { echo "inner client did not attach"; exit 1; }
+    sleep 0.05
+done
+
+# Wait until the inner server has gone round its loop and the outer pane has
+# read what it drew: the capture is unchanged for 0.15 s (up to 5 s).
+settle() {
+    $TMUX display -p x >/dev/null
+    _prev=$($TMUX_OUTER capturep -Cep 2>/dev/null | cksum)
+    _n=0
+    _i=0
+    while [ $_n -lt 3 ] && [ $_i -lt 100 ]; do
+        sleep 0.05
+        _cur=$($TMUX_OUTER capturep -Cep 2>/dev/null | cksum)
+        if [ "$_cur" = "$_prev" ]; then
+            _n=$((_n + 1))
+        else
+            _n=0
+            _prev=$_cur
+        fi
+        _i=$((_i + 1))
+    done
+}
 
 # Set pane-border-indicators to "both" in inner tmux
 $TMUX set -g pane-border-indicators both || exit 1
 
 # Create horizontal split (two panes side by side)
 $TMUX splitw -h || exit 1
-sleep 1
 
 # Helper to check for arrow characters in captured output
 has_arrow() {
@@ -36,14 +62,14 @@ has_arrow() {
 
 # Test 1: Select left pane (pane 0) and check for arrows
 $TMUX selectp -t 0
-sleep 1
+settle
 left_output=$($TMUX_OUTER capturep -Cep 2>/dev/null)
 has_arrow "$left_output" || exit 1
 
 # Test 2: Select right pane (pane 1) and check for arrows
 # This is the case that failed before the fix
 $TMUX selectp -t 1
-sleep 1
+settle
 right_output=$($TMUX_OUTER capturep -Cep 2>/dev/null)
 has_arrow "$right_output" || exit 1
 

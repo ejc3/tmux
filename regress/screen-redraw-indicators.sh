@@ -31,10 +31,40 @@ fail() {
 	exit 1
 }
 
+# settle [-e]: wait until the inner server has gone round its loop and the
+# outer pane has read what it drew (unchanged for 0.15 s, up to 5 s).
+settle() {
+	$TMUX2 display -p x >/dev/null || exit 1
+	_prev=$($TMUX capturep -p $1 | cksum)
+	_n=0
+	_i=0
+	while [ $_n -lt 3 ] && [ $_i -lt 100 ]; do
+		sleep 0.05
+		_cur=$($TMUX capturep -p $1 | cksum)
+		if [ "$_cur" = "$_prev" ]; then
+			_n=$((_n + 1))
+		else
+			_n=0
+			_prev=$_cur
+		fi
+		_i=$((_i + 1))
+	done
+}
+
 # compare <name> [-e]: capture the outer pane and compare (or generate).
 compare() {
-	sleep 1
+	settle $2
 	$TMUX capturep -p $2 >$TMP || exit 1
+	if [ -z "$GENERATE" ]; then
+		# A slow redraw still gets up to 20 s to match.
+		_i=0
+		until cmp -s $TMP "$RESULTS/$1.result"; do
+			_i=$((_i + 1))
+			[ $_i -lt 400 ] || break
+			sleep 0.05
+			$TMUX capturep -p $2 >$TMP || exit 1
+		done
+	fi
 	if [ -n "$GENERATE" ]; then
 		cp $TMP "$RESULTS/$1.result" || exit 1
 		echo "generated $1"
@@ -65,7 +95,12 @@ $TMUX set -g window-size manual || exit 1
 $TMUX set -g default-terminal "tmux-256color" || exit 1
 $TMUX send -l "$TMUX2 attach" || exit 1
 $TMUX send Enter || exit 1
-sleep 1
+_i=0
+until [ -n "$($TMUX2 list-clients -F '#{client_termtype}' 2>/dev/null)" ]; do
+	_i=$((_i + 1))
+	[ $_i -lt 400 ] || fail "inner client did not attach"
+	sleep 0.05
+done
 
 # --- Arrows: must appear for whichever pane is active (GitHub #4780). ---
 

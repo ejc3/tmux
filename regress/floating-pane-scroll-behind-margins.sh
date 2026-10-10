@@ -40,28 +40,47 @@ trap cleanup 0 1 15
 
 wait_outer_has()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$OUTER capture-pane -p -t outer:0.0 >"$CAPTURE" 2>/dev/null || true
-		grep -q "$marker" "$CAPTURE" && return 0
-		sleep 0.1
-		i=$((i + 1))
+		grep -q "$1" "$CAPTURE" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "outer client did not show $marker"
+	fail "outer client did not show $1"
 }
 
 wait_inner_has()
 {
-	marker=$1
-	i=0
-	while [ "$i" -lt 100 ]; do
+	_i=0
+	while [ "$_i" -lt 200 ]; do
 		$INNER capture-pane -p -t "$2" 2>/dev/null |
-		    grep -q "$marker" && return 0
-		sleep 0.1
-		i=$((i + 1))
+		    grep -q "$1" && return 0
+		sleep 0.05
+		_i=$((_i + 1))
 	done
-	fail "inner pane $2 did not contain $marker"
+	fail "inner pane $2 did not contain $1"
+}
+
+# Wait until the inner server has gone round its loop and the outer pane has
+# stopped changing (3 equal captures 0.05s apart, at most 5s).
+wait_outer_settled()
+{
+	$INNER display -p x >/dev/null || fail "inner server round trip failed"
+	_prev=
+	_same=0
+	_i=0
+	while [ "$_same" -lt 3 ] && [ "$_i" -lt 100 ]; do
+		_cur=$($OUTER capture-pane -p -t outer:0.0 | cksum)
+		if [ "$_cur" = "$_prev" ]; then
+			_same=$((_same + 1))
+		else
+			_same=0
+		fi
+		_prev=$_cur
+		_i=$((_i + 1))
+		sleep 0.05
+	done
 }
 
 # Scrolling pane: wait for the trigger, then scroll it well past its height.
@@ -126,12 +145,12 @@ for margins in off on; do
 	    exit 1
 
 	wait_outer_has row18
-	sleep 0.5
+	wait_outer_settled
 	$OUTER capture-pane -p -t outer:0.0 >"$DIR/before"
 
 	: >"$TRIGGER"
 	wait_inner_has SCROLL-DONE "$SMALL"
-	sleep 0.5
+	wait_outer_settled
 	$OUTER capture-pane -p -t outer:0.0 >"$CAPTURE"
 
 	# Columns 1-52 hold the whole large pane, its border and scrollbar.

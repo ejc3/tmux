@@ -38,13 +38,43 @@ capture()
 
 wait_for_client()
 {
-	i=0
-	while [ "$i" -lt 50 ]; do
+	_i=0
+	while [ "$_i" -lt 100 ]; do
 		$INNER list-clients 2>/dev/null | grep -q . && return 0
-		sleep 0.1
-		i=$((i + 1))
+		sleep 0.05
+		_i=$((_i + 1))
 	done
 	fail "inner client did not attach"
+}
+
+# wait_bar shown|hidden file
+#
+# Wait until the scrollbar (the only colour196 cells) is shown or hidden and
+# the capture has not changed for 0.15 seconds, then leave it in file.
+wait_bar()
+{
+	_i=0
+	_last=
+	_same=0
+	while [ "$_i" -lt 400 ]; do
+		capture "$2"
+		_sum=$(cksum <"$2")
+		if [ "$_sum" = "$_last" ]; then
+			_same=$((_same + 1))
+		else
+			_same=0
+			_last=$_sum
+		fi
+		if grep -q '48;5;196' "$2"; then
+			_state=shown
+		else
+			_state=hidden
+		fi
+		[ "$_state" = "$1" ] && [ "$_same" -ge 3 ] && return 0
+		sleep 0.05
+		_i=$((_i + 1))
+	done
+	fail "scrollbar was not $1"
 }
 
 $INNER new-session -d -s inner -x40 -y12 \
@@ -66,16 +96,14 @@ wait_for_client
 # to expire before taking the hidden reference capture.
 $INNER copy-mode -H || exit 1
 $INNER send-keys -X history-top || exit 1
-sleep 3.5
-capture "$HIDDEN"
+wait_bar shown "$VISIBLE"
+wait_bar hidden "$HIDDEN"
 
 # A copy-mode page movement shows the overlay and starts its timer. Capture
 # that view immediately, then again after the timeout without moving it.
 $INNER send-keys -X page-down || exit 1
-sleep 0.1
-capture "$VISIBLE"
-sleep 3.5
-capture "$AFTER"
+wait_bar shown "$VISIBLE"
+wait_bar hidden "$AFTER"
 cmp -s "$VISIBLE" "$AFTER" && fail "scrollbar did not hide after timeout"
 
 # Use the post-movement hidden scene as the reference for pointer hover. SGR
@@ -84,13 +112,11 @@ cmp -s "$VISIBLE" "$AFTER" && fail "scrollbar did not hide after timeout"
 cp "$AFTER" "$HIDDEN"
 hover=$(printf '\033[<35;40;5M')
 $OUTER send-keys -l "$hover" || exit 1
-sleep 0.1
-capture "$VISIBLE"
+wait_bar shown "$VISIBLE"
 cmp -s "$HIDDEN" "$VISIBLE" && fail "scrollbar did not appear on hover"
 away=$(printf '\033[<35;5;5M')
 $OUTER send-keys -l "$away" || exit 1
-sleep 3.5
-capture "$AFTER"
+wait_bar hidden "$AFTER"
 cmp -s "$HIDDEN" "$AFTER" || fail "scrollbar did not hide after hover"
 
 exit 0
