@@ -259,6 +259,16 @@ static const struct tty_feature tty_feature_extkeys = {
 	0
 };
 
+/*
+ * Terminal has the kitty graphics protocol, found by asking it (a=q). tmux
+ * gives it the images programs in panes send.
+ */
+static const struct tty_feature tty_feature_kittygraphics = {
+	"kittygraphics",
+	NULL,
+	TERM_KGFX
+};
+
 /* Terminal supports DECSLRM margins. */
 static const char *const tty_feature_margins_capabilities[] = {
 	"Enmg=\\E[?69h",
@@ -411,7 +421,13 @@ static const struct tty_feature *const tty_features[] = {
 	&tty_feature_sync,
 	&tty_feature_title,
 	&tty_feature_usstyle,
-	&tty_feature_utf8
+	&tty_feature_utf8,
+	/*
+	 * Newer features go after the others, not in name order: tmux -T
+	 * sends features as a mask of their places here, so the others keep
+	 * their bits.
+	 */
+	&tty_feature_kittygraphics
 };
 
 /* Parse features for client. */

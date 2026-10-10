@@ -351,6 +351,7 @@ server_client_set_session(struct client *c, struct session *s)
 		session_update_activity(s, NULL);
 		session_theme_changed(s);
 		gettimeofday(&s->last_attached_time, NULL);
+		kgfx_client_sync(c);
 		s->curw->flags &= ~WINLINK_ALERTFLAGS;
 		alerts_check_session(s);
 		tty_update_client_offset(c);
@@ -415,6 +416,7 @@ server_client_lost(struct client *c)
 
 	status_free(c);
 	input_cancel_requests(c);
+	kgfx_client_free(c);
 
 	free(c->title);
 	free(c->path);
