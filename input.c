@@ -2141,6 +2141,10 @@ input_csi_dispatch_sm_private(struct input_ctx *ictx)
 			screen_write_alternateon(sctx, gc, 1);
 			if (!alt && SCREEN_IS_ALTERNATE(sctx->s))
 				input_swap_state(ictx);
+			else if (alt) {
+				/* Already there: clear it, as xterm does. */
+				screen_write_clearscreen(sctx, gc->bg);
+			}
 			break;
 		case 2004:
 			screen_write_mode_set(sctx, MODE_BRACKETPASTE);
