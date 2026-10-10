@@ -38,6 +38,7 @@ static int	tty_log_fd = -1;
 static void	tty_start_timer_callback(int, short, void *);
 static void	tty_clipboard_query_callback(int, short, void *);
 static void	tty_set_italics(struct tty *);
+static void	tty_extended_keys(struct tty *);
 static int	tty_try_colour(struct tty *, int, const char *);
 static void	tty_force_cursor_colour(struct tty *, int);
 static void	tty_cursor_pane(struct tty *, const struct tty_ctx *, u_int,
@@ -388,6 +389,11 @@ tty_start_tty(struct tty *tty)
 		tty_puts(tty, "\033[?2031h\033[?996n");
 	}
 
+	/* Stopping the terminal popped the kitty keyboard flags. */
+	if ((tty->term->flags & TERM_KKEYS) &&
+	    options_get_number(global_options, "extended-keys"))
+		tty_extended_keys(tty);
+
 	tty_start_start_timer(tty);
 
 	tty->flags |= TTY_STARTED;
@@ -416,6 +422,8 @@ tty_send_requests(struct tty *tty)
 			tty_puts(tty, "\033[>q");
 		if (~tty->flags & TTY_HAVESYNC)
 			tty_puts(tty, "\033[?2026$p");
+		if (~tty->flags & TTY_HAVEKKEYS)
+			tty_puts(tty, "\033[?u");
 		tty_puts(tty, "\033]10;?\033\\\033]11;?\033\\");
 		tty->flags |= (TTY_WAITBG|TTY_WAITFG);
 	} else
@@ -505,6 +513,10 @@ tty_stop_tty(struct tty *tty)
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSESC));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSFCS));
 	tty_raw(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	if (tty->flags & TTY_KKEYS) {
+		tty_raw(tty, "\033[<u");
+		tty->flags &= ~TTY_KKEYS;
+	}
 
 	if (tty_use_margin(tty))
 		tty_raw(tty, tty_term_string(tty->term, TTYC_DSMG));
@@ -545,6 +557,26 @@ tty_free(struct tty *tty)
 	tty_close(tty);
 }
 
+/*
+ * Ask the terminal for extended keys: the kitty keyboard protocol if it has
+ * it (disambiguated keys, and the shifted key so shifted keys are as they are
+ * without it), pushed once and popped when the terminal is stopped;
+ * otherwise the extkeys sequence.
+ */
+static void
+tty_extended_keys(struct tty *tty)
+{
+	if (~tty->term->flags & TERM_KKEYS) {
+		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
+		return;
+	}
+	if (tty->flags & TTY_KKEYS)
+		return;
+	tty_puts(tty, tty_term_string(tty->term, TTYC_DSEKS));
+	tty_puts(tty, "\033[>5u");
+	tty->flags |= TTY_KKEYS;
+}
+
 void
 tty_update_features(struct tty *tty)
 {
@@ -556,7 +588,7 @@ tty_update_features(struct tty *tty)
 	if (tty_use_margin(tty))
 		tty_putcode(tty, TTYC_ENMG);
 	if (options_get_number(global_options, "extended-keys"))
-		tty_puts(tty, tty_term_string(tty->term, TTYC_ENEKS));
+		tty_extended_keys(tty);
 	if (options_get_number(global_options, "focus-events"))
 		tty_puts(tty, tty_term_string(tty->term, TTYC_ENFCS));
 	tty_puts(tty, tty_term_string(tty->term, TTYC_ENESC));
