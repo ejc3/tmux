@@ -381,6 +381,7 @@ grid_create(u_int sx, u_int sy, u_int hlimit)
 	if (hlimit != 0)
 		gd->flags = GRID_HISTORY;
 	gd->hlimit = hlimit;
+	gd->rpush_wrapped = -1;
 
 	if (gd->sy != 0)
 		gd->linedata = xcalloc(gd->sy, sizeof *gd->linedata);
@@ -398,6 +399,7 @@ grid_destroy(struct grid *gd)
 {
 	grid_free_lines(gd, 0, gd->hsize + gd->sy);
 	free(gd->linedata);
+	free(gd->reflow_map);
 	free(gd);
 }
 
@@ -508,6 +510,35 @@ grid_scroll_history(struct grid *gd, u_int bg)
 	grid_line_set_time(&gd->linedata[gd->hsize]);
 	gd->hsize++;
 	gd->scroll_added++;
+	gd->rpush_wrapped = -1;
+}
+
+/*
+ * Note that n lines went into the history, and how (GRID_PUSH_*); a scroll
+ * continuing the last one extends it.
+ */
+void
+grid_add_push(struct grid *gd, u_int type, u_int upper, u_int lower, u_int n)
+{
+	struct grid_push	*gp;
+
+	if (n == 0)
+		return;
+	gd->scroll_view += n;
+	if (gd->npushes != 0) {
+		gp = &gd->pushes[(gd->npushes - 1) % GRID_PUSHES];
+		if (gp->type == type && gp->upper == upper &&
+		    gp->lower == lower &&
+		    (type == GRID_PUSH_SCROLL || type == GRID_PUSH_REGION)) {
+			gp->n += n;
+			return;
+		}
+	}
+	gp = &gd->pushes[gd->npushes++ % GRID_PUSHES];
+	gp->type = type;
+	gp->upper = upper;
+	gp->lower = lower;
+	gp->n = n;
 }
 
 /* Clear the history. */
@@ -519,6 +550,8 @@ grid_clear_history(struct grid *gd)
 	gd->hscrolled = 0;
 	gd->hsize = 0;
 	gd->scroll_generation++;
+	gd->scroll_cleared++;
+	gd->rpush_wrapped = -1;
 
 	gd->linedata = xreallocarray(gd->linedata, gd->sy,
 	    sizeof *gd->linedata);
@@ -529,12 +562,30 @@ void
 grid_scroll_history_region(struct grid *gd, u_int upper, u_int lower, u_int bg)
 {
 	struct grid_line	*gl_history, *gl_upper;
-	u_int			 yy;
+	u_int			 yy, top;
 
 	/* Create a space for a new line. */
 	yy = gd->hsize + gd->sy;
 	gd->linedata = xreallocarray(gd->linedata, yy + 1,
 	    sizeof *gd->linedata);
+
+	/*
+	 * Below the top row the line going in does not continue the last
+	 * history line (which may wrap on to the top row) - unless that line
+	 * came from this region last and wrapped on to what is now its top.
+	 */
+	top = upper - gd->hsize;
+	if (top != 0 && gd->hsize != 0) {
+		gl_history = &gd->linedata[gd->hsize - 1];
+		if (gd->rpush_wrapped == 1 && gd->rpush_upper == top &&
+		    gd->rpush_lower == lower - gd->hsize)
+			gl_history->flags |= GRID_LINE_WRAPPED;
+		else
+			gl_history->flags &= ~GRID_LINE_WRAPPED;
+	}
+	gd->rpush_wrapped = !!(gd->linedata[upper].flags & GRID_LINE_WRAPPED);
+	gd->rpush_upper = top;
+	gd->rpush_lower = lower - gd->hsize;
 
 	/* Move the entire screen down to free a space for this line. */
 	gl_history = &gd->linedata[gd->hsize];
@@ -548,6 +599,8 @@ grid_scroll_history_region(struct grid *gd, u_int upper, u_int lower, u_int bg)
 	/* Move the line into the history. */
 	memcpy(gl_history, gl_upper, sizeof *gl_history);
 	grid_line_set_time(gl_history);
+	if (top != 0)	/* its next row stays in the region */
+		gl_history->flags &= ~GRID_LINE_WRAPPED;
 
 	/* Then move the region up and clear the bottom line. */
 	memmove(gl_upper, gl_upper + 1, (lower - upper) * sizeof *gl_upper);
@@ -657,6 +710,23 @@ grid_get_cell(struct grid *gd, u_int px, u_int py, struct grid_cell *gc)
 		grid_get_cell1(&gd->linedata[py], px, gc);
 }
 
+/*
+ * Lines py to py + ny - 1 change: if the top row of the region the last line
+ * went into the history from is among them, what that row continues is no
+ * longer known (see grid_scroll_history_region).
+ */
+static void
+grid_rpush_touch(struct grid *gd, u_int py, u_int ny)
+{
+	u_int	top;
+
+	if (gd->rpush_wrapped == -1)
+		return;
+	top = gd->hsize + gd->rpush_upper;
+	if (top >= py && top < py + ny)
+		gd->rpush_wrapped = -1;
+}
+
 /* Set cell at position. */
 void
 grid_set_cell(struct grid *gd, u_int px, u_int py, const struct grid_cell *gc)
@@ -666,6 +736,7 @@ grid_set_cell(struct grid *gd, u_int px, u_int py, const struct grid_cell *gc)
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
+	grid_rpush_touch(gd, py, 1);
 
 	grid_expand_line(gd, py, px + 1, 8);
 
@@ -703,6 +774,7 @@ grid_set_cells(struct grid *gd, u_int px, u_int py, const struct grid_cell *gc,
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
+	grid_rpush_touch(gd, py, 1);
 
 	grid_expand_line(gd, py, px + slen, 8);
 
@@ -729,6 +801,7 @@ grid_clear(struct grid *gd, u_int px, u_int py, u_int nx, u_int ny, u_int bg)
 
 	if (nx == 0 || ny == 0)
 		return;
+	grid_rpush_touch(gd, py, ny);
 
 	if (px == 0 && nx == gd->sx) {
 		grid_clear_lines(gd, py, ny, bg);
@@ -768,6 +841,7 @@ grid_clear_lines(struct grid *gd, u_int py, u_int ny, u_int bg)
 
 	if (ny == 0)
 		return;
+	grid_rpush_touch(gd, py, ny);
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
@@ -790,6 +864,8 @@ grid_move_lines(struct grid *gd, u_int dy, u_int py, u_int ny, u_int bg)
 
 	if (ny == 0 || py == dy)
 		return;
+	grid_rpush_touch(gd, dy, ny);
+	grid_rpush_touch(gd, py, ny);
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
@@ -834,6 +910,7 @@ grid_move_cells(struct grid *gd, u_int dx, u_int px, u_int py, u_int nx,
 
 	if (nx == 0 || px == dx)
 		return;
+	grid_rpush_touch(gd, py, 1);
 
 	if (grid_check_y(gd, __func__, py) != 0)
 		return;
@@ -1654,7 +1731,7 @@ grid_reflow(struct grid *gd, u_int sx)
 	struct grid		*target;
 	struct grid_line	*gl;
 	struct grid_cell	 gc;
-	u_int			 yy, width, i, at;
+	u_int			 yy, width, i, at, ohsize, first, *map;
 
 	/*
 	 * Create a destination grid. This is just used as a container for the
@@ -1663,10 +1740,24 @@ grid_reflow(struct grid *gd, u_int sx)
 	target = grid_create(gd->sx, 0, 0);
 
 	/*
+	 * Note where the last history rows go, so a terminal that has not
+	 * caught up with the history finds its place (tty_catch_up_history).
+	 */
+	ohsize = gd->hsize;
+	first = (ohsize > 10000) ? ohsize - 10000 : 0;
+	map = xreallocarray(NULL, ohsize + gd->sy + 1 - first, sizeof *map);
+
+	/*
 	 * Loop over each source line.
 	 */
 	for (yy = 0; yy < gd->hsize + gd->sy; yy++) {
 		gl = &gd->linedata[yy];
+		if (yy >= first) {
+			if ((gl->flags & GRID_LINE_DEAD) && target->sy != 0)
+				map[yy - first] = target->sy - 1; /* joined */
+			else
+				map[yy - first] = target->sy;
+		}
 		if (gl->flags & GRID_LINE_DEAD)
 			continue;
 
@@ -1721,6 +1812,8 @@ grid_reflow(struct grid *gd, u_int sx)
 			grid_reflow_move(target, gl);
 	}
 
+	map[ohsize + gd->sy - first] = target->sy;	/* the end */
+
 	/*
 	 * Replace the old grid with the new.
 	 */
@@ -1733,6 +1826,19 @@ grid_reflow(struct grid *gd, u_int sx)
 	gd->linedata = target->linedata;
 	free(target);
 	gd->scroll_generation++;
+
+	/* The lines have been rewrapped: how they went in no longer applies. */
+	gd->npushes = 0;
+	gd->rpush_wrapped = -1;
+
+	free(gd->reflow_map);
+	gd->reflow_map = map;
+	gd->reflow_first = first;
+	gd->reflow_view = gd->scroll_view;
+	gd->reflow_hsize = ohsize;
+	gd->reflow_osy = gd->sy;
+	gd->reflow_newh = gd->hsize;
+	gd->reflow_gen = gd->scroll_generation;
 }
 
 /*

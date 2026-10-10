@@ -100,6 +100,7 @@ screen_init(struct screen *s, u_int sx, u_int sy, u_int hlimit)
 #endif
 
 	s->write_list = NULL;
+	s->write_wrap = 0;
 	s->hyperlinks = NULL;
 
 	screen_reinit(s, 1);
@@ -718,6 +719,13 @@ screen_alternate_on(struct screen *s, struct grid_cell *gc, int cursor)
 	    im->list = &s->saved_images;
 #endif
 
+	/*
+	 * Clearing the screen ends a line wrapping into it from the history;
+	 * the primary screen comes back with that line, so keep its wrap.
+	 */
+	s->saved_hwrap = (s->grid->hsize != 0 &&
+	    (grid_get_line(s->grid, s->grid->hsize - 1)->flags &
+	    GRID_LINE_WRAPPED));
 	grid_view_clear(s->grid, 0, 0, sx, sy, 8);
 
 	s->saved_flags = s->grid->flags;
@@ -773,6 +781,9 @@ screen_alternate_off(struct screen *s, struct grid_cell *gc, int cursor)
 	/* Restore the saved grid. */
 	grid_duplicate_lines(s->grid, screen_hsize(s), s->saved_grid, 0,
 	    s->saved_grid->sy);
+	if (s->saved_hwrap && s->grid->hsize != 0)
+		grid_get_line(s->grid, s->grid->hsize - 1)->flags |=
+		    GRID_LINE_WRAPPED;
 
 	/*
 	 * Turn history back on (so resize can use it) and then resize back to

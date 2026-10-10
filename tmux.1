@@ -4883,6 +4883,9 @@ not scroll the terminal's scrollback away and the scrollback is restored when
 the application exits.
 This does not happen when the window is split or the pane is in a mode such
 as copy mode.
+When disabled, each line is also written to the client before it scrolls off a
+full-window pane, so the terminal's scrollback receives every line; this is
+about 18% more output for a full-screen repaint.
 .It Xo Ic command\-alias[]
 .Ar name Ns = Ns Ar value
 .Xc
@@ -6487,6 +6490,44 @@ is enabled.
 .Xc
 When the entire screen is cleared and this option is on, scroll the contents of
 the screen into history before clearing it.
+With
+.Ic clear\-on\-attach
+off, this is done only when the screen is erased as a whole
+.Pq ED 2 ,
+not when it is erased from the top left corner to the end
+.Pq ED 0 ,
+as terminals keeping their own scrollback do not keep it then either.
+.Pp
+.It Ic scroll\-replay Ar lines
+With
+.Ic clear\-on\-attach
+disabled, keep the client terminal's scrollback the same as the history of the
+pane it shows, whenever one pane is the whole terminal: no other pane, no
+status line, and the window the size of the terminal.
+A terminal has one scrollback and
+.Nm
+a history for each pane, so when a pane becomes the whole terminal and the
+scrollback is not already that pane's history (another window or session is
+selected, a pane is zoomed, the other panes are closed, a client attaches or
+resumes),
+.Nm
+erases the scrollback and writes up to
+.Ar lines
+lines of the pane's history there before drawing the pane.
+A terminal that already has the pane's history is given only the lines it
+lacks.
+What the terminal held before
+.Nm
+started on it is kept, with the history written after it, until the scrollback
+is first erased for another pane.
+The default of 0 disables it: the scrollback then keeps whatever lines scrolled
+into it, from any pane.
+Erasing needs the
+.Em E3
+capability; without it the scrollback is left as it is.
+While something else is drawn (a split window, a status line), what the
+terminal keeps in its scrollback is not defined, and it is written again when a
+pane next becomes the whole terminal.
 .Pp
 .It Ic switch\-mode\-match\-style Ar style
 Set the style of characters matched by the filter in

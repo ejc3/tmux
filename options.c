@@ -1376,6 +1376,8 @@ options_push_changes(const char *name)
 		}
 	}
 
+	if (strcmp(name, "clear-on-attach") == 0)
+		clear_on_attach = options_get_number(global_options, name);
 	if (strcmp(name, "automatic-rename") == 0) {
 		RB_FOREACH(w, windows, &windows) {
 			if (w->active == NULL)
