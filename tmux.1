@@ -1,4 +1,4 @@
-.\" $OpenBSD: tmux.1,v 1.1177 2026/10/06 17:45:26 schwarze Exp $
+.\" $OpenBSD: tmux.1,v 1.1182 2026/10/09 13:12:14 nicm Exp $
 .\"
 .\" Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
 .\"
@@ -14,7 +14,7 @@
 .\" IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
 .\" OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 .\"
-.Dd $Mdocdate: October 6 2026 $
+.Dd $Mdocdate: October 9 2026 $
 .Dt TMUX 1
 .Os
 .Sh NAME
@@ -1271,6 +1271,7 @@ If
 is specified, list only clients connected to that session.
 .Tg lscm
 .It Xo Ic list\-commands
+.Op Fl h
 .Op Fl F Ar format
 .Op Ar command
 .Xc
@@ -1279,6 +1280,11 @@ List the syntax of
 .Ar command
 or - if omitted - of all commands supported by
 .Nm .
+With
+.Fl h ,
+show command names and a short description.
+.Fl h
+twice shows syntax as well.
 .Tg ls
 .It Xo Ic list\-sessions
 .Op Fl r
@@ -2013,6 +2019,25 @@ Same as
 .Ic copy\-pipe
 but also exit copy mode.
 .It Xo
+.Ic copy\-pipe\-output
+.Op Fl aCP
+.Op Ar command
+.Op Ar prefix
+.Xc
+Copy the current OSC 133 command output, pipe it to
+.Ar command ,
+and clear the selection.
+.Ar prefix
+is used to name the new paste buffer.
+.It Xo
+.Ic copy\-output
+.Op Fl aCP
+.Op Ar prefix
+.Xc
+Copy the current OSC 133 command output and clear the selection.
+.Ar prefix
+is used to name the new paste buffer.
+.It Xo
 .Ic copy\-selection
 .Op Fl CP
 .Op Ar prefix
@@ -2231,6 +2256,31 @@ but treat all non-whitespace characters as part of a word.
 .Xc
 Switch at which end of the selection the cursor sits.
 .It Xo
+.Ic open\-output
+.Op Fl a
+.Op Ar command
+(vi: M\-e)
+(emacs: e)
+.Xc
+Open the current OSC 133 command output in an editor.
+If
+.Ar command
+is given, it is used as the editor command; otherwise, the
+.Ic editor
+option is used.
+.It Xo
+.Ic open\-selection
+.Op Ar command
+(vi: M\-e)
+(emacs: e)
+.Xc
+Open the current selection in an editor.
+If
+.Ar command
+is given, it is used as the editor command; otherwise, the
+.Ic editor
+option is used.
+.It Xo
 .Ic page\-down
 (vi: C\-f)
 (emacs: PageDown)
@@ -2270,6 +2320,21 @@ but do not clear the selection.
 Same as
 .Ic pipe
 but also exit copy mode.
+.It Xo
+.Ic pipe\-output
+.Op Fl a
+.Op Ar command
+.Xc
+Pipe the current OSC 133 command output to
+.Ar command
+and clear the selection.
+.It Xo
+.Ic pipe\-selection
+.Op Ar command
+.Xc
+Pipe the selected text to
+.Ar command
+and clear the selection.
 .It Xo
 .Ic previous\-matching\-bracket
 (emacs: M\-C\-b)
@@ -2459,6 +2524,13 @@ Search forward for the specified plain text.
 .Xc
 Repeat the last search in the reverse direction (forward becomes backward and
 backward becomes forward).
+.It Xo
+.Ic select\-output
+.Op Fl a
+(vi: M\-o)
+(emacs: C\-o)
+.Xc
+Select the current OSC 133 command output.
 .It Xo
 .Ic select\-line
 (vi: V)
@@ -3133,8 +3205,9 @@ The
 command works only if at least one client is attached.
 .It Xo
 .Ic switch\-mode
-.Op Fl kswZ
+.Op Fl krsZw
 .Op Fl F Ar format
+.Op Fl O Ar sort\-order
 .Op Fl t Ar target\-pane
 .Op Ar command
 .Xc
@@ -3147,6 +3220,15 @@ matching and only matching items are shown, sorted by how well they match.
 lists sessions (the default) and
 .Fl w
 lists windows.
+.Fl O
+specifies the initial sort order within matches of equal quality: one of
+.Ql index ,
+.Ql name ,
+or
+.Ql activity
+(time).
+.Fl r
+reverses the sort order.
 .Fl Z
 zooms the pane.
 The following keys may be used in switch mode:
@@ -3621,6 +3703,8 @@ is the command to execute.
 If
 .Ar shell\-command
 is not specified, the value of the
+.Ic window\-default\-command
+or
 .Ic default\-command
 option is used.
 .Fl c
@@ -5277,6 +5361,16 @@ For example:
 set \-s user\-keys[0] "\ee[5;30012\[ti]"
 bind User0 resize\-pane \-L 3
 .Ed
+.It Xo Ic utmp
+.Op Ic on | off
+.Xc
+Maintain utmp records for panes using
+.Xr utempter 3 .
+This option is unavailable if
+.Nm
+was built without
+.Xr utempter 3
+support.
 .It Xo Ic variation\-selector\-always\-wide
 .Op Cm on | off
 .Xc
@@ -6273,6 +6367,11 @@ For how to specify
 see the
 .Sx STYLES
 section.
+.Pp
+.It Ic window\-default\-command Ar shell\-command
+Per-window version of the
+.Ic default\-command
+option.
 .Pp
 .It Ic window\-status\-activity\-style Ar style
 Set status line style for windows with an activity alert.
@@ -7457,7 +7556,9 @@ The following variables are available, where appropriate:
 .It Li "client_written" Ta "" Ta "Bytes written to client"
 .It Li "command" Ta "" Ta "Name of command in use, if any"
 .It Li "command_list_alias" Ta "" Ta "Command alias if listing commands"
+.It Li "command_list_description" Ta "" Ta "Command description if listing commands"
 .It Li "command_list_name" Ta "" Ta "Command name if listing commands"
+.It Li "command_list_name_width" Ta "" Ta "Maximum command name width in list"
 .It Li "command_list_usage" Ta "" Ta "Command usage if listing commands"
 .It Li "config_files" Ta "" Ta "List of configuration files loaded"
 .It Li "cursor_blinking" Ta "" Ta "1 if the cursor is blinking"
@@ -7615,7 +7716,9 @@ The following variables are available, where appropriate:
 .It Li "scroll_region_lower" Ta "" Ta "Bottom of scroll region in pane"
 .It Li "scroll_region_upper" Ta "" Ta "Top of scroll region in pane"
 .It Li "search_count" Ta "" Ta "Count of search results"
+.It Li "search_count_current" Ta "" Ta "Index of the current search result"
 .It Li "search_count_partial" Ta "" Ta "1 if search count is partial count"
+.It Li "search_count_present" Ta "" Ta "1 if search count is available"
 .It Li "search_match" Ta "" Ta "Search match if any"
 .It Li "search_present" Ta "" Ta "1 if search started in copy mode"
 .It Li "selection_active" Ta "" Ta "1 if selection started and changes with the cursor in copy mode"

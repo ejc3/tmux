@@ -1,4 +1,4 @@
-/* $OpenBSD: tmux.h,v 1.1453 2026/10/06 17:49:45 nicm Exp $ */
+/* $OpenBSD: tmux.h,v 1.1455 2026/10/09 13:12:14 nicm Exp $ */
 
 /*
  * Copyright (c) 2007 Nicholas Marriott <nicholas.marriott@gmail.com>
@@ -1450,7 +1450,8 @@ struct window_pane {
 #define PANE_CAPTUREALLKEYS 0x100000
 #define PANE_FLOATOVERZOOM 0x200000
 #define PANE_CLOSEONCANCEL 0x400000
-#define PANE_KGFX 0x800000
+#define PANE_UTMP 0x800000
+#define PANE_KGFX 0x1000000
 
 	bitstr_t	*sync_dirty;
 	u_int		 sync_dirty_size;
@@ -2222,6 +2223,7 @@ struct cmd_entry_flag {
 /* Command definition. */
 struct cmd_entry {
 	const char		*name;
+	const char		*description;
 	const char		*alias;
 
 	struct args_parse	 args;
@@ -3738,6 +3740,8 @@ void	 grid_reader_start(struct grid_reader *, struct grid *, u_int, u_int);
 void	 grid_reader_get_cursor(struct grid_reader *, u_int *, u_int *);
 u_int	 grid_reader_line_length(struct grid_reader *);
 int	 grid_reader_in_set(struct grid_reader *, const char *);
+int	 grid_reader_output_range(struct grid_reader *, u_int *, u_int *,
+		     u_int *, u_int *);
 void	 grid_reader_cursor_right(struct grid_reader *, int, int, int);
 void	 grid_reader_cursor_left(struct grid_reader *, int);
 void	 grid_reader_cursor_down(struct grid_reader *);
@@ -3945,6 +3949,8 @@ struct window	*window_find_by_id(u_int);
 void		 window_update_activity(struct window *);
 struct window	*window_create(u_int, u_int, u_int, u_int);
 void		 window_pane_set_event(struct window_pane *);
+void		 window_pane_utmp_add(struct window_pane *);
+void		 window_pane_utmp_remove(struct window_pane *);
 void		 window_pane_wait_finish(struct window_pane *);
 struct window_pane *window_get_active_at(struct window *, u_int, u_int);
 struct window_pane *window_find_string(struct window *, const char *);
@@ -4446,7 +4452,7 @@ struct winlink	*spawn_window(struct spawn_context *, char **);
 struct window_pane *spawn_pane(struct spawn_context *, char **);
 typedef void (*spawn_finish_edit_cb)(char *, size_t, void *);
 struct spawn_editor_state *spawn_editor(struct client *, const char *, size_t,
-		     spawn_finish_edit_cb, void *);
+		     const char *, spawn_finish_edit_cb, void *);
 void		 spawn_cancel_editor(struct spawn_editor_state *);
 pid_t		 spawn_get_editor_pid(struct spawn_editor_state *);
 void		 spawn_editor_finish(struct window_pane *);
