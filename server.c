@@ -278,6 +278,7 @@ server_loop(void)
 			if (c->flags & CLIENT_IDENTIFIED)
 				items += cmdq_next(c);
 		}
+		items += server_client_run_dead();
 	} while (items != 0);
 
 	server_client_loop();
